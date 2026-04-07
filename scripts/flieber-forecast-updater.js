@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.1 — Apply button fix (not Save), ht_master direct cell targeting
+ * flieber-forecast-updater.js  v8.3 — scroll-to-view product fix, precise p.chakra-text targeting
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -312,49 +312,90 @@ async function openProductEditor(page, productName) {
 
   await dbShot(page, `product-${productName.replace(/ /g,'_')}-0-start`, 'Product list before search');
 
-  const allText = await page.evaluate((name) => {
-    const els = Array.from(document.querySelectorAll('*'));
-    return els
-      .filter(el => el.children.length === 0 && el.textContent.includes(name.substring(0, 6)))
-      .map(el => `[${el.tagName}.${el.className.toString().substring(0,30)}] "${el.textContent.trim().substring(0,80)}"`)
-      .slice(0, 20);
-  }, productName);
-  await dbLog('product-editor', 'info', `DOM elements containing "${productName.substring(0,6)}": ${JSON.stringify(allText)}`);
+  // Step 1: Find the product text element and scroll it into view
+  const productTextEl = page.locator(`p.chakra-text:text-is("${productName}")`).first();
+  let found = await productTextEl.isVisible({ timeout: 2000 }).catch(() => false);
 
-  const selectors = [
-    `tr:has-text("${productName}")`,
-    `[role="row"]:has-text("${productName}")`,
-    `div:has-text("${productName}")`,
-    `:text("${productName}")`,
-  ];
-
-  let row = null;
-  for (const sel of selectors) {
-    const candidate = page.locator(sel).first();
-    if (await candidate.isVisible({ timeout: 2000 }).catch(() => false)) {
-      row = candidate;
-      await dbLog('product-editor', 'info', `Row found with selector: ${sel}`);
-      console.log(`  ✅ Found with selector: ${sel}`);
-      break;
-    }
+  if (!found) {
+    // Try scrolling the product list to find it
+    await dbLog('product-editor', 'info', `"${productName}" not immediately visible — scrolling to find...`);
+    await page.evaluate(async (name) => {
+      const scrollContainers = document.querySelectorAll('[class*="overflow"], [style*="overflow"]');
+      for (const container of scrollContainers) {
+        const textEl = container.querySelector(`p.chakra-text`);
+        if (textEl) {
+          // Scroll down in steps
+          for (let i = 0; i < 10; i++) {
+            container.scrollTop += 300;
+            await new Promise(r => setTimeout(r, 200));
+            const found = Array.from(container.querySelectorAll('p.chakra-text'))
+              .find(el => el.textContent.trim() === name);
+            if (found) { found.scrollIntoView({ block: 'center' }); return true; }
+          }
+        }
+      }
+      // Fallback: find any element with exact text and scrollIntoView
+      const el = Array.from(document.querySelectorAll('p, span, td, div'))
+        .find(el => el.children.length === 0 && el.textContent.trim() === name);
+      if (el) { el.scrollIntoView({ block: 'center' }); return true; }
+      return false;
+    }, productName);
+    await page.waitForTimeout(500);
+    found = await productTextEl.isVisible({ timeout: 2000 }).catch(() => false);
   }
 
-  if (!row) {
-    await dbLog('product-editor', 'warn', `Product "${productName}" not found in list — skipping`);
+  if (!found) {
+    // Log what IS in the DOM for debugging
+    const allText = await page.evaluate((name) => {
+      const els = Array.from(document.querySelectorAll('p.chakra-text'));
+      return els.map(el => el.textContent.trim()).filter(t => t.length > 2).slice(0, 30);
+    }, productName);
+    await dbLog('product-editor', 'warn', `Product "${productName}" not found. Visible products: ${JSON.stringify(allText)}`);
     console.log(`  ⚠️  Not found in product list — skipping`);
     return false;
   }
 
-  await row.hover();
+  // Step 2: Navigate from the text element up to its table row (tr)
+  const row = page.locator(`tr:has(p.chakra-text:text-is("${productName}"))`).first();
+  const rowVisible = await row.isVisible({ timeout: 2000 }).catch(() => false);
+
+  if (!rowVisible) {
+    // Fallback: try role="row" or click the text element's parent
+    const altRow = page.locator(`[role="row"]:has(:text-is("${productName}"))`).first();
+    const altVisible = await altRow.isVisible({ timeout: 2000 }).catch(() => false);
+    if (altVisible) {
+      await dbLog('product-editor', 'info', `Using [role="row"] fallback for ${productName}`);
+      await altRow.hover();
+    } else {
+      // Last resort: hover the text element itself to trigger menu
+      await dbLog('product-editor', 'info', `Using direct text hover fallback for ${productName}`);
+      await productTextEl.hover();
+    }
+  } else {
+    await row.hover();
+  }
   await page.waitForTimeout(300);
 
-  const menuBtn = row.locator(
-    'button[aria-label*="more"], button[aria-haspopup], button:has-text("⋮"), button:has-text("...")'
+  // Step 3: Click the row's menu button (⋮ or ...)
+  const hoverTarget = rowVisible ? row : page.locator(`tr, [role="row"], div`).filter({ has: productTextEl }).first();
+  const menuBtn = hoverTarget.locator(
+    'button[aria-label*="more" i], button[aria-haspopup], button:has-text("⋮"), button:has-text("...")'
   ).first();
-  await menuBtn.click();
+
+  const menuVisible = await menuBtn.isVisible({ timeout: 2000 }).catch(() => false);
+  if (menuVisible) {
+    await menuBtn.click();
+    await dbLog('product-editor', 'info', `Menu button clicked for ${productName}`);
+  } else {
+    // Fallback: right-click or click directly on the row
+    await dbLog('product-editor', 'info', `No menu button visible — trying right-click on ${productName}`);
+    await productTextEl.click();
+    await page.waitForTimeout(300);
+  }
   await page.waitForTimeout(300);
 
-  await page.click(':text("Edit forecast"), :text("Edit forecast & past sales")');
+  // Step 4: Click "Edit forecast" or "Edit forecast & past sales"
+  await page.click(':text("Edit forecast"), :text("Edit forecast & past sales")', { timeout: 5000 });
   await page.waitForTimeout(1500);
 
   await dbShot(page, `product-${productName.replace(/ /g,'_')}-1-editor-open`, 'Editor opened');
@@ -575,7 +616,7 @@ async function closeModal(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.1\n');
+  console.log('🚀 Flieber Forecast Updater v8.3\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const allData = await loadForecastData();
