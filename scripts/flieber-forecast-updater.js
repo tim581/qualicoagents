@@ -66,13 +66,13 @@ async function loadForecastData() {
 
   const { data: products, error: e2 } = await supabase
     .from('Puzzlup_Product_Info')
-    .select('id, sku, name');
+    .select('id, sku');
 
   if (e2) throw new Error('Supabase product fetch: ' + e2.message);
 
-  // product_id → sku (fallback to name)
+  // product_id → sku
   const skuMap = {};
-  for (const p of products) skuMap[p.id] = p.sku || p.name;
+  for (const p of products) skuMap[p.id] = p.sku;
 
   // Structure: { channelId: { sku: { 'YYYY-MM': units } } }
   const data = {};
