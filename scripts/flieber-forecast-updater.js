@@ -64,35 +64,46 @@ async function loadForecastData() {
 
   if (e1) throw new Error('Supabase forecast fetch: ' + e1.message);
 
-  const { data: products, error: e2 } = await supabase
-    .from('Puzzlup_Product_Info')
-    .select('id, sku');
+  // Get Flieber product name/code mapping per product_id + channel_id
+  const { data: flieberSkus, error: e2 } = await supabase
+    .from('flieber_product_skus')
+    .select('product_id, channel_id, flieber_product_name, flieber_product_code');
 
-  if (e2) throw new Error('Supabase product fetch: ' + e2.message);
+  if (e2) throw new Error('Supabase flieber_product_skus fetch: ' + e2.message);
 
-  // product_id → sku
-  const skuMap = {};
-  for (const p of products) skuMap[p.id] = p.sku;
+  // Map: "productId_channelId" → { name, code }
+  const flieberMap = {};
+  for (const f of flieberSkus) {
+    flieberMap[`${f.product_id}_${f.channel_id}`] = {
+      name: f.flieber_product_name,
+      code: f.flieber_product_code,
+    };
+  }
 
-  // Structure: { channelId: { sku: { 'YYYY-MM': units } } }
+  // Structure: { channelId: { flieberCode: { name: "MAT 1500 GIFT", months: { 'YYYY-MM': units } } } }
   const data = {};
+  let skipped = 0;
   for (const row of forecasts) {
-    const sku = skuMap[row.product_id];
-    if (!sku || SKIP_SKUS.includes(sku)) continue;
+    const key = `${row.product_id}_${row.channel_id}`;
+    const flieber = flieberMap[key];
+    if (!flieber) { skipped++; continue; } // no Flieber mapping
 
     const cid  = row.channel_id;
+    const code = flieber.code;
     const mo   = row.forecast_month.substring(0, 7); // 'YYYY-MM'
     const val  = Math.round(row.units_forecast ?? 0);
 
-    if (!data[cid])       data[cid]       = {};
-    if (!data[cid][sku])  data[cid][sku]  = {};
-    data[cid][sku][mo] = val;
+    if (!data[cid])        data[cid]        = {};
+    if (!data[cid][code])  data[cid][code]  = { name: flieber.name, months: {} };
+    data[cid][code].months[mo] = val;
   }
+
+  if (skipped > 0) console.log(`  ⚠️  ${skipped} rows had no Flieber mapping — skipped`);
 
   let total = 0;
   for (const cid of Object.keys(data))
-    for (const sku of Object.keys(data[cid]))
-      total += Object.keys(data[cid][sku]).length;
+    for (const code of Object.keys(data[cid]))
+      total += Object.keys(data[cid][code].months).length;
 
   console.log(`✅ ${total} data-points loaded across ${Object.values(data).reduce((s,c)=>s+Object.keys(c).length,0)} product×store combos`);
   return data;
@@ -193,13 +204,25 @@ async function applyStoreFilter(page, storeName) {
 
 // ── OPEN PRODUCT EDITOR ───────────────────────────────────────────────────────
 
-async function openProductEditor(page, sku) {
-  console.log(`\n  📦 ${sku}`);
+async function openProductEditor(page, productName) {
+  console.log(`\n  📦 ${productName}`);
 
-  // Find row containing the SKU
-  const row = page.locator('tr, [role="row"]').filter({ hasText: sku }).first();
+  // Use the search bar to filter to this product
+  const searchBar = page.locator('input[placeholder*="Search" i], input[placeholder*="search" i]').first();
+  if (await searchBar.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await searchBar.click();
+    await searchBar.fill('');
+    await searchBar.type(productName, { delay: 40 });
+    await page.waitForTimeout(1200); // wait for filtered results
+  } else {
+    console.log('  ⚠️  Search bar not found — searching in full list');
+  }
+
+  // Find row containing the product name
+  const row = page.locator('tr, [role="row"]').filter({ hasText: productName }).first();
   if (!(await row.isVisible({ timeout: 5000 }).catch(() => false))) {
     console.log(`  ⚠️  Not found in product list — skipping`);
+    await searchBar.fill('').catch(() => {});
     return false;
   }
 
@@ -402,38 +425,32 @@ async function main() {
 
       await applyStoreFilter(page, store.name);
 
-      // DEBUG: screenshot + dump all visible product rows
-      await page.screenshot({ path: 'flieber-productlist.png', fullPage: false });
-      console.log('📸 Product list screenshot → flieber-productlist.png');
-      const rowTexts = await page.locator('tr, [role="row"]').allTextContents();
-      console.log('🔍 Product rows visible:');
-      rowTexts.slice(0, 20).forEach((t, i) => console.log(`  [${i}] ${t.replace(/\s+/g, ' ').trim().substring(0, 100)}`));
-
       // TEST_MODE: limit to 1 product
-      const skus = TEST_MODE
+      const productCodes = TEST_MODE
         ? Object.keys(products).slice(0, 1)
         : Object.keys(products);
 
-      console.log(`\n📋 ${store.name}: ${skus.length} product(s)${TEST_MODE ? ' [TEST MODE]' : ''}`);
+      console.log(`\n📋 ${store.name}: ${productCodes.length} product(s)${TEST_MODE ? ' [TEST MODE]' : ''}`);
 
-      for (const sku of skus) {
+      for (const code of productCodes) {
+        const { name, months } = products[code];
         try {
-          let opened = await openProductEditor(page, sku);
+          let opened = await openProductEditor(page, name);
           if (!opened) { stats.skipped++; continue; }
 
           // Handle stuck state — may need to reopen
           const wasStuck = await unstickIfNeeded(page);
           if (wasStuck) {
-            opened = await openProductEditor(page, sku);
+            opened = await openProductEditor(page, name);
             if (!opened) { stats.skipped++; continue; }
           }
 
-          await fillMonths(page, sku, products[sku]);
+          await fillMonths(page, name, months);
           stats.done++;
 
         } catch (err) {
-          console.error(`  ❌ ${sku}: ${err.message}`);
-          stats.errors.push({ store: store.name, sku, error: err.message });
+          console.error(`  ❌ ${name}: ${err.message}`);
+          stats.errors.push({ store: store.name, code, name, error: err.message });
 
           // Take screenshot for debugging
           const fname = `error-${store.name.replace(/ /g,'_')}-${sku.replace(/ /g,'_')}.png`;
