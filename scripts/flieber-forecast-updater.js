@@ -470,14 +470,33 @@ async function fillMonths(page, productName, monthlyValues) {
 
   await dbShot(page, `fill-${productName.replace(/ /g,'_')}-0-before-dblclick`, 'Before finding Adjusted forecast row');
 
-  // Find the "Adjusted forecast | Units" row
+  // Find the "Adjusted forecast | Units" row — may need scrolling inside the Handsontable
   const adjRow = page.locator('tr, [role="row"]').filter({
     hasText: /adj.*forecast|forecast.*adj/i
   }).filter({
     hasText: /units/i
   }).first();
 
-  const rowVisible = await adjRow.isVisible({ timeout: 5000 }).catch(() => false);
+  let rowVisible = await adjRow.isVisible({ timeout: 3000 }).catch(() => false);
+
+  // If not visible, try scrolling it into view within the Handsontable container
+  if (!rowVisible) {
+    await dbLog('fill-months', 'warn', 'Adjusted forecast row not immediately visible — scrolling into view...');
+    // Scroll the row into view inside the HT container
+    await adjRow.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' })).catch(() => {});
+    await page.waitForTimeout(500);
+    rowVisible = await adjRow.isVisible({ timeout: 3000 }).catch(() => false);
+  }
+
+  // Second attempt: scroll the entire Handsontable wrapper down
+  if (!rowVisible) {
+    await dbLog('fill-months', 'warn', 'Still not visible — scrolling HT wrapper...');
+    const htWrapper = page.locator('.ht_master .wtHolder').first();
+    await htWrapper.evaluate(el => { el.scrollTop = el.scrollHeight; }).catch(() => {});
+    await page.waitForTimeout(500);
+    rowVisible = await adjRow.isVisible({ timeout: 3000 }).catch(() => false);
+  }
+
   await dbLog('fill-months', rowVisible ? 'info' : 'error', `Adjusted forecast row visible: ${rowVisible}`);
 
   if (!rowVisible) {
@@ -606,17 +625,47 @@ async function verifyLateMo(page, productName, monthlyValues) {
 // ── CLOSE MODAL ───────────────────────────────────────────────────────────────
 
 async function closeModal(page) {
+  // Try Escape first
   await page.keyboard.press('Escape');
   await page.waitForTimeout(500);
-  const closeBtn = page.locator('button[aria-label="Close"], button[aria-label*="close" i]').first();
-  if (await closeBtn.isVisible({ timeout: 500 }).catch(() => false)) await closeBtn.click();
-  await page.waitForTimeout(500);
+
+  // Check if modal is still open
+  const modalStillOpen = await page.locator('.chakra-modal__content-container').isVisible({ timeout: 500 }).catch(() => false);
+  
+  if (modalStillOpen) {
+    await dbLog('close-modal', 'warn', 'Modal still open after Escape — trying close button...');
+    // Try close/X buttons
+    const closeSelectors = [
+      'button[aria-label="Close"]',
+      'button[aria-label*="close" i]',
+      '.chakra-modal__close-btn',
+      '.chakra-modal__content-container button:has(svg)',  // X icon button
+    ];
+    for (const sel of closeSelectors) {
+      const btn = page.locator(sel).first();
+      if (await btn.isVisible({ timeout: 300 }).catch(() => false)) {
+        await btn.click({ timeout: 2000 }).catch(() => {});
+        await page.waitForTimeout(500);
+        break;
+      }
+    }
+  }
+
+  // Final check — if still open, click the overlay backdrop
+  const stillOpen = await page.locator('.chakra-modal__content-container').isVisible({ timeout: 300 }).catch(() => false);
+  if (stillOpen) {
+    await dbLog('close-modal', 'warn', 'Modal STILL open — clicking overlay...');
+    await page.locator('.chakra-modal__overlay').click({ position: { x: 10, y: 10 }, force: true }).catch(() => {});
+    await page.waitForTimeout(500);
+  }
+
+  await page.waitForTimeout(300);
 }
 
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.3\n');
+  console.log('🚀 Flieber Forecast Updater v8.4\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const allData = await loadForecastData();
