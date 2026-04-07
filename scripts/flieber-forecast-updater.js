@@ -34,6 +34,11 @@ const STORES = [
   { channelId: 33, name: 'Bol'        },
 ];
 
+// ── TEST MODE ─────────────────────────────────────────────────────────────────
+// Set to true to run ONLY Bol × 1 product — safe for first-time testing
+const TEST_MODE = true;
+// ──────────────────────────────────────────────────────────────────────────────
+
 // Products to SKIP entirely
 const SKIP_SKUS = ['TRAY WHITE'];
 
@@ -353,7 +358,12 @@ async function main() {
   try {
     await login(page);
 
-    for (const store of STORES) {
+    // TEST_MODE: limit to Bol only
+    const storesToRun = TEST_MODE
+      ? STORES.filter(s => s.channelId === 33)
+      : STORES;
+
+    for (const store of storesToRun) {
       const products = allData[store.channelId];
       if (!products || Object.keys(products).length === 0) {
         console.log(`⏭️  No data for ${store.name} — skipping`);
@@ -362,8 +372,12 @@ async function main() {
 
       await applyStoreFilter(page, store.name);
 
-      const skus = Object.keys(products);
-      console.log(`\n📋 ${store.name}: ${skus.length} products`);
+      // TEST_MODE: limit to 1 product
+      const skus = TEST_MODE
+        ? Object.keys(products).slice(0, 1)
+        : Object.keys(products);
+
+      console.log(`\n📋 ${store.name}: ${skus.length} product(s)${TEST_MODE ? ' [TEST MODE]' : ''}`);
 
       for (const sku of skus) {
         try {
