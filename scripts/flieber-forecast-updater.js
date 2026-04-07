@@ -130,7 +130,13 @@ async function applyStoreFilter(page, storeName) {
   console.log(`\n🏪 Setting store filter → ${storeName}`);
 
   await page.goto(FLIEBER_URL, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(2000);
+  await page.waitForTimeout(3000);
+
+  // DEBUG: screenshot + button dump to identify correct selectors
+  await page.screenshot({ path: 'flieber-debug.png', fullPage: false });
+  console.log('📸 Screenshot saved → flieber-debug.png (open this file to see the page)');
+  const allButtons = await page.locator('button, div[role="button"], [role="combobox"]').allTextContents();
+  console.log('🔍 Clickable elements:', JSON.stringify(allButtons.filter(t => t.trim()).slice(0, 30)));
 
   // Click the filter bar (contains "regions", "channels" or "stores")
   const filterBar = page.locator('button, div[role="button"]').filter({
