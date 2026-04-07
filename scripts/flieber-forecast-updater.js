@@ -402,6 +402,13 @@ async function main() {
 
       await applyStoreFilter(page, store.name);
 
+      // DEBUG: screenshot + dump all visible product rows
+      await page.screenshot({ path: 'flieber-productlist.png', fullPage: false });
+      console.log('📸 Product list screenshot → flieber-productlist.png');
+      const rowTexts = await page.locator('tr, [role="row"]').allTextContents();
+      console.log('🔍 Product rows visible:');
+      rowTexts.slice(0, 20).forEach((t, i) => console.log(`  [${i}] ${t.replace(/\s+/g, ' ').trim().substring(0, 100)}`));
+
       // TEST_MODE: limit to 1 product
       const skus = TEST_MODE
         ? Object.keys(products).slice(0, 1)
