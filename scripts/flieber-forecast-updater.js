@@ -102,14 +102,21 @@ async function loadForecastData() {
 
 async function login(page) {
   console.log('\n🔐 Logging in...');
-  await page.goto('https://app.flieber.com', { waitUntil: 'networkidle', timeout: 30000 });
+  await page.goto('https://app.flieber.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+  // Wait for email field — handles redirects to auth providers (Auth0 etc.)
+  console.log('⏳ Waiting for login form...');
+  await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 60000 });
+  console.log('✅ Login form visible');
 
   // Fill credentials
-  await page.fill('input[type="email"], input[name="email"]', FLIEBER_EMAIL);
+  await page.fill('input[type="email"], input[name="email"], input[type="text"]', FLIEBER_EMAIL);
+  await page.waitForTimeout(500);
   await page.fill('input[type="password"]', FLIEBER_PASSWORD);
-  await page.click('button[type="submit"], button:has-text("Sign in"), button:has-text("Log in")');
+  await page.waitForTimeout(500);
+  await page.click('button[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), button:has-text("Continue")');
 
-  await page.waitForURL('**app.flieber.com/app/**', { timeout: 30000 });
+  await page.waitForURL('**app.flieber.com/app/**', { timeout: 60000 });
   console.log('✅ Logged in');
 
   // Save auth state for potential re-use
