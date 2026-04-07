@@ -1,8 +1,10 @@
 /**
- * flieber-forecast-updater.js  v4 — force:true dblclick, name fix
+ * flieber-forecast-updater.js  v5 — self-debugging: logs every step + screenshots to Supabase
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
+ *
+ * After each run: query Supabase "Flieber_Debug_Log" filtered by run_id to see all steps + screenshots.
  *
  * Prerequisites (on Tim's machine):
  *   cd C:\Users\Tim\playwright-render-service
@@ -49,6 +51,49 @@ const MONTHS = [
 ];
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// ── SELF-DEBUGGING: SUPABASE LOG ──────────────────────────────────────────────
+
+const RUN_ID = `run_${Date.now()}`;
+console.log(`\n🔍 Debug run ID: ${RUN_ID}`);
+console.log(`   → Query Supabase "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}' after run\n`);
+
+async function dbLog(step, status, message) {
+  // status: 'info' | 'success' | 'warn' | 'error'
+  const short = (message || '').toString().substring(0, 3000);
+  console.log(`  [DB:${status}] ${step}: ${short.substring(0, 120)}`);
+  try {
+    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
+      method: 'POST',
+      headers: {
+        'apikey': process.env.SUPABASE_KEY,
+        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ run_id: RUN_ID, step, status, message: short }),
+    });
+  } catch (e) { /* never break the main flow */ }
+}
+
+async function dbShot(page, step, label) {
+  try {
+    const buf = await page.screenshot({ fullPage: false });
+    // Limit to ~400KB base64 (safe for Supabase text column)
+    const b64 = buf.toString('base64').substring(0, 400000);
+    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
+      method: 'POST',
+      headers: {
+        'apikey': process.env.SUPABASE_KEY,
+        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ run_id: RUN_ID, step, status: 'screenshot', message: label, screenshot: b64 }),
+    });
+    console.log(`  📸 Screenshot logged → ${step} (${label})`);
+  } catch (e) { /* never break the main flow */ }
+}
 
 // ── DATA FETCH ────────────────────────────────────────────────────────────────
 
@@ -113,25 +158,22 @@ async function loadForecastData() {
 
 async function login(page) {
   console.log('\n🔐 Logging in...');
+  await dbLog('login', 'info', 'Navigating to Flieber...');
   await page.goto('https://app.flieber.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-  // Wait for email field — handles redirects to auth providers (Auth0 etc.)
-  console.log('⏳ Waiting for login form...');
   await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 60000 });
-  console.log('✅ Login form visible');
+  await dbLog('login', 'info', 'Login form visible');
 
-  // Fill credentials
   await page.fill('input[type="email"], input[name="email"], input[type="text"]', FLIEBER_EMAIL);
   await page.waitForTimeout(500);
   await page.fill('input[type="password"]', FLIEBER_PASSWORD);
   await page.waitForTimeout(500);
-  // Click the visible Continue/Submit button (skip hidden duplicates)
   await page.locator('button:has-text("Continue"), button[type="submit"]').filter({ visible: true }).first().click({ timeout: 30000 });
 
   await page.waitForURL('**app.flieber.com/app/**', { timeout: 60000 });
+  await dbLog('login', 'success', 'Logged in ✅');
   console.log('✅ Logged in');
 
-  // Save auth state for potential re-use
   await page.context().storageState({ path: 'flieber-auth.json' });
 }
 
@@ -139,66 +181,122 @@ async function login(page) {
 
 async function applyStoreFilter(page, storeName) {
   console.log(`\n🏪 Setting store filter → ${storeName}`);
+  await dbLog('store-filter', 'info', `Target store: ${storeName}`);
 
   await page.goto(FLIEBER_URL, { waitUntil: 'networkidle', timeout: 30000 });
   await page.waitForTimeout(3000);
+  await dbShot(page, 'store-filter-0-pageload', 'Page loaded, before opening filter');
 
-  // DEBUG: screenshot + button dump to identify correct selectors
-  await page.screenshot({ path: 'flieber-debug.png', fullPage: false });
-  console.log('📸 Screenshot saved → flieber-debug.png (open this file to see the page)');
-  const allButtons = await page.locator('button, div[role="button"], [role="combobox"]').allTextContents();
-  console.log('🔍 Clickable elements:', JSON.stringify(allButtons.filter(t => t.trim()).slice(0, 30)));
-
-  // Step 1: Click the filter button (text varies based on current state)
-  // Matches "All regions, channels and stores" OR "All regions; all channels; Store: Bol" etc.
+  // Step 1: Open the channel/store filter dropdown
   console.log('🔍 Opening filter dropdown...');
   const channelFilterBtn = page.getByText(/regions.*channels|all regions/i).first();
   await channelFilterBtn.click({ timeout: 15000, force: true });
   await page.waitForTimeout(1000);
+  await dbShot(page, 'store-filter-1-dropdown-open', 'After clicking filter button');
 
   // Step 2: Click "Stores >" submenu
   console.log('🔍 Clicking Stores submenu...');
   const storesMenu = page.getByText(/^stores$/i).first();
   await storesMenu.click({ timeout: 10000 });
   await page.waitForTimeout(800);
+  await dbShot(page, 'store-filter-2-stores-submenu', 'After clicking Stores submenu');
 
-  // Step 3: Toggle each store — uncheck others, ensure target is checked
-  // Flieber requires at least 1 store selected so "Unselect all" is disabled
-  // Strategy: check current state of each store, toggle as needed
   const ALL_STORES = ['Amazon CA', 'Amazon EU', 'Amazon UK', 'Amazon USA', 'Bol', 'Puzzlup'];
-  console.log('🔍 Toggling store checkboxes...');
+
+  // ── PHASE 1: Ensure ALL stores are checked ──────────────────────────────────
+  // This guarantees the next phase causes a change → Apply button will be enabled
+  console.log('🔍 Phase 1: Selecting ALL stores...');
+  await dbLog('store-filter', 'info', 'Phase 1: ensuring all stores are checked');
 
   for (const store of ALL_STORES) {
-    // Find the row for this store — look for a label or div containing exactly this store name
     const storeRow = page.locator('label, li, div[role="option"]').filter({ hasText: new RegExp(`^${store}$`) }).first();
     const isVisible = await storeRow.isVisible({ timeout: 2000 }).catch(() => false);
     if (!isVisible) {
-      console.log(`  ⚠️ Store "${store}" not found in list`);
+      await dbLog('store-filter', 'warn', `Store "${store}" not visible in list`);
       continue;
     }
 
-    // Check current checked state via aria-checked or data-checked on the row or its checkbox
     const isChecked = await storeRow.evaluate(el => {
       const cb = el.querySelector('input[type="checkbox"]');
       if (cb) return cb.checked;
       return el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-checked') !== null;
     }).catch(() => null);
 
-    const shouldBeChecked = store === storeName;
-    console.log(`  ${store}: checked=${isChecked}, shouldBe=${shouldBeChecked}`);
+    await dbLog('store-filter', 'info', `Phase1 ${store}: isChecked=${isChecked}`);
 
-    if (isChecked !== shouldBeChecked) {
-      await storeRow.click({ force: true });
-      await page.waitForTimeout(300);
-      console.log(`  ↩️ Toggled ${store}`);
+    if (isChecked === false || isChecked === null) {
+      // Click to check it (null means we couldn't detect — click anyway to be safe)
+      await storeRow.click({ timeout: 5000 }).catch(async (e) => {
+        await dbLog('store-filter', 'warn', `Could not click ${store}: ${e.message}`);
+      });
+      await page.waitForTimeout(200);
     }
   }
 
-  // Step 5: Click Apply (now enabled because selection changed)
-  const applyBtn = page.locator('button').filter({ hasText: /^apply$/i }).last();
-  await applyBtn.waitFor({ state: 'visible', timeout: 5000 });
-  await applyBtn.click();
+  await page.waitForTimeout(500);
+  await dbShot(page, 'store-filter-3-all-checked', 'After Phase 1 — all stores should be checked');
+
+  // ── PHASE 2: Uncheck all EXCEPT target store ────────────────────────────────
+  console.log(`🔍 Phase 2: Deselecting all except "${storeName}"...`);
+  await dbLog('store-filter', 'info', `Phase 2: unchecking all except ${storeName}`);
+
+  for (const store of ALL_STORES) {
+    if (store === storeName) continue; // keep target checked
+
+    const storeRow = page.locator('label, li, div[role="option"]').filter({ hasText: new RegExp(`^${store}$`) }).first();
+    const isVisible = await storeRow.isVisible({ timeout: 2000 }).catch(() => false);
+    if (!isVisible) continue;
+
+    const isChecked = await storeRow.evaluate(el => {
+      const cb = el.querySelector('input[type="checkbox"]');
+      if (cb) return cb.checked;
+      return el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-checked') !== null;
+    }).catch(() => null);
+
+    await dbLog('store-filter', 'info', `Phase2 ${store}: isChecked=${isChecked} → will uncheck`);
+
+    if (isChecked !== false) {
+      await storeRow.click({ timeout: 5000 }).catch(async (e) => {
+        await dbLog('store-filter', 'warn', `Could not uncheck ${store}: ${e.message}`);
+      });
+      await page.waitForTimeout(200);
+    }
+  }
+
+  await page.waitForTimeout(500);
+  await dbShot(page, 'store-filter-4-target-only', `After Phase 2 — only ${storeName} should be checked`);
+
+  // ── Step 5: Click Apply ──────────────────────────────────────────────────────
+  // Look for an ENABLED Apply button (not the disabled global one)
+  await dbLog('store-filter', 'info', 'Looking for enabled Apply button...');
+
+  // Dump all Apply buttons and their state for debugging
+  const applyButtons = await page.locator('button').filter({ hasText: /^apply$/i }).all();
+  const applyStates = [];
+  for (const btn of applyButtons) {
+    const disabled = await btn.evaluate(el => el.disabled || el.getAttribute('aria-disabled') === 'true').catch(() => '?');
+    const visible  = await btn.isVisible().catch(() => false);
+    applyStates.push(`disabled=${disabled} visible=${visible}`);
+  }
+  await dbLog('store-filter', 'info', `Apply buttons found: ${applyButtons.length} → [${applyStates.join(' | ')}]`);
+  await dbShot(page, 'store-filter-5-before-apply', 'State before clicking Apply');
+
+  // Click the first ENABLED Apply button
+  const enabledApply = page.locator('button:not([disabled])').filter({ hasText: /^apply$/i }).first();
+  const isEnabled = await enabledApply.isVisible({ timeout: 5000 }).catch(() => false);
+
+  if (!isEnabled) {
+    // Fallback: maybe "Apply" is inside a popover — try any visible button with Apply text
+    await dbLog('store-filter', 'warn', 'No enabled Apply button found — trying force click on last Apply');
+    const anyApply = page.locator('button').filter({ hasText: /^apply$/i }).last();
+    await anyApply.click({ force: true, timeout: 10000 });
+  } else {
+    await enabledApply.click({ timeout: 10000 });
+  }
+
   await page.waitForTimeout(2500);
+  await dbShot(page, 'store-filter-6-applied', `After Apply — filter should show ${storeName}`);
+  await dbLog('store-filter', 'success', `Filter applied: ${storeName} ✅`);
   console.log(`✅ Filter applied: ${storeName}`);
 }
 
@@ -206,9 +304,10 @@ async function applyStoreFilter(page, storeName) {
 
 async function openProductEditor(page, productName) {
   console.log(`\n  📦 ${productName}`);
+  await dbLog('product-editor', 'info', `Opening editor for: ${productName}`);
 
-  // Screenshot + dump all text containing partial product name for debugging
-  await page.screenshot({ path: 'flieber-productpage.png', fullPage: false });
+  await dbShot(page, `product-${productName.replace(/ /g,'_')}-0-start`, 'Product list before search');
+
   const allText = await page.evaluate((name) => {
     const els = Array.from(document.querySelectorAll('*'));
     return els
@@ -216,9 +315,8 @@ async function openProductEditor(page, productName) {
       .map(el => `[${el.tagName}.${el.className.toString().substring(0,30)}] "${el.textContent.trim().substring(0,80)}"`)
       .slice(0, 20);
   }, productName);
-  console.log(`  🔍 Elements containing "${productName.substring(0,6)}":\n  ${allText.join('\n  ')}`);
+  await dbLog('product-editor', 'info', `DOM elements containing "${productName.substring(0,6)}": ${JSON.stringify(allText)}`);
 
-  // Find any clickable row/container containing the product name text
   const selectors = [
     `tr:has-text("${productName}")`,
     `[role="row"]:has-text("${productName}")`,
@@ -231,17 +329,18 @@ async function openProductEditor(page, productName) {
     const candidate = page.locator(sel).first();
     if (await candidate.isVisible({ timeout: 2000 }).catch(() => false)) {
       row = candidate;
+      await dbLog('product-editor', 'info', `Row found with selector: ${sel}`);
       console.log(`  ✅ Found with selector: ${sel}`);
       break;
     }
   }
 
   if (!row) {
+    await dbLog('product-editor', 'warn', `Product "${productName}" not found in list — skipping`);
     console.log(`  ⚠️  Not found in product list — skipping`);
     return false;
   }
 
-  // Hover to reveal the ⋮ menu button
   await row.hover();
   await page.waitForTimeout(300);
 
@@ -251,10 +350,11 @@ async function openProductEditor(page, productName) {
   await menuBtn.click();
   await page.waitForTimeout(300);
 
-  // Click "Edit forecast & past sales"
   await page.click(':text("Edit forecast"), :text("Edit forecast & past sales")');
   await page.waitForTimeout(1500);
 
+  await dbShot(page, `product-${productName.replace(/ /g,'_')}-1-editor-open`, 'Editor opened');
+  await dbLog('product-editor', 'success', `Editor opened for ${productName}`);
   return true;
 }
 
@@ -265,6 +365,7 @@ async function unstickIfNeeded(page) {
   if (!isStuck) return false;
 
   console.log('  ⚠️  Stuck state — switching to AI model...');
+  await dbLog('unstick', 'warn', 'Stuck state detected — switching to AI model');
 
   await page.click(':text("Model selection")');
   await page.waitForTimeout(500);
@@ -272,27 +373,24 @@ async function unstickIfNeeded(page) {
   await page.waitForTimeout(300);
   await page.click('button:has-text("Apply")');
 
-  // Wait for success or timeout
   await page.waitForSelector(':text("successfully")', { timeout: 10000 }).catch(() => {});
   await page.waitForTimeout(500);
 
-  // Close modal
   await page.click('button[aria-label="Close"], button[aria-label*="close" i], button:has-text("✕"), button:has-text("×")').catch(() => {});
   await page.waitForTimeout(800);
 
+  await dbLog('unstick', 'success', 'Unstuck — editor closed, will reopen');
   console.log('  ✅ Unstuck — editor closed, will reopen');
-  return true; // caller must reopen
+  return true;
 }
 
 // ── SWITCH TO MONTHLY VIEW ────────────────────────────────────────────────────
 
 async function switchToMonthly(page) {
-  // Try normal click first
   const btn = page.locator('button:has-text("Monthly")').first();
   try {
     await btn.click({ timeout: 2000 });
   } catch {
-    // Fallback: JS click (needed for some React event handlers)
     await page.evaluate(() => {
       document.querySelectorAll('button').forEach(b => {
         if (b.textContent?.trim() === 'Monthly') b.click();
@@ -305,49 +403,72 @@ async function switchToMonthly(page) {
 // ── ENSURE ABSOLUTE MODE ──────────────────────────────────────────────────────
 
 async function ensureAbsoluteMode(page) {
-  // Look for Percentage dropdown in Adjusted row and switch to Absolute if needed
   const dropdown = page.locator('select, [role="combobox"]').filter({ hasText: /percentage/i }).first();
   if (await dropdown.isVisible({ timeout: 1000 }).catch(() => false)) {
     await dropdown.selectOption({ label: 'Absolute' });
     await page.waitForTimeout(300);
     console.log('  ↔️  Switched to Absolute mode');
+    await dbLog('fill-months', 'info', 'Switched to Absolute mode');
   }
 }
 
 // ── FILL ALL 13 MONTHS ────────────────────────────────────────────────────────
 
-async function fillMonths(page, sku, monthlyValues) {
-  // Click "Forecast adjustments" tab
+async function fillMonths(page, productName, monthlyValues) {
+  await dbLog('fill-months', 'info', `fillMonths start for ${productName}`);
+
   await page.click(':text("Forecast adjustments")');
   await page.waitForTimeout(600);
 
   await switchToMonthly(page);
   await ensureAbsoluteMode(page);
 
-  // Find the "Adjusted forecast | Units" row's first data cell
-  // Strategy: locate the row by its label text, take the first td/cell after the label
+  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-0-before-dblclick`, 'Before finding Adjusted forecast row');
+
+  // Find the "Adjusted forecast | Units" row
   const adjRow = page.locator('tr, [role="row"]').filter({
     hasText: /adj.*forecast|forecast.*adj/i
   }).filter({
     hasText: /units/i
   }).first();
 
-  const firstCell = adjRow.locator('td, [role="cell"], [role="gridcell"]').nth(1);
-  // ⚠️ Handsontable: frozen-column overlay intercepts clicks → force: true bypasses it
-  await firstCell.dblclick({ force: true });
-  await page.waitForTimeout(400);
+  const rowVisible = await adjRow.isVisible({ timeout: 5000 }).catch(() => false);
+  await dbLog('fill-months', rowVisible ? 'info' : 'error', `Adjusted forecast row visible: ${rowVisible}`);
 
+  if (!rowVisible) {
+    await dbShot(page, `fill-${productName.replace(/ /g,'_')}-error-no-row`, 'Adjusted forecast row not found');
+    throw new Error('Adjusted forecast row not visible');
+  }
+
+  // Log row HTML for debugging
+  const rowHtml = await adjRow.evaluate(el => el.outerHTML.substring(0, 500)).catch(() => 'N/A');
+  await dbLog('fill-months', 'info', `Row HTML: ${rowHtml}`);
+
+  const firstCell = adjRow.locator('td, [role="cell"], [role="gridcell"]').nth(1);
+  const cellVisible = await firstCell.isVisible({ timeout: 3000 }).catch(() => false);
+  await dbLog('fill-months', cellVisible ? 'info' : 'warn', `First data cell visible: ${cellVisible}`);
+
+  // ⚠️ Handsontable frozen-column overlay intercepts clicks → force: true bypasses it
+  await dbLog('fill-months', 'info', 'Attempting dblclick with force:true...');
+  await firstCell.dblclick({ force: true });
+  await page.waitForTimeout(600);
+
+  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-1-after-dblclick`, 'After dblclick — cell should be in edit mode');
+
+  // Check if cell opened (input field appears)
+  const inputVisible = await page.locator('input[type="text"], textarea, .handsontableInput').first().isVisible({ timeout: 1000 }).catch(() => false);
+  await dbLog('fill-months', inputVisible ? 'success' : 'warn', `Cell edit input visible after dblclick: ${inputVisible}. If false, cell did not open.`);
+
+  // Fill all 13 months
   for (let i = 0; i < MONTHS.length; i++) {
     const mo  = MONTHS[i];
     const val = monthlyValues[mo] ?? 0;
 
-    // Select all existing content (prevents append bug ⚠️)
     await page.keyboard.press('Home');
     await page.keyboard.press('Shift+End');
     await page.keyboard.type(String(val));
 
     // ⚠️ Tab TWICE: 1st → Sales (USD) row, 2nd → next month Units
-    // Exception: last month — don't Tab (would wrap back to Apr 2026!)
     if (i < MONTHS.length - 1) {
       await page.keyboard.press('Tab'); // → Sales USD same month
       await page.keyboard.press('Tab'); // → Units next month
@@ -355,26 +476,27 @@ async function fillMonths(page, sku, monthlyValues) {
     }
   }
 
-  // Confirm last cell without tabbing
   await page.keyboard.press('Enter');
   await page.waitForTimeout(300);
 
-  // ── Verify Oct/Nov/Dec (truncation gotcha) ─────────────────────────────────
-  await verifyLateMo(page, sku, monthlyValues);
+  await verifyLateMo(page, productName, monthlyValues);
 
-  // Apply
-  await page.click('button:has-text("Apply")');
+  // Apply — click the ENABLED Apply button inside the editor
+  const enabledApply = page.locator('button:not([disabled])').filter({ hasText: /^apply$/i }).first();
+  await enabledApply.click({ timeout: 10000 });
+
   await page.waitForSelector(':text("Forecast edited successfully"), :text("successfully")', { timeout: 10000 })
-    .catch(() => console.log('  ⚠️  No success toast seen — continuing anyway'));
+    .catch(() => dbLog('fill-months', 'warn', 'No success toast seen — continuing anyway'));
   await page.waitForTimeout(1000);
 
+  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-2-done`, 'After Apply — should show success toast');
+  await dbLog('fill-months', 'success', `fillMonths complete for ${productName} (${MONTHS.length} months)`);
   console.log(`  ✅ Applied (${MONTHS.length} months)`);
 }
 
 // ── VERIFY OCT/NOV/DEC (truncation protection) ────────────────────────────────
 
-async function verifyLateMo(page, sku, monthlyValues) {
-  // Scroll right to see Oct-Dec columns
+async function verifyLateMo(page, productName, monthlyValues) {
   const tableArea = page.locator('.ReactVirtualized__Grid, [class*="grid"], [class*="table"]').first();
   if (await tableArea.isVisible({ timeout: 1000 }).catch(() => false)) {
     await tableArea.evaluate(el => { el.scrollLeft = el.scrollWidth; });
@@ -385,7 +507,6 @@ async function verifyLateMo(page, sku, monthlyValues) {
     const expected = monthlyValues[mo] ?? 0;
     if (expected === 0) continue;
 
-    // Find a visible cell showing the expected value — if missing, warn
     const label = mo === '2026-10' ? 'Oct' : mo === '2026-11' ? 'Nov' : 'Dec';
     const cell  = page.locator(`th:has-text("${label} 2026"), td:has-text("${label} 2026")`).first();
     const isVis = await cell.isVisible({ timeout: 1000 }).catch(() => false);
@@ -400,7 +521,6 @@ async function verifyLateMo(page, sku, monthlyValues) {
 async function closeModal(page) {
   await page.keyboard.press('Escape');
   await page.waitForTimeout(500);
-  // Fallback
   const closeBtn = page.locator('button[aria-label="Close"], button[aria-label*="close" i]').first();
   if (await closeBtn.isVisible({ timeout: 500 }).catch(() => false)) await closeBtn.click();
   await page.waitForTimeout(500);
@@ -409,13 +529,14 @@ async function closeModal(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater\n');
+  console.log('🚀 Flieber Forecast Updater v5\n');
+  await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const allData = await loadForecastData();
 
   const browser = await chromium.launch({
-    headless: false,          // watch it run — set true for unattended
-    slowMo: 50,               // slight slow-down for stability
+    headless: false,
+    slowMo: 50,
   });
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
@@ -427,7 +548,6 @@ async function main() {
   try {
     await login(page);
 
-    // TEST_MODE: limit to Bol only
     const storesToRun = TEST_MODE
       ? STORES.filter(s => s.channelId === 33)
       : STORES;
@@ -436,12 +556,12 @@ async function main() {
       const products = allData[store.channelId];
       if (!products || Object.keys(products).length === 0) {
         console.log(`⏭️  No data for ${store.name} — skipping`);
+        await dbLog('main', 'warn', `No data for ${store.name}`);
         continue;
       }
 
       await applyStoreFilter(page, store.name);
 
-      // TEST_MODE: limit to 1 product
       const productCodes = TEST_MODE
         ? Object.keys(products).slice(0, 1)
         : Object.keys(products);
@@ -454,7 +574,6 @@ async function main() {
           let opened = await openProductEditor(page, name);
           if (!opened) { stats.skipped++; continue; }
 
-          // Handle stuck state — may need to reopen
           const wasStuck = await unstickIfNeeded(page);
           if (wasStuck) {
             opened = await openProductEditor(page, name);
@@ -463,17 +582,17 @@ async function main() {
 
           await fillMonths(page, name, months);
           stats.done++;
+          await dbLog('main', 'success', `${store.name} / ${name} — DONE`);
 
         } catch (err) {
           console.error(`  ❌ ${name}: ${err.message}`);
+          await dbLog('main', 'error', `${store.name} / ${name}: ${err.message}`);
           stats.errors.push({ store: store.name, code, name, error: err.message });
 
-          // Take screenshot for debugging
           const fname = `error-${store.name.replace(/ /g,'_')}-${name.replace(/ /g,'_')}.png`;
           await page.screenshot({ path: fname }).catch(() => {});
           console.log(`  📸 Screenshot saved: ${fname}`);
 
-          // Try to close modal and continue
           await closeModal(page);
         }
       }
@@ -486,16 +605,22 @@ async function main() {
   }
 
   // ── Summary ──────────────────────────────────────────────────────────────────
+  const summary = `Done: ${stats.done} updated, ${stats.skipped} skipped, ${stats.errors.length} errors`;
+  await dbLog('main', stats.errors.length === 0 ? 'success' : 'warn', summary);
+
   console.log('\n══════════════════════════════════');
   console.log(`🎉 Done! ${stats.done} products updated, ${stats.skipped} skipped`);
   if (stats.errors.length > 0) {
     console.log(`⚠️  ${stats.errors.length} errors:`);
-    stats.errors.forEach(e => console.log(`   ${e.store} / ${e.sku}: ${e.error}`));
+    stats.errors.forEach(e => console.log(`   ${e.store} / ${e.name}: ${e.error}`));
   }
+  console.log(`\n🔍 Run ID: ${RUN_ID}`);
+  console.log(`   → Supabase: SELECT step, status, message FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}' ORDER BY created_at`);
   console.log('══════════════════════════════════');
 }
 
-main().catch(err => {
+main().catch(async err => {
   console.error('Fatal error:', err);
+  await dbLog('main', 'error', `Fatal: ${err.message}`).catch(() => {});
   process.exit(1);
 });
