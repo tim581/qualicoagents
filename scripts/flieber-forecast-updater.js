@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v6 — fix: nth(2) for April start cell, tab-per-cell debug, Apply fix
+ * flieber-forecast-updater.js  v8 — ht_master direct cell targeting (bypasses frozen clone), dynamic months, Delete-before-type, Save button
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -44,11 +44,13 @@ const TEST_MODE = true;
 // Products to SKIP entirely
 const SKIP_SKUS = ['TRAY WHITE'];
 
-// Months to fill: Apr 2026 → Apr 2027 (13 months)
-const MONTHS = [
-  '2026-04','2026-05','2026-06','2026-07','2026-08','2026-09',
-  '2026-10','2026-11','2026-12','2027-01','2027-02','2027-03','2027-04',
-];
+// Dynamic months: current month → 12 months ahead (13 total, rolls forward automatically)
+const _now = new Date();
+const MONTHS = Array.from({ length: 13 }, (_, i) => {
+  const d = new Date(_now.getFullYear(), _now.getMonth() + i, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+});
+console.log(`📅 Month range: ${MONTHS[0]} → ${MONTHS[12]}`);
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
@@ -103,8 +105,8 @@ async function loadForecastData() {
   const { data: forecasts, error: e1 } = await supabase
     .from('Puzzlup_sales_Forecast')
     .select('product_id, channel_id, forecast_month, units_forecast')
-    .gte('forecast_month', '2026-04-01')
-    .lte('forecast_month', '2027-04-30')
+    .gte('forecast_month', `${MONTHS[0]}-01`)
+    .lte('forecast_month', `${MONTHS[MONTHS.length - 1]}-28`)
     .order('channel_id').order('product_id').order('forecast_month');
 
   if (e1) throw new Error('Supabase forecast fetch: ' + e1.message);
@@ -444,115 +446,95 @@ async function fillMonths(page, productName, monthlyValues) {
   const rowHtml = await adjRow.evaluate(el => el.outerHTML.substring(0, 500)).catch(() => 'N/A');
   await dbLog('fill-months', 'info', `Row HTML: ${rowHtml}`);
 
-  // ── IDENTIFY ALL CELLS IN ROW ─────────────────────────────────────────────
-  // Col 0 = row label (readonly), Col 1 = "Absolute" type dropdown, Col 2+ = months
-  const allCells = adjRow.locator('td, [role="cell"], [role="gridcell"]');
-  const cellCount = await allCells.count().catch(() => 0);
-  await dbLog('fill-months', 'info', `Row has ${cellCount} cells total. Col 0=label, Col 1=type(Absolute), Col 2=April(start)`);
+  // ── GET ROW INDEX FOR PRECISE TARGETING ───────────────────────────────────
+  const rowIdx = await adjRow.evaluate(el => el.getAttribute('aria-rowindex')).catch(() => null);
+  await dbLog('fill-months', 'info', `Adjusted forecast row aria-rowindex: ${rowIdx}`);
 
-  // Log first 4 cells to confirm structure
-  for (let ci = 0; ci < Math.min(4, cellCount); ci++) {
-    const cText = await allCells.nth(ci).innerText().catch(() => '?');
-    const cIdx  = await allCells.nth(ci).getAttribute('aria-colindex').catch(() => '?');
-    await dbLog('fill-months', 'info', `  cell[${ci}] aria-colindex=${cIdx} text="${cText.substring(0,30)}"`);
-  }
+  // ── v8 ROOT CAUSE FIX ─────────────────────────────────────────────────────
+  // PROBLEM (v7): After Tab, frozen clone (ht_clone_inline_start) intercepts keyboard events.
+  //   Every typed value landed in col 3 (April) regardless of Tab navigation.
+  // FIX: Click each month cell DIRECTLY in .ht_master (the non-frozen scrollable grid)
+  //   using aria-colindex. No Tab navigation for moving between cells.
+  //
+  //   aria-colindex: 1=label(frozen), 2=Absolute-type(frozen), 3=Month[0], 4=Month[1], ...
 
-  // ✅ FIX: nth(2) = first MONTH column (April), NOT the "Absolute" type dropdown at nth(1)
-  const firstCell = adjRow.locator('td, [role="cell"], [role="gridcell"]').nth(2);
-  const cellVisible = await firstCell.isVisible({ timeout: 3000 }).catch(() => false);
-  const aprilText  = await firstCell.innerText().catch(() => '?');
-  await dbLog('fill-months', cellVisible ? 'info' : 'warn', `April cell visible: ${cellVisible}, current value: "${aprilText}"`);
+  await dbLog('fill-months', 'info', `v8 fill: clicking each cell by aria-colindex in .ht_master. rowIdx=${rowIdx}`);
 
-  // ⚠️ Handsontable frozen-column overlay intercepts clicks → force: true bypasses it
-  await dbLog('fill-months', 'info', 'Attempting dblclick on April cell (nth(2)) with force:true...');
-  await firstCell.dblclick({ force: true });
-  await page.waitForTimeout(600);
-
-  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-1-after-dblclick`, 'After dblclick on April — should be in edit mode');
-
-  // Check if cell opened (input field appears)
-  const inputVisible = await page.locator('input[type="text"], textarea, .handsontableInput').first().isVisible({ timeout: 1000 }).catch(() => false);
-  await dbLog('fill-months', inputVisible ? 'success' : 'warn', `Cell edit input visible after dblclick: ${inputVisible}`);
-
-  // Log which cell is now active (to confirm we're at April)
-  const activeColIdx = await page.evaluate(() => {
-    const active = document.querySelector('td.current, td[class*="current"], .handsontableInput');
-    return active ? active.getAttribute('aria-colindex') || active.closest('td')?.getAttribute('aria-colindex') || 'unknown' : 'none';
-  }).catch(() => 'eval-error');
-  await dbLog('fill-months', 'info', `Active cell aria-colindex after dblclick: ${activeColIdx} (should be col 3 = April)`);
-
-  // Fill all 13 months — TAB ONCE per month (we are in the Units row, Tab moves right)
   for (let i = 0; i < MONTHS.length; i++) {
-    const mo  = MONTHS[i];
-    const val = monthlyValues[mo] ?? 0;
+    const mo       = MONTHS[i];
+    const val      = monthlyValues[mo] ?? 0;
+    const colIndex = i + 3; // col 3 = first month (April/current), col 4 = next month, etc.
 
-    await page.keyboard.press('Home');
-    await page.keyboard.press('Shift+End');
+    // Target the cell directly in .ht_master — avoids frozen clone entirely
+    const cellSel = rowIdx
+      ? `.ht_master tr[aria-rowindex="${rowIdx}"] td[aria-colindex="${colIndex}"]`
+      : `.ht_master td[aria-colindex="${colIndex}"]`;
+
+    const cell = page.locator(cellSel).first();
+
+    // Scroll cell into view if needed (later months may be outside viewport)
+    const isVis = await cell.isVisible({ timeout: 2000 }).catch(() => false);
+    if (!isVis) {
+      await page.locator('.ht_master').first().evaluate(el => { el.scrollLeft += 300; });
+      await page.waitForTimeout(200);
+    }
+
+    // Read current value before editing
+    const curVal = await cell.innerText().catch(() => '?');
+
+    // Double-click to enter EDIT mode (no force: true needed — we're outside the frozen clone)
+    await cell.dblclick({ timeout: 5000 });
+    await page.waitForTimeout(250);
+
+    // Clear existing value, then type the new one
+    await page.keyboard.press('Control+a');
+    await page.keyboard.press('Delete');
     await page.keyboard.type(String(val));
 
-    // Debug: log active cell for first 3 months
-    if (i < 3) {
-      const curIdx = await page.evaluate(() => {
-        const el = document.querySelector('.handsontableInput, td.current');
-        return el ? (el.getAttribute('aria-colindex') || el.closest('td')?.getAttribute('aria-colindex') || '?') : '?';
-      }).catch(() => '?');
-      await dbLog('fill-months', 'info', `Month[${i}] ${mo} = ${val}, active col: ${curIdx}`);
-    }
-
-    if (i < MONTHS.length - 1) {
-      // TAB ONCE to next month (staying in Adjusted forecast | Units row)
-      await page.keyboard.press('Tab');
-      await page.waitForTimeout(80);
-
-      // After first Tab, check if we jumped to wrong row — log active col
-      if (i < 3) {
-        const afterIdx = await page.evaluate(() => {
-          const el = document.querySelector('.handsontableInput, td.current');
-          return el ? (el.getAttribute('aria-colindex') || el.closest('td')?.getAttribute('aria-colindex') || '?') : '?';
-        }).catch(() => '?');
-        await dbLog('fill-months', 'info', `  After Tab: active col = ${afterIdx}`);
-      }
-    }
-  }
-
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(500);
-
-  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-2-after-enter`, 'After Enter — looking for Apply/Save button');
-
-  await verifyLateMo(page, productName, monthlyValues);
-
-  // ── APPLY / SAVE ──────────────────────────────────────────────────────────
-  // After month entry, Flieber shows an Apply button in the forecast editor panel
-  // Log all visible buttons first to find the right selector
-  const allButtonTexts = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('button:not([disabled])'))
-      .map(b => b.textContent?.trim().substring(0, 40))
-      .filter(t => t && t.length > 0)
-      .slice(0, 20)
-  ).catch(() => []);
-  await dbLog('fill-months', 'info', `Visible enabled buttons: ${JSON.stringify(allButtonTexts)}`);
-
-  // Try Apply button with broader selector (not anchored to ^ and $)
-  const applyBtn = page.locator('button:not([disabled])').filter({ hasText: /apply/i }).first();
-  const applyExists = await applyBtn.isVisible({ timeout: 3000 }).catch(() => false);
-  await dbLog('fill-months', applyExists ? 'info' : 'warn', `Apply button found: ${applyExists}`);
-
-  if (applyExists) {
-    await applyBtn.click({ timeout: 10000 });
-  } else {
-    // Fallback: Enter key to confirm
-    await dbLog('fill-months', 'warn', 'No Apply button — pressing Enter as fallback');
+    // Commit with Enter (stays in same cell, no navigation side-effects)
     await page.keyboard.press('Enter');
+    await page.waitForTimeout(100);
+
+    if (i < 4 || i === MONTHS.length - 1) {
+      await dbLog('fill-months', 'info', `Month[${i}] ${mo} col=${colIndex}: "${curVal}" → ${val}`);
+    }
   }
 
-  await page.waitForSelector(':text("Forecast edited successfully"), :text("successfully")', { timeout: 10000 })
-    .catch(() => dbLog('fill-months', 'warn', 'No success toast seen — continuing anyway'));
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
+  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-2-after-fill`, 'After filling all 13 months');
 
-  await dbShot(page, `fill-${productName.replace(/ /g,'_')}-2-done`, 'After Apply — should show success toast');
+  // ── FIND AND CLICK SAVE BUTTON ────────────────────────────────────────────
+  const allBtns = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('button:not([aria-hidden="true"])'))
+      .filter(b => b.offsetParent !== null && !b.disabled)
+      .map(b => `"${(b.textContent || b.getAttribute('aria-label') || '').trim().substring(0, 40)}"`)
+      .filter(s => s.length > 2)
+      .slice(0, 25)
+  ).catch(() => []);
+  await dbLog('fill-months', 'info', `Visible enabled buttons after fill: ${JSON.stringify(allBtns)}`);
+
+  const saveBtn = page.locator('button').filter({ hasText: /^save$/i }).filter({ visible: true }).first();
+  const saveVis = await saveBtn.isVisible({ timeout: 3000 }).catch(() => false);
+
+  if (saveVis) {
+    await saveBtn.click({ timeout: 5000 });
+    await dbLog('fill-months', 'success', 'Clicked Save button ✅');
+    await page.waitForTimeout(1000);
+    await dbShot(page, `fill-${productName.replace(/ /g,'_')}-3-after-save`, 'After clicking Save');
+    await page.waitForSelector(':text("successfully"), :text("saved"), :text("updated")', { timeout: 10000 })
+      .catch(() => dbLog('fill-months', 'warn', 'No success toast after Save — continuing'));
+  } else {
+    await dbLog('fill-months', 'warn', `No Save button found. Will check for Apply. Buttons: ${JSON.stringify(allBtns)}`);
+    const applyBtn = page.locator('button:not([disabled])').filter({ hasText: /^apply$/i }).filter({ visible: true }).first();
+    if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await applyBtn.click();
+      await dbLog('fill-months', 'info', 'Clicked Apply as fallback ✅');
+      await page.waitForTimeout(1000);
+    }
+  }
+
   await dbLog('fill-months', 'success', `fillMonths complete for ${productName} (${MONTHS.length} months)`);
-  console.log(`  ✅ Applied (${MONTHS.length} months)`);
+  console.log(`  ✅ ${MONTHS.length} months filled`);
 }
 
 // ── VERIFY OCT/NOV/DEC (truncation protection) ────────────────────────────────
@@ -590,7 +572,7 @@ async function closeModal(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v5\n');
+  console.log('🚀 Flieber Forecast Updater v8\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const allData = await loadForecastData();
