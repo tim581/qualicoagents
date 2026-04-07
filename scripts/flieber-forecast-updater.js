@@ -114,7 +114,8 @@ async function login(page) {
   await page.waitForTimeout(500);
   await page.fill('input[type="password"]', FLIEBER_PASSWORD);
   await page.waitForTimeout(500);
-  await page.click('button[type="submit"], button:has-text("Sign in"), button:has-text("Log in"), button:has-text("Continue")');
+  // Click the visible Continue/Submit button (skip hidden duplicates)
+  await page.locator('button:has-text("Continue"), button[type="submit"]').filter({ visible: true }).first().click({ timeout: 30000 });
 
   await page.waitForURL('**app.flieber.com/app/**', { timeout: 60000 });
   console.log('✅ Logged in');
