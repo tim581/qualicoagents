@@ -38,7 +38,9 @@ const STORES = [
 
 // ── TEST MODE ─────────────────────────────────────────────────────────────────
 // Set to true to run ONLY Bol × 1 product — safe for first-time testing
-const TEST_MODE = true;
+const TEST_MODE = false;
+// Set to a channelId to run only that store (all products), or null for all stores
+const ONLY_STORE = 33; // 33 = Bol
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Products to SKIP entirely
@@ -592,8 +594,8 @@ async function main() {
   try {
     await login(page);
 
-    const storesToRun = TEST_MODE
-      ? STORES.filter(s => s.channelId === 33)
+    const storesToRun = ONLY_STORE
+      ? STORES.filter(s => s.channelId === ONLY_STORE)
       : STORES;
 
     for (const store of storesToRun) {
