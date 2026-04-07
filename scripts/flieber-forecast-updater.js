@@ -138,30 +138,25 @@ async function applyStoreFilter(page, storeName) {
   const allButtons = await page.locator('button, div[role="button"], [role="combobox"]').allTextContents();
   console.log('🔍 Clickable elements:', JSON.stringify(allButtons.filter(t => t.trim()).slice(0, 30)));
 
-  // Click the filter bar (contains "regions", "channels" or "stores")
-  const filterBar = page.locator('button, div[role="button"]').filter({
-    hasText: /regions|channels|stores/i
-  }).first();
-  await filterBar.click();
-  await page.waitForTimeout(600);
+  // Click "More filters" to open the filter panel
+  const moreFiltersBtn = page.locator('button, div[role="button"]').filter({ hasText: /more filters/i }).first();
+  await moreFiltersBtn.click({ timeout: 15000 });
+  await page.waitForTimeout(1000);
 
-  // Click "Stores" tab
-  await page.click(':text("Stores")');
-  await page.waitForTimeout(400);
+  // DEBUG: screenshot of filter panel
+  await page.screenshot({ path: 'flieber-debug-filters.png', fullPage: false });
+  console.log('📸 Filter panel screenshot → flieber-debug-filters.png');
+  const filterPanelElements = await page.locator('button, div[role="button"], label, input').allTextContents();
+  console.log('🔍 Filter panel elements:', JSON.stringify(filterPanelElements.filter(t => t.trim()).slice(0, 40)));
 
-  // Clear all current selections
-  const unselectBtn = page.locator('button').filter({ hasText: /unselect all|deselect all/i }).first();
-  if (await unselectBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await unselectBtn.click();
-    await page.waitForTimeout(300);
-  }
-
-  // ⚠️ Search stacking bug: triple-click search field before typing
-  const searchField = page.locator('input[placeholder*="search" i], input[type="search"]').first();
-  if (await searchField.isVisible({ timeout: 1000 }).catch(() => false)) {
-    await searchField.click({ clickCount: 3 });
-    await searchField.fill(storeName);
+  // Look for store/channel options and click the right one
+  const storeOption = page.locator('label, div[role="option"], li, div').filter({ hasText: storeName }).first();
+  if (await storeOption.isVisible({ timeout: 5000 }).catch(() => false)) {
+    await storeOption.click();
     await page.waitForTimeout(500);
+    console.log(`✅ Store filter set to: ${storeName}`);
+  } else {
+    console.log(`⚠️ Could not find store option: ${storeName} — check flieber-debug-filters.png`);
   }
 
   // Select the store
