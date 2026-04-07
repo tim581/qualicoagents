@@ -333,7 +333,8 @@ async function fillMonths(page, sku, monthlyValues) {
   }).first();
 
   const firstCell = adjRow.locator('td, [role="cell"], [role="gridcell"]').nth(1);
-  await firstCell.dblclick();
+  // ⚠️ Handsontable: frozen-column overlay intercepts clicks → force: true bypasses it
+  await firstCell.dblclick({ force: true });
   await page.waitForTimeout(400);
 
   for (let i = 0; i < MONTHS.length; i++) {
@@ -468,7 +469,7 @@ async function main() {
           stats.errors.push({ store: store.name, code, name, error: err.message });
 
           // Take screenshot for debugging
-          const fname = `error-${store.name.replace(/ /g,'_')}-${sku.replace(/ /g,'_')}.png`;
+          const fname = `error-${store.name.replace(/ /g,'_')}-${name.replace(/ /g,'_')}.png`;
           await page.screenshot({ path: fname }).catch(() => {});
           console.log(`  📸 Screenshot saved: ${fname}`);
 
