@@ -138,35 +138,40 @@ async function applyStoreFilter(page, storeName) {
   const allButtons = await page.locator('button, div[role="button"], [role="combobox"]').allTextContents();
   console.log('🔍 Clickable elements:', JSON.stringify(allButtons.filter(t => t.trim()).slice(0, 30)));
 
-  // Click "All regions, channels and stores" button (top of page, next to company name)
-  const channelFilterBtn = page.locator('a, div, span, button').filter({ hasText: /all regions, channels and stores/i }).first();
-  await channelFilterBtn.click({ timeout: 15000 });
+  // Step 1: Click the filter button (text varies based on current state)
+  // Matches "All regions, channels and stores" OR "All regions; all channels; Store: Bol" etc.
+  console.log('🔍 Opening filter dropdown...');
+  const channelFilterBtn = page.getByText(/regions.*channels|all regions/i).first();
+  await channelFilterBtn.click({ timeout: 15000, force: true });
   await page.waitForTimeout(1000);
 
-  // DEBUG: screenshot of store dropdown
-  await page.screenshot({ path: 'flieber-debug-filters.png', fullPage: false });
-  console.log('📸 Store dropdown screenshot → flieber-debug-filters.png');
-  const dropdownElements = await page.locator('button, div[role="button"], label, li, div[role="option"]').allTextContents();
-  console.log('🔍 Dropdown elements:', JSON.stringify(dropdownElements.filter(t => t.trim()).slice(0, 40)));
+  // Step 2: Click "Stores >" submenu
+  console.log('🔍 Clicking Stores submenu...');
+  const storesMenu = page.getByText(/^stores$/i).first();
+  await storesMenu.click({ timeout: 10000 });
+  await page.waitForTimeout(800);
 
-  // Uncheck "All" first if it's selected, then select only our store
-  const allOption = page.locator('label, li, div').filter({ hasText: /^all$/i }).first();
-  if (await allOption.isVisible({ timeout: 2000 }).catch(() => false)) {
-    await allOption.click();
-    await page.waitForTimeout(300);
+  // Step 3: Click "Unselect all" to deselect everything first
+  console.log('🔍 Unselecting all stores...');
+  const unselectAll = page.getByText(/unselect all/i).first();
+  if (await unselectAll.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await unselectAll.click();
+    await page.waitForTimeout(500);
+    console.log('✅ Unselected all');
   }
 
-  // Click the store option
-  const storeOption = page.locator('label, li, div[role="option"], div').filter({ hasText: new RegExp(storeName, 'i') }).first();
+  // Step 4: Click the target store checkbox
+  console.log(`🔍 Selecting store: ${storeName}...`);
+  const storeOption = page.getByText(new RegExp(`^${storeName}$`, 'i')).first();
   await storeOption.click({ timeout: 10000 });
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(500);
   console.log(`✅ Store selected: ${storeName}`);
-  await page.waitForTimeout(300);
 
-  // Apply
-  await page.click('button:has-text("Apply")');
+  // Step 5: Click Apply (now enabled because selection changed)
+  const applyBtn = page.locator('button').filter({ hasText: /^apply$/i }).last();
+  await applyBtn.waitFor({ state: 'visible', timeout: 5000 });
+  await applyBtn.click();
   await page.waitForTimeout(2500);
-
   console.log(`✅ Filter applied: ${storeName}`);
 }
 
