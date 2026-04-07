@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.3 — scroll-to-view product fix, precise p.chakra-text targeting
+ * flieber-forecast-updater.js  v8.5 — close modal after EVERY product + waitForProductList recovery
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -662,10 +662,41 @@ async function closeModal(page) {
   await page.waitForTimeout(300);
 }
 
+// ── WAIT FOR PRODUCT LIST (v8.5) ─────────────────────────────────────────────
+// After closing modal, wait until the product list is fully visible again.
+// This prevents the race condition where the next product search runs before
+// the page has re-rendered the product list.
+
+async function waitForProductList(page) {
+  await page.waitForTimeout(1000); // let page settle after modal close
+
+  // Wait for at least one p.chakra-text with product-like content to appear
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const productCount = await page.evaluate(() => {
+      const els = Array.from(document.querySelectorAll('p.chakra-text'));
+      // Filter to only product-name-like elements (>3 chars, not generic UI text)
+      return els.filter(el => {
+        const t = el.textContent.trim();
+        return t.length > 3 && !['Sales forecast', 'Actual sales', 'Filters', 'Stores', 'Apply'].includes(t);
+      }).length;
+    }).catch(() => 0);
+
+    if (productCount > 0) {
+      await dbLog('product-list', 'info', `Product list visible (${productCount} items found)`);
+      return;
+    }
+
+    await dbLog('product-list', 'warn', `Attempt ${attempt + 1}: product list not yet visible — waiting...`);
+    await page.waitForTimeout(1000);
+  }
+
+  await dbLog('product-list', 'warn', 'Product list not fully loaded after 5s — proceeding anyway');
+}
+
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.4\n');
+  console.log('🚀 Flieber Forecast Updater v8.5\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const allData = await loadForecastData();
@@ -720,6 +751,10 @@ async function main() {
           stats.done++;
           await dbLog('main', 'success', `${store.name} / ${name} — DONE`);
 
+          // v8.5: ALWAYS close modal after success and wait for product list to reload
+          await closeModal(page);
+          await waitForProductList(page);
+
         } catch (err) {
           console.error(`  ❌ ${name}: ${err.message}`);
           await dbLog('main', 'error', `${store.name} / ${name}: ${err.message}`);
@@ -730,6 +765,7 @@ async function main() {
           console.log(`  📸 Screenshot saved: ${fname}`);
 
           await closeModal(page);
+          await waitForProductList(page);
         }
       }
 
