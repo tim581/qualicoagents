@@ -207,22 +207,37 @@ async function applyStoreFilter(page, storeName) {
 async function openProductEditor(page, productName) {
   console.log(`\n  📦 ${productName}`);
 
-  // Use the search bar to filter to this product
-  const searchBar = page.locator('input[placeholder*="Search" i], input[placeholder*="search" i]').first();
-  if (await searchBar.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await searchBar.click();
-    await searchBar.fill('');
-    await searchBar.type(productName, { delay: 40 });
-    await page.waitForTimeout(1200); // wait for filtered results
-  } else {
-    console.log('  ⚠️  Search bar not found — searching in full list');
+  // Screenshot + dump all text containing partial product name for debugging
+  await page.screenshot({ path: 'flieber-productpage.png', fullPage: false });
+  const allText = await page.evaluate((name) => {
+    const els = Array.from(document.querySelectorAll('*'));
+    return els
+      .filter(el => el.children.length === 0 && el.textContent.includes(name.substring(0, 6)))
+      .map(el => `[${el.tagName}.${el.className.toString().substring(0,30)}] "${el.textContent.trim().substring(0,80)}"`)
+      .slice(0, 20);
+  }, productName);
+  console.log(`  🔍 Elements containing "${productName.substring(0,6)}":\n  ${allText.join('\n  ')}`);
+
+  // Find any clickable row/container containing the product name text
+  const selectors = [
+    `tr:has-text("${productName}")`,
+    `[role="row"]:has-text("${productName}")`,
+    `div:has-text("${productName}")`,
+    `:text("${productName}")`,
+  ];
+
+  let row = null;
+  for (const sel of selectors) {
+    const candidate = page.locator(sel).first();
+    if (await candidate.isVisible({ timeout: 2000 }).catch(() => false)) {
+      row = candidate;
+      console.log(`  ✅ Found with selector: ${sel}`);
+      break;
+    }
   }
 
-  // Find row containing the product name
-  const row = page.locator('tr, [role="row"]').filter({ hasText: productName }).first();
-  if (!(await row.isVisible({ timeout: 5000 }).catch(() => false))) {
+  if (!row) {
     console.log(`  ⚠️  Not found in product list — skipping`);
-    await searchBar.fill('').catch(() => {});
     return false;
   }
 
