@@ -138,29 +138,29 @@ async function applyStoreFilter(page, storeName) {
   const allButtons = await page.locator('button, div[role="button"], [role="combobox"]').allTextContents();
   console.log('🔍 Clickable elements:', JSON.stringify(allButtons.filter(t => t.trim()).slice(0, 30)));
 
-  // Click "More filters" to open the filter panel
-  const moreFiltersBtn = page.locator('button, div[role="button"]').filter({ hasText: /more filters/i }).first();
-  await moreFiltersBtn.click({ timeout: 15000 });
+  // Click "All regions, channels and stores" button (top of page, next to company name)
+  const channelFilterBtn = page.locator('a, div, span, button').filter({ hasText: /all regions, channels and stores/i }).first();
+  await channelFilterBtn.click({ timeout: 15000 });
   await page.waitForTimeout(1000);
 
-  // DEBUG: screenshot of filter panel
+  // DEBUG: screenshot of store dropdown
   await page.screenshot({ path: 'flieber-debug-filters.png', fullPage: false });
-  console.log('📸 Filter panel screenshot → flieber-debug-filters.png');
-  const filterPanelElements = await page.locator('button, div[role="button"], label, input').allTextContents();
-  console.log('🔍 Filter panel elements:', JSON.stringify(filterPanelElements.filter(t => t.trim()).slice(0, 40)));
+  console.log('📸 Store dropdown screenshot → flieber-debug-filters.png');
+  const dropdownElements = await page.locator('button, div[role="button"], label, li, div[role="option"]').allTextContents();
+  console.log('🔍 Dropdown elements:', JSON.stringify(dropdownElements.filter(t => t.trim()).slice(0, 40)));
 
-  // Look for store/channel options and click the right one
-  const storeOption = page.locator('label, div[role="option"], li, div').filter({ hasText: storeName }).first();
-  if (await storeOption.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await storeOption.click();
-    await page.waitForTimeout(500);
-    console.log(`✅ Store filter set to: ${storeName}`);
-  } else {
-    console.log(`⚠️ Could not find store option: ${storeName} — check flieber-debug-filters.png`);
+  // Uncheck "All" first if it's selected, then select only our store
+  const allOption = page.locator('label, li, div').filter({ hasText: /^all$/i }).first();
+  if (await allOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+    await allOption.click();
+    await page.waitForTimeout(300);
   }
 
-  // Select the store
-  await page.click(`label:has-text("${storeName}"), [role="checkbox"]:near(:text("${storeName}"))`);
+  // Click the store option
+  const storeOption = page.locator('label, li, div[role="option"], div').filter({ hasText: new RegExp(storeName, 'i') }).first();
+  await storeOption.click({ timeout: 10000 });
+  await page.waitForTimeout(300);
+  console.log(`✅ Store selected: ${storeName}`);
   await page.waitForTimeout(300);
 
   // Apply
