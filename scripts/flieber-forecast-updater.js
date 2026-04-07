@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8 — ht_master direct cell targeting (bypasses frozen clone), dynamic months, Delete-before-type, Save button
+ * flieber-forecast-updater.js  v8.1 — Apply button fix (not Save), ht_master direct cell targeting
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -503,7 +503,12 @@ async function fillMonths(page, productName, monthlyValues) {
   await page.waitForTimeout(500);
   await dbShot(page, `fill-${productName.replace(/ /g,'_')}-2-after-fill`, 'After filling all 13 months');
 
-  // ── FIND AND CLICK SAVE BUTTON ────────────────────────────────────────────
+  // ── CLICK APPLY BUTTON (blue button top-right of edit forecast modal) ──────
+  // The forecast edit modal uses "Apply" (not "Save") to commit changes.
+  // There may be multiple Apply buttons (store filter vs forecast); target the
+  // visible, enabled one. The store filter Apply should be hidden at this point.
+  await page.waitForTimeout(500); // let UI settle after last Enter
+
   const allBtns = await page.evaluate(() =>
     Array.from(document.querySelectorAll('button:not([aria-hidden="true"])'))
       .filter(b => b.offsetParent !== null && !b.disabled)
@@ -513,24 +518,20 @@ async function fillMonths(page, productName, monthlyValues) {
   ).catch(() => []);
   await dbLog('fill-months', 'info', `Visible enabled buttons after fill: ${JSON.stringify(allBtns)}`);
 
-  const saveBtn = page.locator('button').filter({ hasText: /^save$/i }).filter({ visible: true }).first();
-  const saveVis = await saveBtn.isVisible({ timeout: 3000 }).catch(() => false);
+  // Click the blue Apply button in the forecast edit modal
+  const applyBtn = page.locator('button:not([disabled])').filter({ hasText: /^apply$/i }).filter({ visible: true }).first();
+  const applyVis = await applyBtn.isVisible({ timeout: 5000 }).catch(() => false);
 
-  if (saveVis) {
-    await saveBtn.click({ timeout: 5000 });
-    await dbLog('fill-months', 'success', 'Clicked Save button ✅');
-    await page.waitForTimeout(1000);
-    await dbShot(page, `fill-${productName.replace(/ /g,'_')}-3-after-save`, 'After clicking Save');
-    await page.waitForSelector(':text("successfully"), :text("saved"), :text("updated")', { timeout: 10000 })
-      .catch(() => dbLog('fill-months', 'warn', 'No success toast after Save — continuing'));
+  if (applyVis) {
+    await applyBtn.click({ timeout: 5000 });
+    await dbLog('fill-months', 'success', 'Clicked Apply button ✅');
+    await page.waitForTimeout(2000);
+    await dbShot(page, `fill-${productName.replace(/ /g,'_')}-3-after-apply`, 'After clicking Apply');
+    // Wait for success confirmation or page update
+    await page.waitForSelector(':text("successfully"), :text("saved"), :text("updated"), :text("applied")', { timeout: 10000 })
+      .catch(() => dbLog('fill-months', 'warn', 'No success toast after Apply — may still have worked'));
   } else {
-    await dbLog('fill-months', 'warn', `No Save button found. Will check for Apply. Buttons: ${JSON.stringify(allBtns)}`);
-    const applyBtn = page.locator('button:not([disabled])').filter({ hasText: /^apply$/i }).filter({ visible: true }).first();
-    if (await applyBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
-      await applyBtn.click();
-      await dbLog('fill-months', 'info', 'Clicked Apply as fallback ✅');
-      await page.waitForTimeout(1000);
-    }
+    await dbLog('fill-months', 'error', `Apply button NOT visible! Cannot save. Buttons: ${JSON.stringify(allBtns)}`);
   }
 
   await dbLog('fill-months', 'success', `fillMonths complete for ${productName} (${MONTHS.length} months)`);
@@ -572,7 +573,7 @@ async function closeModal(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8\n');
+  console.log('🚀 Flieber Forecast Updater v8.1\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const allData = await loadForecastData();
