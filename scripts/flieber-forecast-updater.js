@@ -151,21 +151,37 @@ async function applyStoreFilter(page, storeName) {
   await storesMenu.click({ timeout: 10000 });
   await page.waitForTimeout(800);
 
-  // Step 3: Click "Unselect all" to deselect everything first
-  console.log('🔍 Unselecting all stores...');
-  const unselectAll = page.getByText(/unselect all/i).first();
-  if (await unselectAll.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await unselectAll.click();
-    await page.waitForTimeout(500);
-    console.log('✅ Unselected all');
-  }
+  // Step 3: Toggle each store — uncheck others, ensure target is checked
+  // Flieber requires at least 1 store selected so "Unselect all" is disabled
+  // Strategy: check current state of each store, toggle as needed
+  const ALL_STORES = ['Amazon CA', 'Amazon EU', 'Amazon UK', 'Amazon USA', 'Bol', 'Puzzlup'];
+  console.log('🔍 Toggling store checkboxes...');
 
-  // Step 4: Click the target store checkbox
-  console.log(`🔍 Selecting store: ${storeName}...`);
-  const storeOption = page.getByText(new RegExp(`^${storeName}$`, 'i')).first();
-  await storeOption.click({ timeout: 10000 });
-  await page.waitForTimeout(500);
-  console.log(`✅ Store selected: ${storeName}`);
+  for (const store of ALL_STORES) {
+    // Find the row for this store — look for a label or div containing exactly this store name
+    const storeRow = page.locator('label, li, div[role="option"]').filter({ hasText: new RegExp(`^${store}$`) }).first();
+    const isVisible = await storeRow.isVisible({ timeout: 2000 }).catch(() => false);
+    if (!isVisible) {
+      console.log(`  ⚠️ Store "${store}" not found in list`);
+      continue;
+    }
+
+    // Check current checked state via aria-checked or data-checked on the row or its checkbox
+    const isChecked = await storeRow.evaluate(el => {
+      const cb = el.querySelector('input[type="checkbox"]');
+      if (cb) return cb.checked;
+      return el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-checked') !== null;
+    }).catch(() => null);
+
+    const shouldBeChecked = store === storeName;
+    console.log(`  ${store}: checked=${isChecked}, shouldBe=${shouldBeChecked}`);
+
+    if (isChecked !== shouldBeChecked) {
+      await storeRow.click({ force: true });
+      await page.waitForTimeout(300);
+      console.log(`  ↩️ Toggled ${store}`);
+    }
+  }
 
   // Step 5: Click Apply (now enabled because selection changed)
   const applyBtn = page.locator('button').filter({ hasText: /^apply$/i }).last();
