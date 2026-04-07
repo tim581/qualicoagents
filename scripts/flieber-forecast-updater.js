@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js
+ * flieber-forecast-updater.js  v4 — force:true dblclick, name fix
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
