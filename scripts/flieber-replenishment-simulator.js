@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.0
+ * flieber-replenishment-simulator.js  v1.1
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -149,41 +149,52 @@ async function pickDate(page, targetDate, fieldLabel) {
   console.log(`  📅 Picking date: ${formatDate(targetDate)} for "${fieldLabel}"`);
   await dbLog('date-picker', 'info', `Picking ${formatDate(targetDate)} for ${fieldLabel}`);
 
-  // Click the date field to open the calendar
-  // The date fields show as input-like elements with calendar icons
-  const dateField = page.locator(`input, div[role="button"]`).filter({ hasText: /set date|date/i });
-  
-  // More specific: find the date input near the label
-  // PO has: "Target shipment arrival" with a date field below
-  // TO has: "Target shipment departure" and "Target shipment arrival"
-  
-  // Strategy: find all date inputs in the modal, click the right one based on order
-  // For now, let's click the field that matches our label context
   const modal = page.locator('[class*="modal"], [role="dialog"], [class*="Modal"]').first();
   
-  // Find clickable date fields in the modal
-  const dateInputs = modal.locator('input[type="text"], input[placeholder*="date" i], button:has-text("Set date"), div:has-text("Set date")');
-  
-  // For PO: there's only 1 date field ("Target shipment arrival")
-  // For TO: there are 2 date fields ("Target shipment departure" + "Target shipment arrival")
-  // We'll use fieldLabel to determine which one to click
-  
-  // Better approach: click near the label text
+  // Strategy: Find the label, then find the "Set date" button in the same row/container.
+  // From screenshot: layout is label on top, "📅 Set date" button below.
   const labelEl = modal.getByText(fieldLabel, { exact: false }).first();
+  await labelEl.waitFor({ timeout: 5000 });
   
-  // The date input is typically the next sibling or in same container row
-  // From screenshots: date fields show as "📅 Set date" or "📅 Apr 8, 2026"
-  // Let's click the calendar/date button closest to the label
+  // Go to parent wrapper and find the date button
+  const wrapper = labelEl.locator('..');
+  let clicked = false;
   
-  // Find the row/container that has the label, then find the date button within it
-  const container = labelEl.locator('..').locator('..'); // go up to shared parent
-  const dateBtn = container.locator('input, [class*="date"], button').first();
-  
+  // Approach 1: Find "Set date" text in the wrapper
   try {
-    await dateBtn.click({ timeout: 5000 });
-  } catch {
-    // Fallback: just click the label area — sometimes clicking label opens picker
-    await labelEl.click({ timeout: 5000 });
+    const setDateBtn = wrapper.getByText('Set date', { exact: false }).first();
+    await setDateBtn.click({ timeout: 3000 });
+    clicked = true;
+  } catch {}
+  
+  // Approach 2: Find input or button with calendar-like attributes in wrapper
+  if (!clicked) {
+    try {
+      const dateBtn = wrapper.locator('button, input[type="text"], [class*="date"], [class*="Date"]').first();
+      await dateBtn.click({ timeout: 3000 });
+      clicked = true;
+    } catch {}
+  }
+  
+  // Approach 3: Broader — find all "Set date" buttons in modal by position
+  if (!clicked) {
+    try {
+      const allDateBtns = modal.getByText('Set date', { exact: false });
+      const count = await allDateBtns.count();
+      console.log(`  ℹ️ Found ${count} "Set date" buttons in modal`);
+      
+      // For PO: only 1 date field → index 0
+      // For TO: "departure" = index 0, "arrival" = index 1
+      const idx = fieldLabel.toLowerCase().includes('departure') ? 0 :
+                  fieldLabel.toLowerCase().includes('arrival') && count > 1 ? 1 : 0;
+      await allDateBtns.nth(idx).click({ timeout: 3000 });
+      clicked = true;
+    } catch {}
+  }
+  
+  if (!clicked) {
+    await dbShot(page, `date-fail-${fieldLabel}`, `Could not open date picker for ${fieldLabel}`);
+    throw new Error(`Failed to open date picker: ${fieldLabel}`);
   }
   
   await page.waitForTimeout(1000);
@@ -244,34 +255,155 @@ async function clickSelectAll(page, dropdownLabel) {
   
   const modal = page.locator('[class*="modal"], [role="dialog"], [class*="Modal"]').first();
   
-  // Find the dropdown by its label
-  const label = modal.getByText(dropdownLabel, { exact: false }).first();
+  // Strategy: Find the label text, then find the React Select input below it.
+  // React Select renders: label → container div → div[class*="control"] → input
+  // The input has role="combobox" or is inside a [class*="control"] wrapper.
   
-  // The dropdown trigger is usually a "Select..." text or input near the label
-  const container = label.locator('..').locator('..');
-  const selectTrigger = container.locator('[class*="select"], [class*="Select"], input, [class*="dropdown"], [role="combobox"], [class*="control"]').first();
+  // First: find the label element
+  const labelEl = modal.getByText(dropdownLabel, { exact: false }).first();
+  await labelEl.waitFor({ timeout: 5000 });
   
+  // Navigate from label to its parent container, then find the React Select input
+  // Go up to the wrapper that contains both label + select, then find the input
+  const wrapper = labelEl.locator('..');
+  
+  // Try multiple selectors for React Select's clickable area
+  let clicked = false;
+  
+  // Approach 1: Click the input[role="combobox"] in the same wrapper
   try {
-    await selectTrigger.click({ timeout: 5000 });
-  } catch {
-    // Fallback: click on "Select..." text
-    await modal.getByText('Select...').first().click({ timeout: 5000 });
+    const combobox = wrapper.locator('input[role="combobox"], input[id*="react-select"], input[aria-autocomplete]').first();
+    await combobox.click({ timeout: 3000 });
+    clicked = true;
+  } catch {}
+  
+  // Approach 2: Click the control div (the visible dropdown area)
+  if (!clicked) {
+    try {
+      const control = wrapper.locator('[class*="control"], [class*="Control"]').first();
+      await control.click({ timeout: 3000 });
+      clicked = true;
+    } catch {}
   }
   
-  await page.waitForTimeout(800);
+  // Approach 3: Click the placeholder text directly
+  if (!clicked) {
+    try {
+      const placeholder = wrapper.locator('[class*="placeholder"], [class*="Placeholder"]').first();
+      await placeholder.click({ timeout: 3000 });
+      clicked = true;
+    } catch {}
+  }
   
-  // Click "Select all" option in the dropdown menu
-  const selectAllOption = page.getByText('Select all', { exact: false }).first();
-  await selectAllOption.click({ timeout: 5000 });
+  // Approach 4: Broader — find all combobox inputs in the modal and pick by position
+  if (!clicked) {
+    try {
+      // Get all React Select inputs in the modal
+      const allComboboxes = modal.locator('input[role="combobox"], input[id*="react-select"]');
+      const count = await allComboboxes.count();
+      console.log(`  ℹ️ Found ${count} combobox inputs in modal`);
+      
+      // Determine index based on label: destinations=0, suppliers=1, origins=1
+      const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
+      if (idx < count) {
+        await allComboboxes.nth(idx).click({ timeout: 3000 });
+        clicked = true;
+      }
+    } catch {}
+  }
+  
+  if (!clicked) {
+    await dbShot(page, `select-fail-${dropdownLabel}`, `Could not open dropdown: ${dropdownLabel}`);
+    throw new Error(`Failed to open dropdown: ${dropdownLabel}`);
+  }
+  
+  await page.waitForTimeout(1000);
+  await dbShot(page, `select-opened-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, `Dropdown opened: ${dropdownLabel}`);
+  
+  // Now look for "Select all" option in the dropdown menu
+  // React Select renders options in a portal or menu div
+  try {
+    const selectAllOption = page.getByText('Select all', { exact: false }).first();
+    await selectAllOption.click({ timeout: 5000 });
+  } catch {
+    // Fallback: try clicking checkboxes or option items
+    // Some multi-selects have individual checkboxes — click them all
+    await dbShot(page, `select-no-selectall-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, 'No "Select all" found — checking options');
+    
+    const options = page.locator('[class*="option"], [class*="Option"], [role="option"]');
+    const optCount = await options.count();
+    console.log(`  ℹ️ Found ${optCount} options — clicking each...`);
+    
+    for (let i = 0; i < optCount; i++) {
+      try {
+        await options.nth(i).click({ timeout: 2000 });
+        await page.waitForTimeout(200);
+      } catch { break; }
+    }
+  }
   
   await page.waitForTimeout(500);
   
-  // Click somewhere else to close the dropdown (click the modal header area)
-  await modal.locator('h2, h3, [class*="header"], [class*="title"]').first().click({ force: true }).catch(() => {});
+  // Close dropdown: press Escape or click the modal title
+  await page.keyboard.press('Escape').catch(() => {});
   await page.waitForTimeout(300);
   
   await dbLog('select-all', 'success', `Selected all for ${dropdownLabel}`);
   console.log(`  ✅ Selected all for "${dropdownLabel}"`);
+}
+
+// ── FILL COVERAGE INPUT ──────────────────────────────────────────────────────
+
+async function fillCoverageInput(page, modal, days) {
+  // "Days of coverage" label → find the number input near it
+  // Avoid React Select hidden inputs (they have role="combobox" or id*="react-select")
+  const labelEl = modal.getByText('Days of coverage', { exact: false }).first();
+  await labelEl.waitFor({ timeout: 5000 });
+  
+  const wrapper = labelEl.locator('..');
+  let filled = false;
+  
+  // Approach 1: Find a visible number/text input in the same wrapper (NOT a combobox)
+  try {
+    const input = wrapper.locator('input:not([role="combobox"]):not([id*="react-select"])').first();
+    await input.click({ timeout: 3000 });
+    await input.fill('');
+    await input.type(String(days));
+    filled = true;
+  } catch {}
+  
+  // Approach 2: Find input[type="number"] in the modal
+  if (!filled) {
+    try {
+      const numInput = modal.locator('input[type="number"]').first();
+      await numInput.click({ timeout: 3000 });
+      await numInput.fill('');
+      await numInput.type(String(days));
+      filled = true;
+    } catch {}
+  }
+  
+  // Approach 3: Find the last non-combobox, non-hidden input in the modal
+  if (!filled) {
+    const allInputs = modal.locator('input:visible:not([role="combobox"]):not([id*="react-select"])');
+    const count = await allInputs.count();
+    console.log(`  ℹ️ Found ${count} non-combobox visible inputs`);
+    if (count > 0) {
+      const lastInput = allInputs.nth(count - 1);
+      await lastInput.click({ timeout: 3000 });
+      await lastInput.fill('');
+      await lastInput.type(String(days));
+      filled = true;
+    }
+  }
+  
+  if (!filled) {
+    await dbShot(page, 'coverage-fail', `Could not fill coverage input with ${days}`);
+    throw new Error(`Failed to fill coverage input with ${days}`);
+  }
+  
+  await page.waitForTimeout(500);
+  console.log(`  ✅ Coverage set to ${days} days`);
 }
 
 // ── EXTRACT SIMULATION ID FROM URL ────────────────────────────────────────────
@@ -419,17 +551,7 @@ async function runPOSimulation(page) {
   // Step 6: Set Days of coverage
   console.log(`  📝 Setting coverage days to ${PO_COVERAGE_DAYS}...`);
   const modal = page.locator('[class*="modal"], [role="dialog"], [class*="Modal"]').first();
-  const coverageInput = modal.locator('input[type="number"], input').filter({ hasText: /coverage/i }).last();
-  
-  // Try to find the coverage input — it's typically the last input field in the modal
-  const allInputs = modal.locator('input');
-  const inputCount = await allInputs.count();
-  const lastInput = allInputs.nth(inputCount - 1);
-  
-  await lastInput.click({ timeout: 5000 });
-  await lastInput.fill('');
-  await lastInput.type(String(PO_COVERAGE_DAYS));
-  await page.waitForTimeout(500);
+  await fillCoverageInput(page, modal, PO_COVERAGE_DAYS);
   await dbShot(page, 'po-7-coverage', `Coverage set to ${PO_COVERAGE_DAYS}`);
   
   // Step 7: Click "Start purchase plan" button
@@ -510,14 +632,7 @@ async function runTOSimulation(page) {
   // Step 7: Set Days of coverage
   console.log(`  📝 Setting coverage days to ${TO_COVERAGE_DAYS}...`);
   const modal = page.locator('[class*="modal"], [role="dialog"], [class*="Modal"]').first();
-  const allInputs = modal.locator('input');
-  const inputCount = await allInputs.count();
-  const lastInput = allInputs.nth(inputCount - 1);
-  
-  await lastInput.click({ timeout: 5000 });
-  await lastInput.fill('');
-  await lastInput.type(String(TO_COVERAGE_DAYS));
-  await page.waitForTimeout(500);
+  await fillCoverageInput(page, modal, TO_COVERAGE_DAYS);
   await dbShot(page, 'to-8-coverage', `Coverage set to ${TO_COVERAGE_DAYS}`);
   
   // Step 8: Click "Start transfer plan" button
