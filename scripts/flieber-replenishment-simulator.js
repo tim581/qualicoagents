@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.2
+ * flieber-replenishment-simulator.js  v1.3
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -213,8 +213,13 @@ async function pickDate(page, targetDate, fieldLabel) {
   // Navigate forward until we see the target month
   let attempts = 0;
   while (attempts < 24) { // max 24 months forward
-    const headerText = await page.locator('[class*="calendar"] [class*="header"], [class*="Calendar"] [class*="Header"], th[colspan], [class*="month-year"], [aria-live]')
-      .first().textContent().catch(() => '');
+    // Broad set of selectors for calendar month header (Chakra UI, React DatePicker, etc.)
+    const headerText = await page.locator('[class*="calendar"] [class*="header"], [class*="Calendar"] [class*="Header"], th[colspan], [class*="month-year"], [aria-live], [class*="datepicker"] [class*="heading"], [class*="DatePicker"] [class*="title"], [class*="calendar-header"], [class*="month-label"]')
+      .first().textContent().catch(async () => {
+        // Fallback: find any text on page matching "MonthName YYYY" pattern
+        const allText = await page.locator('text=/(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{4}/').first().textContent().catch(() => '');
+        return allText;
+      });
     
     if (headerText.includes(monthNames[targetMonth]) && headerText.includes(String(targetYear))) {
       console.log(`  ✅ Calendar showing: ${headerText}`);
@@ -280,16 +285,23 @@ async function clickSelectAll(page, dropdownLabel) {
   }
   
   // Approach 2: Use all combobox inputs on the page and pick by index
+  // IMPORTANT: After filling one dropdown, its combobox may disappear. So if only
+  // 1 combobox remains, click it regardless of which dropdown we're targeting.
   if (!clicked) {
     try {
       const allComboboxes = page.locator('input[role="combobox"]');
       const count = await allComboboxes.count();
       console.log(`  ℹ️ Found ${count} combobox inputs on page`);
       
-      // destinations = first combobox (index 0)
-      // suppliers / origins = second combobox (index 1)
-      const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
-      if (idx < count) {
+      if (count === 1) {
+        // Only one left — must be the one we want
+        await allComboboxes.first().scrollIntoViewIfNeeded();
+        await allComboboxes.first().click({ timeout: 3000 });
+        clicked = true;
+      } else if (count > 1) {
+        // Multiple comboboxes: destinations = first, suppliers/origins = second
+        const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
+        await allComboboxes.nth(idx).scrollIntoViewIfNeeded();
         await allComboboxes.nth(idx).click({ timeout: 3000 });
         clicked = true;
       }
@@ -304,8 +316,11 @@ async function clickSelectAll(page, dropdownLabel) {
       const allPlaceholders = page.locator('[class*="placeholder"]:text("Select...")');
       const count = await allPlaceholders.count();
       console.log(`  ℹ️ Found ${count} "Select..." placeholders`);
-      const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
-      if (idx < count) {
+      if (count === 1) {
+        await allPlaceholders.first().click({ timeout: 3000 });
+        clicked = true;
+      } else if (count > 1) {
+        const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
         await allPlaceholders.nth(idx).click({ timeout: 3000 });
         clicked = true;
       }
@@ -344,9 +359,21 @@ async function clickSelectAll(page, dropdownLabel) {
   
   await page.waitForTimeout(500);
   
-  // Close dropdown: press Escape or click outside
-  await page.keyboard.press('Escape').catch(() => {});
-  await page.waitForTimeout(300);
+  // Close dropdown: click outside (Escape doesn't reliably close React Select)
+  // Click the modal title/description text to dismiss the dropdown menu
+  try {
+    // Try clicking the modal header/description text to unfocus the dropdown
+    const modalTitle = page.getByText('Select the destination', { exact: false }).first();
+    await modalTitle.click({ timeout: 2000 });
+  } catch {
+    try {
+      // Fallback: click body or any non-interactive area
+      await page.locator('body').click({ position: { x: 10, y: 10 } });
+    } catch {
+      await page.keyboard.press('Escape').catch(() => {});
+    }
+  }
+  await page.waitForTimeout(500);
   
   await dbLog('select-all', 'success', `Selected all for ${dropdownLabel}`);
   console.log(`  ✅ Selected all for "${dropdownLabel}"`);
@@ -560,10 +587,23 @@ async function runPOSimulation(page) {
   await fillCoverageInput(page, PO_COVERAGE_DAYS);
   await dbShot(page, 'po-7-coverage', `Coverage set to ${PO_COVERAGE_DAYS}`);
   
-  // Step 7: Click "Start purchase plan" button
+  // Step 7: Click "Start purchase plan" button (the blue submit button, NOT the menu option)
   console.log('  🚀 Clicking "Start purchase plan"...');
-  const startBtn = page.getByText('Start purchase plan', { exact: false }).first();
-  await startBtn.click({ timeout: 10000 });
+  await dbShot(page, 'po-pre-submit', 'State before clicking Start purchase plan');
+  // Use exact text to avoid matching "Start new purchase plan" menu item
+  const startBtn = page.locator('button').filter({ hasText: /^Start purchase plan$/ }).first();
+  try {
+    await startBtn.click({ timeout: 5000 });
+  } catch {
+    // Fallback: find the colored/primary button (usually blue/green)
+    const primaryBtn = page.locator('button[class*="primary"], button[class*="Primary"], button[class*="blue"], button[class*="colorScheme"]').filter({ hasText: 'Start' }).first();
+    await primaryBtn.click({ timeout: 5000 }).catch(async () => {
+      // Last resort: find all buttons with "Start purchase plan" text, click the LAST one (submit is after menu)
+      const allBtns = page.getByText('Start purchase plan', { exact: false });
+      const count = await allBtns.count();
+      await allBtns.nth(count - 1).click({ timeout: 5000 });
+    });
+  }
   
   // Step 8: Wait for simulation to complete — URL changes to include sim ID
   console.log('  ⏳ Waiting for simulation to complete...');
@@ -640,10 +680,17 @@ async function runTOSimulation(page) {
   await fillCoverageInput(page, TO_COVERAGE_DAYS);
   await dbShot(page, 'to-8-coverage', `Coverage set to ${TO_COVERAGE_DAYS}`);
   
-  // Step 8: Click "Start transfer plan" button
+  // Step 8: Click "Start transfer plan" button (the blue submit button, NOT the menu option)
   console.log('  🚀 Clicking "Start transfer plan"...');
-  const startBtn = page.getByText('Start transfer plan', { exact: false }).first();
-  await startBtn.click({ timeout: 10000 });
+  await dbShot(page, 'to-pre-submit', 'State before clicking Start transfer plan');
+  const startBtn = page.locator('button').filter({ hasText: /^Start transfer plan$/ }).first();
+  try {
+    await startBtn.click({ timeout: 5000 });
+  } catch {
+    const allBtns = page.getByText('Start transfer plan', { exact: false });
+    const count = await allBtns.count();
+    await allBtns.nth(count - 1).click({ timeout: 5000 });
+  }
   
   // Step 9: Wait for simulation to complete
   console.log('  ⏳ Waiting for simulation to complete...');
