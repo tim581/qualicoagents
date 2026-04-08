@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.5
+ * flieber-replenishment-simulator.js  v1.6
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -260,7 +260,7 @@ async function clickSelectAll(page, dropdownLabel) {
   console.log(`  🔽 Opening "${dropdownLabel}" dropdown and selecting all...`);
   await dbLog('select-all', 'info', `Opening ${dropdownLabel} dropdown`);
   
-  // v1.5 FIX: The dropdown is a CUSTOM CHECKBOX DROPDOWN, not React Select.
+  // v1.6 FIX: The dropdown is a CUSTOM CHECKBOX DROPDOWN, not React Select.
   // Screenshot analysis shows: clicking the control opens a list of checkboxes
   // including "Select all", "3PL CA", "3PL UK", etc.
   
@@ -341,93 +341,134 @@ async function clickSelectAll(page, dropdownLabel) {
   await dbShot(page, `select-opened-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, `Dropdown opened: ${dropdownLabel}`);
   
   // STEP 2: CLICK "SELECT ALL" CHECKBOX
-  // v1.5: The dropdown contains checkboxes, not React Select options.
-  // Try multiple approaches to click "Select all":
+  // v1.6 FIX: Use page.evaluate() to find and click "Select all" via vanilla JS.
+  // Playwright selectors failed in v1.5 despite the element being visible.
+  // Also: scope fallback to dropdown container only (not all 76 checkboxes on page).
   
   let selected = false;
   
-  // Approach A: Find checkbox by role with name matching "Select all"
+  // Approach A: Use vanilla JS in browser — most reliable
   try {
-    const cb = page.getByRole('checkbox', { name: /select all/i }).first();
-    await cb.waitFor({ state: 'visible', timeout: 3000 });
-    await cb.click({ timeout: 3000 });
-    selected = true;
-    console.log('  ✅ Clicked "Select all" via getByRole(checkbox)');
+    const result = await page.evaluate(() => {
+      // Find all elements containing "Select all" text
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.textContent.trim().toLowerCase() === 'select all') {
+          // Click the closest clickable parent (label, div, span, etc.)
+          const clickTarget = node.parentElement;
+          if (clickTarget) {
+            clickTarget.click();
+            return { clicked: true, tag: clickTarget.tagName, text: clickTarget.textContent.trim() };
+          }
+        }
+      }
+      return { clicked: false };
+    });
+    if (result.clicked) {
+      selected = true;
+      console.log(`  ✅ Clicked "Select all" via evaluate() — <${result.tag}>`);
+    } else {
+      console.log('  ⚠️ evaluate() found no "Select all" text node');
+    }
   } catch (e) {
-    console.log(`  ⚠️ getByRole(checkbox) failed: ${e.message.substring(0, 100)}`);
+    console.log(`  ⚠️ evaluate() failed: ${e.message.substring(0, 100)}`);
   }
   
-  // Approach B: Find label text "Select all" and click it
+  // Approach B: Force-click with Playwright (bypasses actionability checks)
   if (!selected) {
     try {
-      const labels = page.locator('label:has-text("Select all"), span:has-text("Select all")');
-      const count = await labels.count();
-      console.log(`  ℹ️ Found ${count} "Select all" labels/spans`);
-      if (count > 0) {
-        await labels.first().click({ timeout: 3000 });
+      await page.click('text="Select all"', { force: true, timeout: 3000 });
+      selected = true;
+      console.log('  ✅ Clicked "Select all" via force-click');
+    } catch (e) {
+      console.log(`  ⚠️ force-click failed: ${e.message.substring(0, 100)}`);
+    }
+  }
+  
+  // Approach C: Click by role with force
+  if (!selected) {
+    try {
+      const cb = page.getByRole('checkbox', { name: /select all/i }).first();
+      await cb.click({ force: true, timeout: 3000 });
+      selected = true;
+      console.log('  ✅ Clicked "Select all" via getByRole(checkbox) + force');
+    } catch (e) {
+      console.log(`  ⚠️ getByRole(checkbox)+force failed: ${e.message.substring(0, 100)}`);
+    }
+  }
+  
+  // Approach D: SCOPED fallback — find dropdown panel, click checkboxes inside it only
+  if (!selected) {
+    await dbShot(page, `select-no-selectall-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, 'Trying scoped checkbox fallback');
+    
+    // Use evaluate to click all checkboxes INSIDE the open dropdown only
+    try {
+      const result = await page.evaluate(() => {
+        // The dropdown panel is likely a div with a list of checkbox items
+        // Look for a container that has "Select all" or multiple checkbox-like items
+        // and is positioned as a dropdown (not the main page content)
+        
+        // Strategy: find elements with checkbox-like role/class near "Select all" text
+        const allCheckboxes = document.querySelectorAll('[role="checkbox"], input[type="checkbox"], [class*="checkbox"], [data-checked]');
+        let clicked = 0;
+        const clickedLabels = [];
+        
+        // Find which checkboxes are inside a dropdown/popover/menu container
+        for (const cb of allCheckboxes) {
+          const container = cb.closest('[class*="menu"], [class*="popover"], [class*="dropdown"], [class*="list"], [role="listbox"], [role="menu"]');
+          if (container) {
+            cb.click();
+            clicked++;
+            clickedLabels.push(cb.textContent?.trim().substring(0, 30) || cb.getAttribute('aria-label') || 'unknown');
+          }
+        }
+        
+        // If no scoped checkboxes found, try a different approach:
+        // Find the container that has "Select all" text and click all checkboxes in it
+        if (clicked === 0) {
+          const selectAllEl = Array.from(document.querySelectorAll('*')).find(
+            el => el.textContent?.trim().toLowerCase() === 'select all' && el.children.length === 0
+          );
+          if (selectAllEl) {
+            // Find the dropdown container (parent with multiple similar siblings)
+            let container = selectAllEl.parentElement;
+            for (let i = 0; i < 5; i++) {
+              if (!container) break;
+              const checkboxesInside = container.querySelectorAll('[role="checkbox"], input[type="checkbox"], [class*="checkbox"], label, [data-checked]');
+              if (checkboxesInside.length >= 3) {
+                // Found the dropdown container
+                checkboxesInside.forEach(c => { c.click(); clicked++; });
+                break;
+              }
+              container = container.parentElement;
+            }
+          }
+        }
+        
+        return { clicked, labels: clickedLabels.slice(0, 10) };
+      });
+      
+      if (result.clicked > 0 && result.clicked < 20) {
         selected = true;
-        console.log('  ✅ Clicked "Select all" via label/span');
+        console.log(`  ✅ Scoped fallback: clicked ${result.clicked} checkboxes: ${result.labels.join(', ')}`);
+      } else {
+        console.log(`  ⚠️ Scoped fallback: ${result.clicked} checkboxes (${result.clicked >= 20 ? 'too many — skipping' : 'none found'})`);
       }
     } catch (e) {
-      console.log(`  ⚠️ label/span approach failed: ${e.message.substring(0, 100)}`);
+      console.log(`  ⚠️ Scoped fallback failed: ${e.message.substring(0, 100)}`);
     }
   }
   
-  // Approach C: Use getByText with exact matching
+  // Approach E: Last resort — click items by their visible text (scoped)
   if (!selected) {
-    try {
-      const textEl = page.getByText('Select all', { exact: true }).first();
-      await textEl.waitFor({ state: 'visible', timeout: 3000 });
-      await textEl.click({ timeout: 3000 });
-      selected = true;
-      console.log('  ✅ Clicked "Select all" via getByText(exact)');
-    } catch (e) {
-      console.log(`  ⚠️ getByText(exact) failed: ${e.message.substring(0, 100)}`);
-    }
-  }
-  
-  // Approach D: Use locator with text selector
-  if (!selected) {
-    try {
-      const textEl = page.locator('text=Select all').first();
-      await textEl.click({ timeout: 3000 });
-      selected = true;
-      console.log('  ✅ Clicked "Select all" via locator(text=)');
-    } catch (e) {
-      console.log(`  ⚠️ locator(text=) failed: ${e.message.substring(0, 100)}`);
-    }
-  }
-  
-  // Approach E: If no "Select all", click individual checkboxes
-  if (!selected) {
-    await dbShot(page, `select-no-selectall-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, 'No "Select all" found — clicking each checkbox');
-    
-    // Try clicking all visible checkboxes in the dropdown
-    const checkboxes = page.getByRole('checkbox');
-    const cbCount = await checkboxes.count();
-    console.log(`  ℹ️ Found ${cbCount} checkboxes — clicking each...`);
-    
-    for (let i = 0; i < cbCount; i++) {
+    const options = page.locator('[class*="option"], [class*="Option"], [role="option"], li[role="menuitem"]');
+    const optCount = await options.count();
+    console.log(`  ℹ️ Found ${optCount} option-like elements`);
+    for (let i = 0; i < Math.min(optCount, 15); i++) {
       try {
-        const cb = checkboxes.nth(i);
-        const isVisible = await cb.isVisible().catch(() => false);
-        if (isVisible) {
-          await cb.click({ timeout: 2000 });
-          await page.waitForTimeout(300);
-          selected = true;
-        }
-      } catch { break; }
-    }
-    
-    // Also try: option-like elements, list items
-    if (!selected) {
-      const options = page.locator('[class*="option"], [class*="Option"], [role="option"], li[role="menuitem"]');
-      const optCount = await options.count();
-      console.log(`  ℹ️ Found ${optCount} option-like elements`);
-      for (let i = 0; i < optCount; i++) {
-        try {
-          await options.nth(i).click({ timeout: 2000 });
-          await page.waitForTimeout(200);
+        await options.nth(i).click({ timeout: 2000 });
+        await page.waitForTimeout(200);
           selected = true;
         } catch { break; }
       }
