@@ -92,13 +92,24 @@ const SCRIPT_TASKS = {
   'forecast-sync':  'flieber-forecast-updater.js',
   'po-simulation':  'flieber-replenishment-simulator.js',
   'to-simulation':  'flieber-replenishment-simulator.js',
+  'price-scrape':   'price-monitor-scraper.js',
+};
+
+// Timeout per task type (ms) — default 5 min, price-scrape needs up to 1 hour
+const SCRIPT_TIMEOUTS = {
+  'forecast-sync':  600000,   // 10 min
+  'po-simulation':  300000,   // 5 min
+  'to-simulation':  300000,   // 5 min
+  'price-scrape':   3600000,  // 60 min
 };
 
 async function executeScriptTask(task) {
   const scriptName = SCRIPT_TASKS[task.task_type];
   const scriptPath = path.join(__dirname, scriptName);
+  const timeout = SCRIPT_TIMEOUTS[task.task_type] || 300000;
   
   console.log(`\n🔧 Running script: ${scriptName} for task type: ${task.task_type}`);
+  console.log(`   Timeout: ${timeout / 60000} min`);
   
   // For replenishment simulator, set RUN_MODE via env variable
   const env = { ...process.env };
@@ -109,7 +120,7 @@ async function executeScriptTask(task) {
     const output = execSync(`node "${scriptPath}"`, {
       env,
       cwd: __dirname,
-      timeout: 300000, // 5 min max
+      timeout: timeout,
       stdio: 'pipe',
       encoding: 'utf-8',
     });

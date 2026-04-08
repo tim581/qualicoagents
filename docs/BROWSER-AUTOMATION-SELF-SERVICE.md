@@ -39,6 +39,7 @@ WHERE id = <your_task_id>;
 | `forecast-sync` | Push Puzzlup forecasts → Flieber (all 5 stores) | ~5 min |
 | `po-simulation` | Run PO simulation in Flieber | ~2 min |
 | `to-simulation` | Run TO simulation in Flieber | ~2 min |
+| `price-scrape` | Scrape ~62 product variants across 11 channels (10 Amazon + Bol.com + Webshop). Captures prices, Buy Box, ratings, reviews. Writes to Supabase. | ~45-60 min |
 
 ## Using the Subagent
 
