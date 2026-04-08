@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.3
+ * flieber-replenishment-simulator.js  v1.4
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -260,124 +260,222 @@ async function clickSelectAll(page, dropdownLabel) {
   console.log(`  🔽 Opening "${dropdownLabel}" dropdown and selecting all...`);
   await dbLog('select-all', 'info', `Opening ${dropdownLabel} dropdown`);
   
-  // Strategy: Use page-level selectors (NOT modal-scoped) because Chakra UI
-  // renders modals in portals that don't match typical modal CSS selectors.
+  // v1.4 FIX: React Select's input[role="combobox"] click does NOT open the
+  // dropdown menu. We must click the CONTROL div (the visible select box) or
+  // the dropdown INDICATOR (the arrow icon) instead.
   
-  let clicked = false;
+  let dropdownOpened = false;
   
-  // Approach 1: Find the label text, go to parent, find combobox input inside
+  // Helper: check if dropdown menu is visible
+  async function isMenuOpen() {
+    try {
+      const menu = page.locator('[class*="menu"]:not([class*="menu-"]):visible, [class*="MenuList"]:visible, [role="listbox"]:visible');
+      return await menu.count() > 0;
+    } catch { return false; }
+  }
+  
+  // ── STRATEGY A: Click the React Select CONTROL div near the label ──
   try {
     const labelEl = page.getByText(dropdownLabel, { exact: false }).first();
     await labelEl.waitFor({ timeout: 5000 });
-    // Go up multiple levels to find the container with the React Select
-    // Try parent, grandparent, great-grandparent
-    for (const levels of ['..', '../..', '../../..']) {
+    
+    // Traverse up to find the React Select control div
+    for (const levels of ['..', '../..', '../../..', '../../../..']) {
+      if (dropdownOpened) break;
       try {
         const wrapper = labelEl.locator(levels);
-        const combobox = wrapper.locator('input[role="combobox"]').first();
-        await combobox.click({ timeout: 2000 });
-        clicked = true;
-        break;
+        // Try clicking the control div (the visible select box)
+        const control = wrapper.locator('[class*="control"], [class*="Control"]').first();
+        await control.click({ timeout: 2000 });
+        await page.waitForTimeout(800);
+        if (await isMenuOpen()) {
+          dropdownOpened = true;
+          console.log(`  ✅ Dropdown opened via control div (level: ${levels})`);
+        }
       } catch {}
     }
   } catch (e) {
-    console.log(`  ⚠️ Could not find label "${dropdownLabel}": ${e.message.substring(0, 100)}`);
+    console.log(`  ⚠️ Strategy A (control div) failed: ${e.message.substring(0, 100)}`);
   }
   
-  // Approach 2: Use all combobox inputs on the page and pick by index
-  // IMPORTANT: After filling one dropdown, its combobox may disappear. So if only
-  // 1 combobox remains, click it regardless of which dropdown we're targeting.
-  if (!clicked) {
+  // ── STRATEGY B: Click dropdown indicator (arrow icon) near the label ──
+  if (!dropdownOpened) {
     try {
-      const allComboboxes = page.locator('input[role="combobox"]');
-      const count = await allComboboxes.count();
-      console.log(`  ℹ️ Found ${count} combobox inputs on page`);
-      
-      if (count === 1) {
-        // Only one left — must be the one we want
-        await allComboboxes.first().scrollIntoViewIfNeeded();
-        await allComboboxes.first().click({ timeout: 3000 });
-        clicked = true;
-      } else if (count > 1) {
-        // Multiple comboboxes: destinations = first, suppliers/origins = second
-        const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
-        await allComboboxes.nth(idx).scrollIntoViewIfNeeded();
-        await allComboboxes.nth(idx).click({ timeout: 3000 });
-        clicked = true;
-      }
-    } catch (e) {
-      console.log(`  ⚠️ Combobox approach failed: ${e.message.substring(0, 100)}`);
-    }
-  }
-  
-  // Approach 3: Click the placeholder "Select..." text
-  if (!clicked) {
-    try {
-      const allPlaceholders = page.locator('[class*="placeholder"]:text("Select...")');
-      const count = await allPlaceholders.count();
-      console.log(`  ℹ️ Found ${count} "Select..." placeholders`);
-      if (count === 1) {
-        await allPlaceholders.first().click({ timeout: 3000 });
-        clicked = true;
-      } else if (count > 1) {
-        const idx = dropdownLabel.toLowerCase().includes('destination') ? 0 : 1;
-        await allPlaceholders.nth(idx).click({ timeout: 3000 });
-        clicked = true;
+      const labelEl = page.getByText(dropdownLabel, { exact: false }).first();
+      for (const levels of ['..', '../..', '../../..', '../../../..']) {
+        if (dropdownOpened) break;
+        try {
+          const wrapper = labelEl.locator(levels);
+          const indicator = wrapper.locator('[class*="indicator"], [class*="Indicator"], [class*="dropdown-indicator"]').last();
+          await indicator.click({ timeout: 2000 });
+          await page.waitForTimeout(800);
+          if (await isMenuOpen()) {
+            dropdownOpened = true;
+            console.log(`  ✅ Dropdown opened via indicator (level: ${levels})`);
+          }
+        } catch {}
       }
     } catch {}
   }
   
-  if (!clicked) {
+  // ── STRATEGY C: Click ALL control divs on page by index ──
+  if (!dropdownOpened) {
+    try {
+      const allControls = page.locator('[class*="control"]:has(input[role="combobox"]), [class*="Control"]:has(input[role="combobox"])');
+      const count = await allControls.count();
+      console.log(`  ℹ️ Found ${count} React Select controls on page`);
+      
+      if (count >= 1) {
+        // Destinations = first, suppliers/origins = second (or first if only 1 left)
+        let idx = 0;
+        if (count > 1 && !dropdownLabel.toLowerCase().includes('destination')) {
+          idx = 1;
+        }
+        await allControls.nth(idx).scrollIntoViewIfNeeded();
+        await allControls.nth(idx).click({ timeout: 3000 });
+        await page.waitForTimeout(800);
+        if (await isMenuOpen()) {
+          dropdownOpened = true;
+          console.log(`  ✅ Dropdown opened via control index ${idx}`);
+        }
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Strategy C failed: ${e.message.substring(0, 100)}`);
+    }
+  }
+  
+  // ── STRATEGY D: Click the "Select..." placeholder text directly ──
+  if (!dropdownOpened) {
+    try {
+      const placeholders = page.locator('[class*="placeholder"]:has-text("Select"), [class*="Placeholder"]:has-text("Select")');
+      const count = await placeholders.count();
+      console.log(`  ℹ️ Found ${count} "Select..." placeholders`);
+      if (count >= 1) {
+        let idx = 0;
+        if (count > 1 && !dropdownLabel.toLowerCase().includes('destination')) {
+          idx = 1;
+        }
+        await placeholders.nth(idx).click({ timeout: 3000 });
+        await page.waitForTimeout(800);
+        if (await isMenuOpen()) {
+          dropdownOpened = true;
+          console.log(`  ✅ Dropdown opened via placeholder click`);
+        }
+      }
+    } catch {}
+  }
+  
+  // ── STRATEGY E: Focus combobox input and type a space to trigger dropdown ──
+  if (!dropdownOpened) {
+    try {
+      const allComboboxes = page.locator('input[role="combobox"]');
+      const count = await allComboboxes.count();
+      console.log(`  ℹ️ Trying focus+type on ${count} combobox inputs`);
+      
+      let idx = 0;
+      if (count > 1 && !dropdownLabel.toLowerCase().includes('destination')) {
+        idx = count > 1 ? 1 : 0;
+      }
+      
+      const cb = allComboboxes.nth(idx);
+      await cb.focus();
+      await page.waitForTimeout(300);
+      // Type a space then clear to trigger the dropdown opening
+      await cb.pressSequentially(' ', { delay: 100 });
+      await page.waitForTimeout(800);
+      
+      if (await isMenuOpen()) {
+        dropdownOpened = true;
+        // Clear the space we typed
+        await cb.fill('');
+        await page.waitForTimeout(300);
+        console.log(`  ✅ Dropdown opened via focus+type`);
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Strategy E failed: ${e.message.substring(0, 100)}`);
+    }
+  }
+  
+  if (!dropdownOpened) {
     await dbShot(page, `select-fail-${dropdownLabel}`, `Could not open dropdown: ${dropdownLabel}`);
     throw new Error(`Failed to open dropdown: ${dropdownLabel}`);
   }
   
-  await page.waitForTimeout(1000);
   await dbShot(page, `select-opened-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, `Dropdown opened: ${dropdownLabel}`);
   
-  // Now look for "Select all" option in the dropdown menu
-  // React Select renders options in a portal or menu div
+  // ── SELECT ALL OPTIONS ──
+  // Look for "Select all" option first, then fall back to clicking each option
+  let selectedCount = 0;
   try {
     const selectAllOption = page.getByText('Select all', { exact: false }).first();
-    await selectAllOption.click({ timeout: 5000 });
+    await selectAllOption.click({ timeout: 3000 });
+    selectedCount = -1; // means "all via Select all"
+    console.log(`  ✅ Clicked "Select all" option`);
   } catch {
-    // Fallback: try clicking checkboxes or option items
-    // Some multi-selects have individual checkboxes — click them all
-    await dbShot(page, `select-no-selectall-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, 'No "Select all" found — checking options');
+    // No "Select all" — click each option individually
+    await dbShot(page, `select-no-selectall-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, 'No "Select all" found — clicking each option');
     
-    const options = page.locator('[class*="option"], [class*="Option"], [role="option"]');
+    const options = page.locator('[class*="option"]:visible, [class*="Option"]:visible, [role="option"]:visible');
     const optCount = await options.count();
-    console.log(`  ℹ️ Found ${optCount} options — clicking each...`);
+    console.log(`  ℹ️ Found ${optCount} visible options — clicking each...`);
     
     for (let i = 0; i < optCount; i++) {
       try {
-        await options.nth(i).click({ timeout: 2000 });
-        await page.waitForTimeout(200);
+        // Re-query each time because DOM may change after clicking
+        const currentOptions = page.locator('[class*="option"]:visible, [class*="Option"]:visible, [role="option"]:visible');
+        const remaining = await currentOptions.count();
+        if (remaining === 0) break;
+        await currentOptions.first().click({ timeout: 2000 });
+        selectedCount++;
+        await page.waitForTimeout(300);
       } catch { break; }
     }
+    console.log(`  ℹ️ Clicked ${selectedCount} individual options`);
   }
   
   await page.waitForTimeout(500);
   
-  // Close dropdown: click outside (Escape doesn't reliably close React Select)
-  // Click the modal title/description text to dismiss the dropdown menu
+  // ── CLOSE DROPDOWN ──
+  // Click outside to dismiss (Escape doesn't reliably close React Select)
   try {
-    // Try clicking the modal header/description text to unfocus the dropdown
-    const modalTitle = page.getByText('Select the destination', { exact: false }).first();
-    await modalTitle.click({ timeout: 2000 });
-  } catch {
-    try {
-      // Fallback: click body or any non-interactive area
-      await page.locator('body').click({ position: { x: 10, y: 10 } });
-    } catch {
-      await page.keyboard.press('Escape').catch(() => {});
+    // Find any heading/title text in the modal to click on
+    const modalTexts = ['Start new purchase plan', 'Start new transfer plan', 
+                        'Select the destination', 'Purchase plan', 'Transfer plan'];
+    let closed = false;
+    for (const text of modalTexts) {
+      if (closed) break;
+      try {
+        const el = page.getByText(text, { exact: false }).first();
+        await el.click({ timeout: 1000 });
+        closed = true;
+      } catch {}
     }
+    if (!closed) {
+      // Click top-left of page
+      await page.mouse.click(10, 10);
+    }
+  } catch {
+    await page.keyboard.press('Escape').catch(() => {});
   }
   await page.waitForTimeout(500);
   
-  await dbLog('select-all', 'success', `Selected all for ${dropdownLabel}`);
-  console.log(`  ✅ Selected all for "${dropdownLabel}"`);
+  // ── VERIFY: Check that values were actually selected ──
+  // After selection, React Select shows "multi-value" chips instead of "Select..."
+  const multiValues = page.locator('[class*="multiValue"], [class*="multi-value"], [class*="MultiValue"]');
+  const chipCount = await multiValues.count().catch(() => 0);
+  console.log(`  📊 Verification: ${chipCount} chips/values visible after selection`);
+  await dbLog('select-all', chipCount > 0 ? 'success' : 'warning', 
+    `${dropdownLabel}: ${selectedCount === -1 ? '"Select all" clicked' : selectedCount + ' options clicked'}, ${chipCount} chips visible`);
+  
+  if (chipCount === 0 && selectedCount !== -1) {
+    await dbShot(page, `select-verify-fail-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, 
+      `WARNING: No chips visible after selecting ${dropdownLabel}`);
+    console.log(`  ⚠️ WARNING: No chips visible — selection may have failed!`);
+  }
+  
+  console.log(`  ✅ Completed "${dropdownLabel}" selection`);
 }
+
 
 // ── FILL COVERAGE INPUT ──────────────────────────────────────────────────────
 
