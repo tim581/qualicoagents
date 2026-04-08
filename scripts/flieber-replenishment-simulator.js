@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.1
+ * flieber-replenishment-simulator.js  v1.2
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -179,7 +179,7 @@ async function pickDate(page, targetDate, fieldLabel) {
   // Approach 3: Broader — find all "Set date" buttons in modal by position
   if (!clicked) {
     try {
-      const allDateBtns = modal.getByText('Set date', { exact: false });
+      const allDateBtns = page.getByText('Set date', { exact: false });
       const count = await allDateBtns.count();
       console.log(`  ℹ️ Found ${count} "Set date" buttons in modal`);
       
