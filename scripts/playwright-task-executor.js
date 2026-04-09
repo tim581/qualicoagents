@@ -83,8 +83,6 @@ async function executeAction(page, action, creds = {}) {
 }
 
 // ── SCRIPT-BASED TASK ROUTING ─────────────────────────────────────────────────
-// Maps task_type to standalone Playwright scripts that handle their own browser.
-// These scripts are self-contained (login, execute, log to Supabase).
 const { execSync } = require('child_process');
 const path = require('path');
 
@@ -95,11 +93,11 @@ const SCRIPT_TASKS = {
   'price-scrape':   'price-monitor-scraper.js',
 };
 
-// Timeout per task type (ms) — default 5 min, price-scrape needs up to 1 hour
+// Timeout per task type (ms)
 const SCRIPT_TIMEOUTS = {
-  'forecast-sync':  600000,   // 10 min
-  'po-simulation':  300000,   // 5 min
-  'to-simulation':  300000,   // 5 min
+  'forecast-sync':  1800000,  // 30 min (5 stores × ~9 products = ~22 min)
+  'po-simulation':  600000,   // 10 min
+  'to-simulation':  600000,   // 10 min
   'price-scrape':   3600000,  // 60 min
 };
 
@@ -198,43 +196,37 @@ async function pollTasks() {
       // Execute
       const result = await executeTask(task);
 
-      // Save result
+      // Update status
       await supabase
         .from('Browser_Tasks')
         .update({
           status: result.success ? 'done' : 'failed',
-          result: result.data || null,
-          error_message: result.error || null,
-          completed_at: new Date().toISOString()
+          result: result.success ? result.data : { error: result.error },
+          completed_at: new Date().toISOString(),
         })
         .eq('id', task.id);
     }
-
   } catch (error) {
-    console.error('Poll error:', error.message);
+    console.error(`\n❌ Poll error: ${error.message}`);
   }
 }
 
-async function main() {
-  console.log('🎬 Browser Task Executor Started');
-  console.log(`📍 Checking Supabase: ${SUPABASE_URL}`);
-
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.error('❌ Missing .env credentials');
-    process.exit(1);
-  }
-
-  // Poll continuously
-  setInterval(() => pollTasks(), POLL_INTERVAL);
-
-  // Also poll immediately on start
-  await pollTasks();
-}
+// ── MAIN LOOP ─────────────────────────────────────────────────────────────────
+let running = true;
 
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
+  running = false;
   if (browser) await browser.close();
   process.exit(0);
 });
 
-main().catch(console.error);
+(async () => {
+  console.log('🤖 Browser Task Executor v2.1 — 30min forecast timeout');
+  console.log('   Polling every 30s for pending tasks...\n');
+  
+  while (running) {
+    await pollTasks();
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+  }
+})();
