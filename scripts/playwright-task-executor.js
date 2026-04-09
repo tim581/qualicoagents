@@ -1,5 +1,8 @@
+// playwright-task-executor.js v2.2 — auto-downloads scripts from GitHub before each run
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
+const https = require('https');
+const fs = require('fs');
 require('dotenv').config();
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -94,9 +97,49 @@ const SCRIPT_TASKS = {
   'to-simulation':  'flieber-replenishment-simulator.js',
 };
 
+const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
+
+function downloadFromGitHub(scriptName) {
+  return new Promise((resolve, reject) => {
+    const url = GITHUB_RAW + scriptName;
+    const filePath = path.join(__dirname, scriptName);
+    console.log(`📥 Downloading latest ${scriptName} from GitHub...`);
+    https.get(url, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        https.get(res.headers.location, (res2) => {
+          const chunks = [];
+          res2.on('data', (d) => chunks.push(d));
+          res2.on('end', () => {
+            fs.writeFileSync(filePath, Buffer.concat(chunks));
+            const firstLine = fs.readFileSync(filePath, 'utf-8').split('\n')[0];
+            console.log(`✅ Downloaded: ${firstLine}`);
+            resolve();
+          });
+        }).on('error', reject);
+        return;
+      }
+      const chunks = [];
+      res.on('data', (d) => chunks.push(d));
+      res.on('end', () => {
+        fs.writeFileSync(filePath, Buffer.concat(chunks));
+        const firstLine = fs.readFileSync(filePath, 'utf-8').split('\n')[0];
+        console.log(`✅ Downloaded: ${firstLine}`);
+        resolve();
+      });
+    }).on('error', reject);
+  });
+}
+
 async function executeScriptTask(task) {
   const scriptName = SCRIPT_TASKS[task.task_type];
   const scriptPath = path.join(__dirname, scriptName);
+  
+  // Auto-download latest version from GitHub before running
+  try {
+    await downloadFromGitHub(scriptName);
+  } catch (e) {
+    console.log(`⚠️ GitHub download failed, using local version: ${e.message}`);
+  }
   
   console.log(`\n🔧 Running script: ${scriptName} for task type: ${task.task_type}`);
   
