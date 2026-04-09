@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.6
+ * flieber-replenishment-simulator.js  v1.7
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -142,58 +142,175 @@ async function login(page) {
 }
 
 // ── DATE PICKER HELPER ────────────────────────────────────────────────────────
-// Navigates the calendar date picker to the target date and clicks the day.
-// The calendar shows month headers like "April 2026" with < > navigation arrows.
+// v1.7: Rewritten to use evaluate() for finding date inputs near labels.
+// Chakra UI date fields are regular inputs, not "Set date" buttons.
+
+// New pickDate function for v1.7
+// Key changes:
+// 1. Uses evaluate() to find label + nearby input/button (not "Set date" text)
+// 2. Falls back to clicking all visible inputs near the label
+// 3. Better Chakra calendar navigation
 
 async function pickDate(page, targetDate, fieldLabel) {
   console.log(`  📅 Picking date: ${formatDate(targetDate)} for "${fieldLabel}"`);
   await dbLog('date-picker', 'info', `Picking ${formatDate(targetDate)} for ${fieldLabel}`);
 
-  // NOTE: Use page-level selectors (Chakra UI renders modals in portals).
+  // NOTE: Chakra UI renders modals in portals — use page-level selectors.
   
-  // Strategy: Find the label, then find the "Set date" button in the same row/container.
-  // From screenshot: layout is label on top, "📅 Set date" button below.
-  const labelEl = page.getByText(fieldLabel, { exact: false }).first();
-  await labelEl.waitFor({ timeout: 5000 });
-  
-  // Go to parent wrapper and find the date button
-  const wrapper = labelEl.locator('..');
   let clicked = false;
   
-  // Approach 1: Find "Set date" text in the wrapper
+  // Approach 1: Use evaluate() to find the label and click the nearest input/button
   try {
-    const setDateBtn = wrapper.getByText('Set date', { exact: false }).first();
-    await setDateBtn.click({ timeout: 3000 });
-    clicked = true;
-  } catch {}
+    const result = await page.evaluate((label) => {
+      // Find elements containing the label text
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const node = walker.currentNode;
+        if (node.textContent.trim().toLowerCase().includes(label.toLowerCase())) {
+          // Found the label — now find the nearest clickable date element
+          let container = node.parentElement;
+          
+          // Walk up to find a reasonable container (max 5 levels)
+          for (let i = 0; i < 5; i++) {
+            if (!container) break;
+            
+            // Look for inputs, buttons with date-like content
+            const inputs = container.querySelectorAll('input:not([role="combobox"]), button:not([class*="close"])');
+            for (const el of inputs) {
+              // Skip if it's a checkbox or hidden
+              if (el.type === 'checkbox' || el.type === 'hidden') continue;
+              if (el.offsetParent === null) continue; // not visible
+              
+              // Check if this looks like a date picker trigger
+              const text = el.textContent || el.value || el.placeholder || '';
+              const classes = el.className || '';
+              
+              // Click it if it's an input or a button near our label
+              if (el.tagName === 'INPUT' || 
+                  text.match(/set date|select date|pick|calendar/i) ||
+                  classes.match(/date|calendar|picker/i) ||
+                  el.querySelector('svg') // icon button
+              ) {
+                el.click();
+                return { clicked: true, tag: el.tagName, text: text.substring(0, 50), classes: classes.substring(0, 80) };
+              }
+            }
+            
+            container = container.parentElement;
+          }
+          
+          // Broader: try clicking the first non-combobox input in the parent row
+          let row = node.parentElement;
+          for (let i = 0; i < 3; i++) {
+            if (!row) break;
+            const anyInput = row.querySelector('input:not([role="combobox"]):not([type="checkbox"]):not([type="hidden"])');
+            if (anyInput && anyInput.offsetParent !== null) {
+              anyInput.click();
+              return { clicked: true, tag: 'INPUT', text: anyInput.value || anyInput.placeholder || '', via: 'row-input' };
+            }
+            const anyBtn = row.querySelector('button');
+            if (anyBtn && anyBtn.offsetParent !== null && !anyBtn.className.includes('close')) {
+              anyBtn.click();
+              return { clicked: true, tag: 'BUTTON', text: anyBtn.textContent?.substring(0, 50) || '', via: 'row-button' };
+            }
+            row = row.parentElement;
+          }
+        }
+      }
+      return { clicked: false };
+    }, fieldLabel);
+    
+    if (result.clicked) {
+      clicked = true;
+      console.log(`  ✅ Clicked date element via evaluate(): <${result.tag}> "${result.text}" ${result.via || ''}`);
+    }
+  } catch (e) {
+    console.log(`  ⚠️ evaluate() approach failed: ${e.message.substring(0, 100)}`);
+  }
   
-  // Approach 2: Find input or button with calendar-like attributes in wrapper
+  // Approach 2: Playwright — find label, then sibling/parent inputs
   if (!clicked) {
     try {
-      const dateBtn = wrapper.locator('button, input[type="text"], [class*="date"], [class*="Date"]').first();
-      await dateBtn.click({ timeout: 3000 });
-      clicked = true;
+      const labelEl = page.getByText(fieldLabel, { exact: false }).first();
+      await labelEl.waitFor({ timeout: 5000 });
+      
+      for (const levels of ['..', '../..', '../../..', '../../../..']) {
+        try {
+          const wrapper = labelEl.locator(levels);
+          // Try any input that's not a combobox
+          const input = wrapper.locator('input:not([role="combobox"]):not([type="checkbox"]):not([type="hidden"])').first();
+          if (await input.count() > 0) {
+            await input.click({ timeout: 2000 });
+            clicked = true;
+            console.log(`  ✅ Clicked input via parent traversal (${levels})`);
+            break;
+          }
+          // Try any button with "date" or "Set" in it, or with an SVG icon
+          const btn = wrapper.locator('button:has(svg), button:has-text("Set"), button:has-text("date")').first();
+          if (await btn.count() > 0) {
+            await btn.click({ timeout: 2000 });
+            clicked = true;
+            console.log(`  ✅ Clicked button via parent traversal (${levels})`);
+            break;
+          }
+        } catch {}
+      }
     } catch {}
   }
   
-  // Approach 3: Broader — find all "Set date" buttons in modal by position
+  // Approach 3: By index — PO has 1 date field, TO has 2 (departure=0, arrival=1)
+  if (!clicked) {
+    try {
+      // Find all visible elements that look like date inputs on the modal
+      const dateInputs = page.locator('[class*="date" i] input, [class*="Date"] input, input[placeholder*="date" i], input[type="date"]');
+      const count = await dateInputs.count();
+      console.log(`  ℹ️ Found ${count} date-like inputs`);
+      
+      if (count > 0) {
+        const idx = fieldLabel.toLowerCase().includes('departure') ? 0 :
+                    fieldLabel.toLowerCase().includes('arrival') && count > 1 ? 1 : 0;
+        await dateInputs.nth(idx).click({ timeout: 3000 });
+        clicked = true;
+      }
+    } catch {}
+  }
+  
+  // Approach 4: Find "Set date" text (original approach, kept as fallback)
   if (!clicked) {
     try {
       const allDateBtns = page.getByText('Set date', { exact: false });
       const count = await allDateBtns.count();
-      console.log(`  ℹ️ Found ${count} "Set date" buttons in modal`);
+      console.log(`  ℹ️ Found ${count} "Set date" buttons`);
       
-      // For PO: only 1 date field → index 0
-      // For TO: "departure" = index 0, "arrival" = index 1
-      const idx = fieldLabel.toLowerCase().includes('departure') ? 0 :
-                  fieldLabel.toLowerCase().includes('arrival') && count > 1 ? 1 : 0;
-      await allDateBtns.nth(idx).click({ timeout: 3000 });
-      clicked = true;
+      if (count > 0) {
+        const idx = fieldLabel.toLowerCase().includes('departure') ? 0 :
+                    fieldLabel.toLowerCase().includes('arrival') && count > 1 ? 1 : 0;
+        await allDateBtns.nth(idx).click({ timeout: 3000 });
+        clicked = true;
+      }
     } catch {}
   }
   
   if (!clicked) {
     await dbShot(page, `date-fail-${fieldLabel}`, `Could not open date picker for ${fieldLabel}`);
+    // Before throwing, log what's visible on the page for debugging
+    try {
+      const pageInfo = await page.evaluate((label) => {
+        const allInputs = document.querySelectorAll('input:not([type="hidden"])');
+        const allButtons = document.querySelectorAll('button');
+        const inputInfo = Array.from(allInputs).map(i => ({
+          type: i.type, role: i.role, placeholder: i.placeholder,
+          value: i.value?.substring(0, 30), visible: i.offsetParent !== null,
+          classes: i.className?.substring(0, 50)
+        }));
+        const buttonInfo = Array.from(allButtons).slice(0, 20).map(b => ({
+          text: b.textContent?.trim().substring(0, 40), visible: b.offsetParent !== null,
+          classes: b.className?.substring(0, 50)
+        }));
+        return { inputs: inputInfo, buttons: buttonInfo };
+      }, fieldLabel);
+      await dbLog(`date-fail-debug-${fieldLabel}`, 'info', JSON.stringify(pageInfo).substring(0, 3000));
+    } catch {}
     throw new Error(`Failed to open date picker: ${fieldLabel}`);
   }
   
@@ -201,37 +318,64 @@ async function pickDate(page, targetDate, fieldLabel) {
   await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
   
   // Now navigate to the correct month
-  const targetMonth = targetDate.getMonth(); // 0-indexed
+  const targetMonth = targetDate.getMonth();
   const targetYear = targetDate.getFullYear();
   const targetDay = targetDate.getDate();
   
-  // Calendar header shows something like "April 2026"
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
                       'July', 'August', 'September', 'October', 'November', 'December'];
   const targetMonthStr = `${monthNames[targetMonth]} ${targetYear}`;
   
   // Navigate forward until we see the target month
   let attempts = 0;
-  while (attempts < 24) { // max 24 months forward
-    // Broad set of selectors for calendar month header (Chakra UI, React DatePicker, etc.)
-    const headerText = await page.locator('[class*="calendar"] [class*="header"], [class*="Calendar"] [class*="Header"], th[colspan], [class*="month-year"], [aria-live], [class*="datepicker"] [class*="heading"], [class*="DatePicker"] [class*="title"], [class*="calendar-header"], [class*="month-label"]')
-      .first().textContent().catch(async () => {
-        // Fallback: find any text on page matching "MonthName YYYY" pattern
-        const allText = await page.locator('text=/(?:January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{4}/').first().textContent().catch(() => '');
-        return allText;
-      });
+  while (attempts < 24) {
+    // Try multiple selectors for the calendar header
+    const headerText = await page.evaluate(() => {
+      const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                      'July', 'August', 'September', 'October', 'November', 'December'];
+      // Find any text on page that matches "MonthName YYYY"
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const text = walker.currentNode.textContent.trim();
+        for (const m of months) {
+          if (text.includes(m) && text.match(/\d{4}/)) {
+            return text;
+          }
+        }
+      }
+      return '';
+    });
     
     if (headerText.includes(monthNames[targetMonth]) && headerText.includes(String(targetYear))) {
       console.log(`  ✅ Calendar showing: ${headerText}`);
       break;
     }
     
-    // Click next month arrow
-    const nextBtn = page.locator('[class*="calendar"] button[aria-label*="next" i], [class*="calendar"] button:has-text(">"), [class*="Calendar"] [class*="next"], button[aria-label="Next Month"], [class*="navigation"] button:last-child, button:has([class*="chevron-right"]), button:has([class*="right"])').first();
-    await nextBtn.click({ timeout: 3000 }).catch(async () => {
-      // Fallback: try the > arrow button
-      await page.locator('button:has-text("›"), button:has-text(">")').last().click({ timeout: 3000 });
-    });
+    console.log(`  ➡️ Current: "${headerText}" → navigating to ${targetMonthStr}`);
+    
+    // Click next month — try multiple selectors
+    try {
+      await page.locator('button[aria-label*="next" i], button[aria-label="Next Month"], button:has([class*="chevron-right"]), button:has([class*="right"])').first().click({ timeout: 2000 });
+    } catch {
+      try {
+        await page.locator('button:has-text("›"), button:has-text(">")').last().click({ timeout: 2000 });
+      } catch {
+        // Use evaluate as last resort
+        await page.evaluate(() => {
+          const btns = document.querySelectorAll('button');
+          for (const b of btns) {
+            if (b.textContent?.trim() === '›' || b.textContent?.trim() === '>' || 
+                b.getAttribute('aria-label')?.toLowerCase().includes('next')) {
+              b.click();
+              return;
+            }
+          }
+          // Click the rightmost button near the calendar header
+          const rightBtns = Array.from(btns).filter(b => b.offsetParent !== null);
+          if (rightBtns.length > 0) rightBtns[rightBtns.length - 1].click();
+        });
+      }
+    }
     await page.waitForTimeout(500);
     attempts++;
   }
@@ -242,12 +386,41 @@ async function pickDate(page, targetDate, fieldLabel) {
   }
   
   // Click the target day
-  // Days are typically buttons or td elements with just the number
-  const dayBtn = page.locator(`[class*="calendar"] button:text-is("${targetDay}"), [class*="Calendar"] button:text-is("${targetDay}"), td:text-is("${targetDay}"), [role="gridcell"]:text-is("${targetDay}"), button[aria-label*="${targetDay}"]`).first();
+  try {
+    // Use evaluate for most reliable day clicking
+    const dayClicked = await page.evaluate((day) => {
+      // Find buttons/cells with just the day number
+      const elements = document.querySelectorAll('button, td, [role="gridcell"]');
+      for (const el of elements) {
+        if (el.textContent?.trim() === String(day) && el.offsetParent !== null) {
+          // Make sure it's in the calendar (not random text elsewhere)
+          const parent = el.closest('[class*="calendar" i], [class*="Calendar"], [role="grid"], [class*="datepicker" i], [class*="DatePicker"]');
+          if (parent) {
+            el.click();
+            return true;
+          }
+        }
+      }
+      // Fallback: click any visible element with exact day text
+      for (const el of elements) {
+        if (el.textContent?.trim() === String(day) && el.offsetParent !== null) {
+          el.click();
+          return true;
+        }
+      }
+      return false;
+    }, targetDay);
+    
+    if (!dayClicked) {
+      // Playwright fallback
+      await page.locator(`button:text-is("${targetDay}"), td:text-is("${targetDay}"), [role="gridcell"]:text-is("${targetDay}")`).first().click({ timeout: 5000 });
+    }
+  } catch (e) {
+    await dbLog('date-picker', 'error', `Could not click day ${targetDay}: ${e.message}`);
+    throw e;
+  }
   
-  await dayBtn.click({ timeout: 5000 });
   await page.waitForTimeout(500);
-  
   await dbLog('date-picker', 'success', `Selected ${formatDate(targetDate)} for ${fieldLabel}`);
   console.log(`  ✅ Date selected: ${formatDate(targetDate)}`);
 }
@@ -260,7 +433,7 @@ async function clickSelectAll(page, dropdownLabel) {
   console.log(`  🔽 Opening "${dropdownLabel}" dropdown and selecting all...`);
   await dbLog('select-all', 'info', `Opening ${dropdownLabel} dropdown`);
   
-  // v1.6 FIX: The dropdown is a CUSTOM CHECKBOX DROPDOWN, not React Select.
+  // v1.7 FIX: The dropdown is a CUSTOM CHECKBOX DROPDOWN, not React Select.
   // Screenshot analysis shows: clicking the control opens a list of checkboxes
   // including "Select all", "3PL CA", "3PL UK", etc.
   
@@ -341,7 +514,7 @@ async function clickSelectAll(page, dropdownLabel) {
   await dbShot(page, `select-opened-${dropdownLabel.replace(/\s+/g, '-').toLowerCase()}`, `Dropdown opened: ${dropdownLabel}`);
   
   // STEP 2: CLICK "SELECT ALL" CHECKBOX
-  // v1.6 FIX: Use page.evaluate() to find and click "Select all" via vanilla JS.
+  // v1.7 FIX: Use page.evaluate() to find and click "Select all" via vanilla JS.
   // Playwright selectors failed in v1.5 despite the element being visible.
   // Also: scope fallback to dropdown container only (not all 76 checkboxes on page).
   
