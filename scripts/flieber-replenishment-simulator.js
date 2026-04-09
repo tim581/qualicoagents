@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.7
+ * flieber-replenishment-simulator.js  v1.8
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -642,15 +642,12 @@ async function clickSelectAll(page, dropdownLabel) {
       try {
         await options.nth(i).click({ timeout: 2000 });
         await page.waitForTimeout(200);
-          selected = true;
-        } catch { break; }
-      }
+        selected = true;
+      } catch { break; }
     }
   }
   
-  await page.waitForTimeout(500);
-  
-  // STEP 3: VERIFY CHIPS/SELECTIONS APPEARED
+  // STEP 3: VERIFY CHIPS/SELECTIONS APPEARED (still inside clickSelectAll)
   // After selecting, chips (multi-value badges) should appear in the control
   const chips = page.locator('[class*="multiValue"], [class*="multi-value"], [class*="chip"], [class*="tag"], [class*="badge"]');
   const chipCount = await chips.count();
