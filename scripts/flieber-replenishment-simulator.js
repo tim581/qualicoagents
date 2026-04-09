@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v1.8
+ * flieber-replenishment-simulator.js  v1.9 — Chakra calendar navigation rewrite
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -327,20 +327,32 @@ async function pickDate(page, targetDate, fieldLabel) {
   const targetMonthStr = `${monthNames[targetMonth]} ${targetYear}`;
   
   // Navigate forward until we see the target month
+  // Chakra calendar: two SVG nav buttons flanking the month/year header
+  // Strategy: find calendar container, get its SVG buttons, click the rightmost one (= next)
   let attempts = 0;
   while (attempts < 24) {
-    // Try multiple selectors for the calendar header
     const headerText = await page.evaluate(() => {
       const months = ['January', 'February', 'March', 'April', 'May', 'June',
                       'July', 'August', 'September', 'October', 'November', 'December'];
-      // Find any text on page that matches "MonthName YYYY"
+      // Look inside popovers, dialogs, calendar containers first
+      const containers = document.querySelectorAll(
+        '[class*="popover" i], [class*="calendar" i], [role="dialog"], [class*="datepicker" i], [class*="DatePicker"]'
+      );
+      for (const container of containers) {
+        const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        while (walker.nextNode()) {
+          const text = walker.currentNode.textContent.trim();
+          for (const m of months) {
+            if (text.includes(m) && text.match(/\d{4}/)) return text;
+          }
+        }
+      }
+      // Fallback: search whole page
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       while (walker.nextNode()) {
         const text = walker.currentNode.textContent.trim();
         for (const m of months) {
-          if (text.includes(m) && text.match(/\d{4}/)) {
-            return text;
-          }
+          if (text.includes(m) && text.match(/\d{4}/)) return text;
         }
       }
       return '';
@@ -351,31 +363,60 @@ async function pickDate(page, targetDate, fieldLabel) {
       break;
     }
     
-    console.log(`  ➡️ Current: "${headerText}" → navigating to ${targetMonthStr}`);
+    console.log(`  ➡️ Attempt ${attempts + 1}: "${headerText}" → need ${targetMonthStr}`);
     
-    // Click next month — try multiple selectors
-    try {
-      await page.locator('button[aria-label*="next" i], button[aria-label="Next Month"], button:has([class*="chevron-right"]), button:has([class*="right"])').first().click({ timeout: 2000 });
-    } catch {
-      try {
-        await page.locator('button:has-text("›"), button:has-text(">")').last().click({ timeout: 2000 });
-      } catch {
-        // Use evaluate as last resort
-        await page.evaluate(() => {
-          const btns = document.querySelectorAll('button');
-          for (const b of btns) {
-            if (b.textContent?.trim() === '›' || b.textContent?.trim() === '>' || 
-                b.getAttribute('aria-label')?.toLowerCase().includes('next')) {
-              b.click();
-              return;
-            }
+    // Click next month using evaluate — most reliable for Chakra
+    const clicked = await page.evaluate(() => {
+      // Strategy 1: Find calendar container and its SVG nav buttons
+      const containers = document.querySelectorAll(
+        '[class*="popover" i], [class*="calendar" i], [role="dialog"], [class*="datepicker" i]'
+      );
+      for (const container of containers) {
+        const btns = Array.from(container.querySelectorAll('button')).filter(b => b.offsetParent !== null);
+        // Chakra nav buttons have SVGs (arrows/chevrons) and are near the top
+        const svgBtns = btns.filter(b => b.querySelector('svg, [class*="icon" i]'));
+        if (svgBtns.length >= 2) {
+          // The second SVG button is "next month" (first is "prev")
+          svgBtns[1].click();
+          return 'svg-btn-in-container';
+        }
+        // Fallback: look for aria-label
+        for (const b of btns) {
+          const label = (b.getAttribute('aria-label') || '').toLowerCase();
+          if (label.includes('next') || label.includes('forward')) {
+            b.click();
+            return 'aria-label-next';
           }
-          // Click the rightmost button near the calendar header
-          const rightBtns = Array.from(btns).filter(b => b.offsetParent !== null);
-          if (rightBtns.length > 0) rightBtns[rightBtns.length - 1].click();
-        });
+        }
       }
+      
+      // Strategy 2: Find any button with next/forward/chevron anywhere on page
+      const allBtns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null);
+      for (const b of allBtns) {
+        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+        if (label.includes('next month') || label.includes('next')) {
+          b.click();
+          return 'aria-label-global';
+        }
+      }
+      // Strategy 3: find › or > buttons
+      for (const b of allBtns) {
+        const t = b.textContent?.trim();
+        if (t === '›' || t === '>' || t === '»') {
+          b.click();
+          return 'text-arrow';
+        }
+      }
+      return null;
+    });
+    
+    await dbLog('date-picker', 'info', `Nav click attempt ${attempts + 1}: method=${clicked}, header="${headerText}"`);
+    
+    if (!clicked) {
+      await dbLog('date-picker', 'error', `No next-month button found! Taking screenshot for debug.`);
+      await dbShot(page, `date-picker-nav-fail-${attempts}`, 'Calendar state when nav button not found');
     }
+    
     await page.waitForTimeout(500);
     attempts++;
   }
