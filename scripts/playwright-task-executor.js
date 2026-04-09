@@ -83,6 +83,8 @@ async function executeAction(page, action, creds = {}) {
 }
 
 // ── SCRIPT-BASED TASK ROUTING ─────────────────────────────────────────────────
+// Maps task_type to standalone Playwright scripts that handle their own browser.
+// These scripts are self-contained (login, execute, log to Supabase).
 const { execSync } = require('child_process');
 const path = require('path');
 
@@ -90,24 +92,13 @@ const SCRIPT_TASKS = {
   'forecast-sync':  'flieber-forecast-updater.js',
   'po-simulation':  'flieber-replenishment-simulator.js',
   'to-simulation':  'flieber-replenishment-simulator.js',
-  'price-scrape':   'price-monitor-scraper.js',
-};
-
-// Timeout per task type (ms)
-const SCRIPT_TIMEOUTS = {
-  'forecast-sync':  1800000,  // 30 min (5 stores × ~9 products = ~22 min)
-  'po-simulation':  600000,   // 10 min
-  'to-simulation':  600000,   // 10 min
-  'price-scrape':   3600000,  // 60 min
 };
 
 async function executeScriptTask(task) {
   const scriptName = SCRIPT_TASKS[task.task_type];
   const scriptPath = path.join(__dirname, scriptName);
-  const timeout = SCRIPT_TIMEOUTS[task.task_type] || 300000;
   
   console.log(`\n🔧 Running script: ${scriptName} for task type: ${task.task_type}`);
-  console.log(`   Timeout: ${timeout / 60000} min`);
   
   // For replenishment simulator, set RUN_MODE via env variable
   const env = { ...process.env };
@@ -118,7 +109,7 @@ async function executeScriptTask(task) {
     const output = execSync(`node "${scriptPath}"`, {
       env,
       cwd: __dirname,
-      timeout: timeout,
+      timeout: 3600000, // 60 min max
       stdio: 'pipe',
       encoding: 'utf-8',
     });
@@ -196,37 +187,43 @@ async function pollTasks() {
       // Execute
       const result = await executeTask(task);
 
-      // Update status
+      // Save result
       await supabase
         .from('Browser_Tasks')
         .update({
           status: result.success ? 'done' : 'failed',
-          result: result.success ? result.data : { error: result.error },
-          completed_at: new Date().toISOString(),
+          result: result.data || null,
+          error_message: result.error || null,
+          completed_at: new Date().toISOString()
         })
         .eq('id', task.id);
     }
+
   } catch (error) {
-    console.error(`\n❌ Poll error: ${error.message}`);
+    console.error('Poll error:', error.message);
   }
 }
 
-// ── MAIN LOOP ─────────────────────────────────────────────────────────────────
-let running = true;
+async function main() {
+  console.log('🎬 Browser Task Executor Started');
+  console.log(`📍 Checking Supabase: ${SUPABASE_URL}`);
+
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    console.error('❌ Missing .env credentials');
+    process.exit(1);
+  }
+
+  // Poll continuously
+  setInterval(() => pollTasks(), POLL_INTERVAL);
+
+  // Also poll immediately on start
+  await pollTasks();
+}
 
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
-  running = false;
   if (browser) await browser.close();
   process.exit(0);
 });
 
-(async () => {
-  console.log('🤖 Browser Task Executor v2.1 — 30min forecast timeout');
-  console.log('   Polling every 30s for pending tasks...\n');
-  
-  while (running) {
-    await pollTasks();
-    await new Promise(r => setTimeout(r, POLL_INTERVAL));
-  }
-})();
+main().catch(console.error);

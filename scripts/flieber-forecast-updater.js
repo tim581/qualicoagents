@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.5 — close modal after EVERY product + waitForProductList recovery
+ * flieber-forecast-updater.js  v8.6 — skip already-completed stores + 60 min timeout
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -61,6 +61,22 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 const RUN_ID = `run_${Date.now()}`;
 console.log(`\n🔍 Debug run ID: ${RUN_ID}`);
 console.log(`   → Query Supabase "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}' after run\n`);
+
+// Check which stores were already completed in the last 24h (skip them on re-run)
+async function getCompletedStores() {
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const res = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log?step=eq.store-complete&status=eq.success&created_at=gte.${since}&select=message`,
+      { headers: { 'apikey': process.env.SUPABASE_KEY, 'Authorization': `Bearer ${process.env.SUPABASE_KEY}` } }
+    );
+    if (!res.ok) return [];
+    const rows = await res.json();
+    const completed = rows.map(r => r.message.trim());
+    if (completed.length > 0) console.log(`⏭️  Already completed in last 24h: ${completed.join(', ')}`);
+    return completed;
+  } catch { return []; }
+}
 
 async function dbLog(step, status, message) {
   // status: 'info' | 'success' | 'warn' | 'error'
@@ -696,9 +712,10 @@ async function waitForProductList(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.5\n');
+  console.log('🚀 Flieber Forecast Updater v8.6\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
+  const completedStores = await getCompletedStores();
   const allData = await loadForecastData();
 
   const browser = await chromium.launch({
@@ -720,6 +737,13 @@ async function main() {
       : STORES;
 
     for (const store of storesToRun) {
+      // v8.6: Skip stores already completed in last 24h
+      if (completedStores.includes(store.name)) {
+        console.log(`⏭️  ${store.name} already done in last 24h — skipping`);
+        await dbLog('main', 'info', `Skipped ${store.name} (already completed)`);
+        continue;
+      }
+
       const products = allData[store.channelId];
       if (!products || Object.keys(products).length === 0) {
         console.log(`⏭️  No data for ${store.name} — skipping`);
@@ -770,6 +794,7 @@ async function main() {
       }
 
       console.log(`✅ Done with ${store.name}`);
+      await dbLog('store-complete', 'success', store.name);
     }
 
   } finally {
