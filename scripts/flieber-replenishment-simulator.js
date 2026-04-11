@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.7 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.8 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -235,74 +235,82 @@ async function pickDate(page, targetDate, fieldLabel) {
   await page.waitForTimeout(1000);
   await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
 
-  // STEP 2: COMPREHENSIVE button/popover dump — find ALL buttons on page + any popover containers
-  const pageDebug = await page.evaluate(() => {
-    const results = { popovers: [], buttons: [], monthHeaders: [] };
+  // STEP 2: Find the CALENDAR POPOVER — the specific popover containing day numbers
+  const calendarInfo = await page.evaluate(() => {
+    // Check all popover-like containers for one that looks like a calendar
+    const candidates = document.querySelectorAll(
+      '.chakra-popover__content, [data-popper-placement], [role="dialog"], .chakra-portal > div'
+    );
     
-    // Find popover/portal containers
-    const popoverSelectors = [
-      '.chakra-popover__content', '[data-popper-placement]', '[role="dialog"]',
-      '.chakra-modal__content', '[data-chakra-portal]', '.chakra-portal'
-    ];
-    for (const sel of popoverSelectors) {
-      const els = document.querySelectorAll(sel);
-      if (els.length > 0) {
-        results.popovers.push({ selector: sel, count: els.length, 
-          html: [...els].map(e => e.innerHTML.substring(0, 200)).slice(0, 3) });
+    for (let i = 0; i < candidates.length; i++) {
+      const el = candidates[i];
+      const text = el.textContent || '';
+      // A calendar popover has day numbers (1-31) AND month names
+      const hasNumbers = /\b[12]?\d\b/.test(text);
+      const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+      const hasMonth = months.some(m => text.includes(m));
+      if (hasNumbers && hasMonth) {
+        // Found the calendar! Mark it for Playwright
+        el.setAttribute('data-pw-calendar', 'true');
+        // Get all clickable elements inside
+        const buttons = el.querySelectorAll('button, [role="button"], span[tabindex], div[tabindex]');
+        const btnInfo = [...buttons].filter(b => b.offsetParent !== null).map(b => ({
+          text: (b.textContent || '').trim().substring(0, 40),
+          tag: b.tagName,
+          hasSvg: b.querySelector('svg') !== null,
+          ariaLabel: (b.getAttribute('aria-label') || '').substring(0, 50),
+          classes: (b.className || '').substring(0, 80),
+          innerHTML: b.innerHTML.substring(0, 150)
+        }));
+        // Get the raw HTML structure (first 3000 chars)
+        return {
+          found: true,
+          index: i,
+          tag: el.tagName,
+          classes: (el.className || '').substring(0, 100),
+          buttonCount: btnInfo.length,
+          buttons: btnInfo.slice(0, 25),
+          htmlPreview: el.innerHTML.substring(0, 2000)
+        };
       }
     }
     
-    // Find ALL visible buttons on page with their content
-    const buttons = document.querySelectorAll('button, [role="button"]');
-    for (const btn of buttons) {
-      if (btn.offsetParent === null) continue; // skip hidden
-      const text = (btn.textContent || '').trim();
-      const hasSvg = btn.querySelector('svg') !== null;
-      const ariaLabel = btn.getAttribute('aria-label') || '';
-      // Only log interesting buttons (small text or SVG or near calendar)
-      if (text.length < 20 || hasSvg || ariaLabel) {
-        results.buttons.push({
-          text: text.substring(0, 30),
-          hasSvg,
-          ariaLabel: ariaLabel.substring(0, 50),
-          classes: (btn.className || '').substring(0, 60),
-          tag: btn.tagName,
-          innerHTML: btn.innerHTML.substring(0, 120)
-        });
-      }
-    }
-    
-    // Find month headers
-    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    const allEls = document.querySelectorAll('*');
-    for (const el of allEls) {
-      const t = (el.textContent || '').trim();
-      if (t.length < 30 && el.children.length === 0) {
-        for (const m of months) {
-          if (t.includes(m) && t.match(/\d{4}/)) {
-            results.monthHeaders.push({ text: t, tag: el.tagName, classes: (el.className || '').substring(0, 60) });
-          }
-        }
-      }
-    }
-    
-    return results;
+    // Not found — dump what we have for debugging
+    return {
+      found: false,
+      candidateCount: candidates.length,
+      previews: [...candidates].map((c, i) => ({
+        index: i,
+        tag: c.tagName,
+        textLen: (c.textContent || '').length,
+        text: (c.textContent || '').substring(0, 100)
+      })).slice(0, 10)
+    };
   });
   
-  // Log each part separately to avoid truncation
-  await dbLog('date-debug-popovers', 'info', JSON.stringify(pageDebug.popovers));
-  await dbLog('date-debug-buttons', 'info', JSON.stringify(pageDebug.buttons.slice(0, 15)));
-  await dbLog('date-debug-months', 'info', JSON.stringify(pageDebug.monthHeaders));
-  console.log(`  🔍 Popovers: ${pageDebug.popovers.length}, Buttons: ${pageDebug.buttons.length}, Month headers: ${pageDebug.monthHeaders.length}`);
+  await dbLog('calendar-popover-search', 'info', JSON.stringify(calendarInfo).substring(0, 2500));
+  
+  if (calendarInfo.found) {
+    // Log the buttons found INSIDE the calendar
+    await dbLog('calendar-buttons', 'info', JSON.stringify(calendarInfo.buttons));
+    await dbLog('calendar-html', 'info', calendarInfo.htmlPreview?.substring(0, 2500));
+    console.log(`  🔍 Calendar popover found! ${calendarInfo.buttonCount} buttons inside`);
+  } else {
+    await dbLog('calendar-popover-search', 'warning', 'No calendar popover found — dumping all candidates');
+    await dbShot(page, 'no-calendar-popover', 'Calendar popover not found');
+    throw new Error('Calendar popover not found after clicking date input');
+  }
 
-  // STEP 3: Navigate to target month
+  // STEP 3: Navigate to target month — SCOPED to the calendar popover
   for (let attempt = 0; attempt < 24; attempt++) {
-    // Check if we're on the right month — search entire page for "Month Year" text
+    // Read current month from WITHIN the calendar popover only
     const currentMonthText = await page.evaluate((names) => {
-      const all = document.querySelectorAll('*');
-      for (const el of all) {
+      const cal = document.querySelector('[data-pw-calendar="true"]');
+      if (!cal) return null;
+      const els = cal.querySelectorAll('*');
+      for (const el of els) {
         const t = (el.textContent || '').trim();
-        if (t.length < 30 && el.children.length === 0) {
+        if (t.length < 30 && el.children.length <= 2) {
           for (let y = 2025; y <= 2030; y++) {
             for (const m of names) {
               if (t === `${m} ${y}`) return t;
@@ -326,117 +334,130 @@ async function pickDate(page, targetDate, fieldLabel) {
       throw new Error(`Could not navigate to ${targetMonthStr} after 24 attempts. Stuck at ${currentMonthText}`);
     }
 
-    // Click the forward navigation button — SVG-aware strategies
+    // Find and click the NEXT button WITHIN the calendar popover
     let clicked = false;
 
-    // Strategy A: Find button with SVG near the month header (calendar nav buttons have SVG chevrons)
+    // Strategy A: Inside calendar, find buttons near the month header — last one = next
     try {
-      const navResult = await page.evaluate((targetMonth) => {
-        // Find the month header text
-        const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-        const allEls = [...document.querySelectorAll('*')];
-        let monthHeader = null;
-        for (const el of allEls) {
-          const t = (el.textContent || '').trim();
-          if (t.length < 30 && el.children.length === 0 && months.some(m => t.includes(m)) && t.match(/\d{4}/)) {
-            monthHeader = el;
-            break;
-          }
-        }
-        if (!monthHeader) return { found: false, reason: 'No month header found' };
+      const navResult = await page.evaluate(() => {
+        const cal = document.querySelector('[data-pw-calendar="true"]');
+        if (!cal) return { found: false, reason: 'No calendar marker' };
         
-        // Walk UP to find the header row container (usually contains: [<] [Month Year] [>])
-        let container = monthHeader.parentElement;
-        for (let i = 0; i < 5 && container; i++) {
-          const buttons = container.querySelectorAll('button, [role="button"]');
-          if (buttons.length >= 2) {
-            // Found a container with 2+ buttons — the last one is likely "next"
-            const lastBtn = buttons[buttons.length - 1];
-            lastBtn.setAttribute('data-pw-nav', 'next');
-            return { found: true, buttonCount: buttons.length, lastBtnText: (lastBtn.textContent || '').trim().substring(0, 20), 
-                     lastBtnHasSvg: lastBtn.querySelector('svg') !== null, containerTag: container.tagName };
-          }
-          container = container.parentElement;
+        // Find all buttons/clickable inside the calendar
+        const btns = [...cal.querySelectorAll('button, [role="button"]')].filter(b => b.offsetParent !== null);
+        
+        // Look for buttons that look like nav (SVG, single char, or small text)
+        const navBtns = btns.filter(b => {
+          const text = (b.textContent || '').trim();
+          const hasSvg = b.querySelector('svg') !== null;
+          const isSmall = text.length <= 2;
+          const isNav = hasSvg || isSmall || text === '>' || text === '<' || text === '›' || text === '‹';
+          return isNav;
+        });
+        
+        if (navBtns.length >= 2) {
+          // Last nav button = forward
+          const fwd = navBtns[navBtns.length - 1];
+          fwd.setAttribute('data-pw-nav', 'next');
+          return { found: true, strategy: 'nav-pair', count: navBtns.length, 
+                   text: (fwd.textContent || '').trim(), hasSvg: fwd.querySelector('svg') !== null };
         }
-        return { found: false, reason: 'No button pair found near month header' };
-      }, targetMonthStr);
+        
+        if (navBtns.length === 1) {
+          // Only one nav-like button — might be forward
+          navBtns[0].setAttribute('data-pw-nav', 'next');
+          return { found: true, strategy: 'single-nav', text: (navBtns[0].textContent || '').trim() };
+        }
+        
+        // Fallback: find ALL buttons, the last two are often prev/next
+        if (btns.length >= 2) {
+          const lastBtn = btns[btns.length - 1];
+          const text = (lastBtn.textContent || '').trim();
+          // Only if it's not a day number (1-31)
+          if (!/^\d{1,2}$/.test(text)) {
+            lastBtn.setAttribute('data-pw-nav', 'next');
+            return { found: true, strategy: 'last-non-day', text, count: btns.length };
+          }
+        }
+        
+        return { found: false, reason: 'No nav buttons in calendar', totalButtons: btns.length,
+                 btnTexts: btns.map(b => (b.textContent||'').trim().substring(0,10)).slice(0,20) };
+      });
       
-      await dbLog('date-nav-strategy-a', 'info', JSON.stringify(navResult));
+      await dbLog('date-nav-strategy', 'info', JSON.stringify(navResult));
       
       if (navResult.found) {
         await page.locator('[data-pw-nav="next"]').click({ timeout: 3000 });
         await page.evaluate(() => document.querySelector('[data-pw-nav]')?.removeAttribute('data-pw-nav'));
         clicked = true;
-        await dbLog('date-nav-click', 'info', `Click ${attempt+1}: Playwright nav button (${navResult.buttonCount} buttons, hasSvg=${navResult.lastBtnHasSvg})`);
+        await dbLog('date-nav-click', 'success', `Click ${attempt+1}: ${navResult.strategy} (text="${navResult.text}", svg=${navResult.hasSvg})`);
       }
     } catch (e) {
-      await dbLog('date-nav-click', 'warning', `Strategy A (SVG-aware) failed: ${e.message.substring(0, 150)}`);
+      await dbLog('date-nav-click', 'warning', `Strategy A failed: ${e.message.substring(0, 200)}`);
     }
 
-    // Strategy B: aria-label patterns
+    // Strategy B: aria-label within calendar scope
     if (!clicked) {
       try {
-        const nextBtn = page.locator('[aria-label*="next" i], [aria-label*="forward" i], [aria-label*="right" i]').first();
+        const nextBtn = page.locator('[data-pw-calendar="true"] [aria-label*="next" i], [data-pw-calendar="true"] [aria-label*="forward" i]').first();
         if (await nextBtn.count() > 0) {
           await nextBtn.click({ timeout: 2000 });
           clicked = true;
-          await dbLog('date-nav-click', 'info', `Click ${attempt+1}: aria-label next`);
+          await dbLog('date-nav-click', 'success', `Click ${attempt+1}: scoped aria-label`);
         }
       } catch (e) {
         await dbLog('date-nav-click', 'warning', `Strategy B failed: ${e.message.substring(0, 100)}`);
       }
     }
 
-    // Strategy C: text ">" fallback
     if (!clicked) {
-      try {
-        const arrows = page.locator('button, span, div').filter({ hasText: /^>$/ });
-        if (await arrows.count() > 0) {
-          await arrows.first().click({ timeout: 2000 });
-          clicked = true;
-          await dbLog('date-nav-click', 'info', `Click ${attempt+1}: text ">" (${await arrows.count()} found)`);
-        }
-      } catch (e) {}
-    }
-
-    if (!clicked) {
-      await dbShot(page, `date-nav-dump-${attempt}`, 'No nav button found');
+      await dbShot(page, `date-nav-fail-${attempt}`, 'No nav in calendar popover');
       await dbLog('date-nav-click', 'error', `Click ${attempt+1}: ALL strategies failed`);
-      throw new Error('No calendar navigation button found');
+      throw new Error('No calendar navigation button found inside popover');
     }
 
     await page.waitForTimeout(500);
   }
 
-  // STEP 4: Click the target day number
+  // STEP 4: Click the target day — SCOPED to calendar popover
   await page.waitForTimeout(300);
   console.log(`  🔘 Clicking day ${targetDay}...`);
   
-  // Find button/cell with exact day number text (leaf node to avoid clicking month headers)
   const dayClicked = await page.evaluate((day) => {
-    const all = document.querySelectorAll('button, td, [role="gridcell"]');
+    const cal = document.querySelector('[data-pw-calendar="true"]');
+    if (!cal) return { clicked: false, reason: 'No calendar marker' };
+    
+    // Find day buttons/cells inside calendar
+    const all = cal.querySelectorAll('button, td, [role="gridcell"], span, div');
     for (const el of all) {
       if (el.textContent?.trim() === String(day) && el.offsetParent !== null && el.children.length === 0) {
-        el.click();
-        return { clicked: true, tag: el.tagName };
+        el.setAttribute('data-pw-day', 'target');
+        return { clicked: true, tag: el.tagName, usePw: true };
       }
     }
-    // Retry with children allowed (some calendars wrap day in a span)
+    // Retry with children allowed
     for (const el of all) {
       if (el.textContent?.trim() === String(day) && el.offsetParent !== null) {
-        el.click();
-        return { clicked: true, tag: el.tagName, hasChildren: true };
+        el.setAttribute('data-pw-day', 'target');
+        return { clicked: true, tag: el.tagName, hasChildren: true, usePw: true };
       }
     }
     return { clicked: false };
   }, targetDay);
 
-  if (!dayClicked.clicked) {
-    await dbLog('date-picker', 'error', `Day ${targetDay} not found`);
-    // Last resort: Playwright text match
-    await page.getByText(String(targetDay), { exact: true }).first().click({ timeout: 5000 });
+  if (dayClicked.clicked && dayClicked.usePw) {
+    // Use Playwright click for React event handling
+    await page.locator('[data-pw-day="target"]').click({ timeout: 3000 });
+    await page.evaluate(() => document.querySelector('[data-pw-day]')?.removeAttribute('data-pw-day'));
+  } else if (!dayClicked.clicked) {
+    await dbLog('date-picker', 'error', `Day ${targetDay} not found in calendar popover`);
+    // Last resort: Playwright text match scoped to calendar
+    await page.locator('[data-pw-calendar="true"]').getByText(String(targetDay), { exact: true }).first().click({ timeout: 5000 });
   }
 
+  // Clean up calendar marker
+  await page.evaluate(() => document.querySelector('[data-pw-calendar]')?.removeAttribute('data-pw-calendar'));
+  
   await dbLog('date-picker', 'success', `Selected ${formatDate(targetDate)} for ${fieldLabel}`);
   console.log(`  ✅ Date selected: ${formatDate(targetDate)}`);
   await page.waitForTimeout(500);
@@ -1064,8 +1085,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.7 — simplified pickDate, env RUN_MODE');
-    console.log('📌 Script version: v2.7');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.8 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v2.8');
     await login(page);
     
     let poResult = null;
