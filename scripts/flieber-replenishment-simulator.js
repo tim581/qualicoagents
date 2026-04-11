@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.5 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.6 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -162,43 +162,76 @@ async function pickDate(page, targetDate, fieldLabel) {
                       'July', 'August', 'September', 'October', 'November', 'December'];
   const targetMonthStr = `${monthNames[targetMonth]} ${targetYear}`;
 
-  // STEP 1: Click the date input/button near the label to open calendar
-  // Flieber uses Chakra UI — date fields are inputs/divs near a label, NOT "Set date" buttons
-  const clicked = await page.evaluate((label) => {
-    // Find all elements containing the label text
+  // STEP 1: Open calendar by clicking the date field near the label
+  // CRITICAL: Use evaluate to FIND the element, but Playwright to CLICK it
+  // DOM .click() does NOT trigger React/Chakra event handlers!
+  
+  // First: discover what's near the label for debugging
+  const discovery = await page.evaluate((label) => {
     const allEls = [...document.querySelectorAll('*')];
-    const labelEl = allEls.find(el => {
-      const t = (el.textContent || '').trim();
-      return t === label && el.children.length === 0;
-    });
-    if (!labelEl) return { ok: false, reason: 'Label not found: ' + label };
-
-    // Walk up to the form group/container, then find the clickable date element
+    const labelEl = allEls.find(el => el.textContent?.trim() === label && el.children.length === 0);
+    if (!labelEl) return { error: 'Label not found' };
+    
     let container = labelEl.parentElement;
-    for (let i = 0; i < 5 && container; i++) {
-      // Look for input, button, or div with role=button inside the container
-      const clickable = container.querySelector('input[type="text"], input[type="date"], input:not([type="hidden"]), button, [role="button"], [class*="date"], [class*="picker"]');
-      if (clickable && clickable !== labelEl) {
-        clickable.click();
-        return { ok: true, tag: clickable.tagName, classes: (clickable.className || '').substring(0, 80) };
+    const nearby = [];
+    for (let i = 0; i < 4 && container; i++) {
+      const els = container.querySelectorAll('input, button, [role="button"], [tabindex]');
+      for (const el of els) {
+        nearby.push({
+          tag: el.tagName, 
+          type: el.getAttribute('type'),
+          placeholder: el.getAttribute('placeholder'),
+          text: el.textContent?.trim()?.substring(0, 50),
+          classes: (el.className || '').substring(0, 60)
+        });
       }
       container = container.parentElement;
     }
-    return { ok: false, reason: 'No clickable element found near label' };
+    return { labelFound: true, nearbyCount: nearby.length, elements: nearby.slice(0, 10) };
   }, fieldLabel);
+  await dbLog('date-picker-discovery', 'info', JSON.stringify(discovery).substring(0, 600));
 
-  await dbLog('date-picker', 'info', `Click result: ${JSON.stringify(clicked)}`);
-  if (!clicked.ok) {
-    // Fallback: try clicking any "Set date" text on page
-    const setDateBtns = page.getByText('Set date');
-    const count = await setDateBtns.count();
-    await dbLog('date-picker', 'info', `Fallback: found ${count} "Set date" buttons`);
-    if (count > 0) {
-      await setDateBtns.first().click({ timeout: 5000 });
+  // Mark the target element with a data attribute so Playwright can find it
+  const findResult = await page.evaluate((label) => {
+    const allEls = [...document.querySelectorAll('*')];
+    const labelEl = allEls.find(el => el.textContent?.trim() === label && el.children.length === 0);
+    if (!labelEl) return { ok: false, reason: 'Label not found' };
+    
+    let container = labelEl.parentElement;
+    for (let i = 0; i < 5 && container; i++) {
+      // Prefer button first, then input
+      const btn = container.querySelector('button:not([aria-label])');
+      if (btn && btn !== labelEl) {
+        btn.setAttribute('data-pw-target', 'date-field');
+        return { ok: true, tag: 'BUTTON', text: btn.textContent?.trim()?.substring(0, 50) };
+      }
+      const input = container.querySelector('input:not([type="hidden"])');
+      if (input && input !== labelEl) {
+        input.setAttribute('data-pw-target', 'date-field');
+        return { ok: true, tag: 'INPUT', classes: (input.className || '').substring(0, 60) };
+      }
+      container = container.parentElement;
+    }
+    return { ok: false, reason: 'No element found near label' };
+  }, fieldLabel);
+  
+  await dbLog('date-picker', 'info', `Find result: ${JSON.stringify(findResult)}`);
+  
+  if (findResult.ok) {
+    // Use PLAYWRIGHT click (triggers React events!) not DOM click
+    await page.locator('[data-pw-target="date-field"]').click({ timeout: 5000 });
+    await page.evaluate(() => document.querySelector('[data-pw-target]')?.removeAttribute('data-pw-target'));
+    await dbLog('date-picker', 'success', 'Clicked date field via Playwright');
+  } else {
+    // Fallback: try "Set date" text or any element that looks date-related
+    const setDate = page.getByText('Set date');
+    if (await setDate.count() > 0) {
+      await setDate.first().click({ timeout: 5000 });
     } else {
-      throw new Error(`Cannot open date picker for "${fieldLabel}": ${clicked.reason}`);
+      throw new Error(`Cannot open date picker for "${fieldLabel}": ${findResult.reason}`);
     }
   }
+  
   await page.waitForTimeout(1000);
   await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
 
@@ -970,8 +1003,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.5 — simplified pickDate, env RUN_MODE');
-    console.log('📌 Script version: v2.5');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.6 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v2.6');
     await login(page);
     
     let poResult = null;
