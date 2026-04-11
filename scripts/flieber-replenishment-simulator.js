@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.9 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.9.1 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -969,9 +969,10 @@ async function runPOSimulation(page) {
   
   await dbLog('po-start', 'info', `PO simulation: arrival=${formatDate(PO_ARRIVAL_DATE)}, coverage=${PO_COVERAGE_DAYS}d`);
   
-  // Navigate to inventory forecast page
-  await page.goto(FLIEBER_URL, { waitUntil: 'networkidle', timeout: 60000 });
-  await page.waitForTimeout(3000);
+  // Navigate to inventory forecast page (domcontentloaded — networkidle crashes on heavy SPAs)
+  await page.goto(FLIEBER_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(5000); // extra settle time for SPA hydration
+  await dbLog('po-nav', 'info', `Page URL after nav: ${page.url()}`);
   await dbShot(page, 'po-1-page-loaded', 'Inventory forecast page loaded');
   
   // Step 1: Click "Plan replenishment" button (top right)
@@ -1071,7 +1072,7 @@ async function runTOSimulation(page) {
   await dbLog('to-start', 'info', `TO simulation: departure=${formatDate(TO_DEPARTURE_DATE)}, arrival=${formatDate(TO_ARRIVAL_DATE)}, coverage=${TO_COVERAGE_DAYS}d`);
   
   // Navigate to inventory forecast page
-  await page.goto(FLIEBER_URL, { waitUntil: 'networkidle', timeout: 60000 });
+  await page.goto(FLIEBER_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(3000);
   await dbShot(page, 'to-1-page-loaded', 'Inventory forecast page loaded');
   
@@ -1168,8 +1169,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.9 — simplified pickDate, env RUN_MODE');
-    console.log('📌 Script version: v2.9');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.9.1 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v2.9.1');
     await login(page);
     
     let poResult = null;
