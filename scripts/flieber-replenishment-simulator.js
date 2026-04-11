@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.0 — Debug-first calendar: dump DOM, find buttons by position, log every step
+ * flieber-replenishment-simulator.js  v2.1 — PDF-based fix: calendar ">" is plain text, not SVG. Search text first.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -326,159 +326,67 @@ async function pickDate(page, targetDate, fieldLabel) {
                       'July', 'August', 'September', 'October', 'November', 'December'];
   const targetMonthStr = `${monthNames[targetMonth]} ${targetYear}`;
   
-  // v2.0 DEBUG-FIRST: Dump calendar DOM structure to Supabase so we can see what we're dealing with
-  const calendarDump = await page.evaluate(() => {
-    // Find ALL potential calendar containers
-    const selectors = [
-      '[class*="popover" i]', '[class*="calendar" i]', '[role="dialog"]',
-      '[class*="datepicker" i]', '[class*="DatePicker"]', '[class*="chakra-popover"]',
-      '[data-popper-placement]', '[class*="modal"]'
-    ];
-    const results = [];
-    for (const sel of selectors) {
-      const els = document.querySelectorAll(sel);
-      for (const el of els) {
-        if (el.offsetParent === null && !el.closest('[style*="position: fixed"]')) continue;
-        const btns = Array.from(el.querySelectorAll('button')).filter(b => b.offsetParent !== null);
-        results.push({
-          selector: sel,
-          tag: el.tagName,
-          classes: (el.className || '').toString().substring(0, 150),
-          role: el.getAttribute('role'),
-          buttonCount: btns.length,
-          buttons: btns.slice(0, 15).map(b => ({
-            text: (b.textContent || '').trim().substring(0, 30),
-            aria: b.getAttribute('aria-label') || '',
-            classes: (b.className || '').toString().substring(0, 80),
-            hasSvg: !!b.querySelector('svg'),
-            rect: b.getBoundingClientRect ? { x: Math.round(b.getBoundingClientRect().x), y: Math.round(b.getBoundingClientRect().y) } : null
-          })),
-          textContent: el.textContent?.substring(0, 300) || ''
-        });
-      }
-    }
-    // Also dump all visible buttons on entire page that have SVG or arrow-like content
-    const allBtns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null);
-    const arrowBtns = allBtns.filter(b => {
-      const t = (b.textContent || '').trim();
-      const a = (b.getAttribute('aria-label') || '').toLowerCase();
-      return b.querySelector('svg') || t.match(/[<>›‹«»←→]/) || a.match(/next|prev|forward|back/);
-    });
-    return {
-      containers: results,
-      arrowButtons: arrowBtns.map(b => ({
-        text: (b.textContent || '').trim().substring(0, 30),
-        aria: b.getAttribute('aria-label') || '',
-        classes: (b.className || '').toString().substring(0, 80),
-        hasSvg: !!b.querySelector('svg'),
-        rect: { x: Math.round(b.getBoundingClientRect().x), y: Math.round(b.getBoundingClientRect().y) }
-      }))
-    };
-  });
-  await dbLog('calendar-dom-dump', 'info', JSON.stringify(calendarDump).substring(0, 3000));
+  // v2.1 — PDF-based fix: Calendar nav buttons are plain text ">" and "<", NOT SVGs!
+  // From Flieber_PO_Simulatie.pdf step 15-16: "Double-click Next Month" = click the ">" text button
+  // From Tim's screenshot: calendar header shows "< July 2026 >" with clickable < and > characters
   
-  // v2.0: Calculate months to advance, then click by POSITION (rightmost button = next)
-  const currentDate = new Date();
-  const currentMonth = currentDate.getMonth();
-  const currentYear = currentDate.getFullYear();
-  const monthsToAdvance = (targetYear - currentYear) * 12 + (targetMonth - currentMonth);
-  
-  await dbLog('date-picker', 'info', `Need to advance ${monthsToAdvance} months from ${monthNames[currentMonth]} ${currentYear} to ${targetMonthStr}`);
-  
-  for (let i = 0; i < Math.min(monthsToAdvance + 2, 24); i++) {
-    // Check if we're already at the target month
-    const headerText = await page.evaluate((targetMonthNames) => {
-      // Search ALL text nodes on page for "MonthName YYYY" pattern
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      const found = [];
-      while (walker.nextNode()) {
-        const text = walker.currentNode.textContent.trim();
-        for (const m of targetMonthNames) {
-          if (text.includes(m) && text.match(/\d{4}/)) {
-            found.push(text);
-          }
+  // Read current month from calendar header
+  const getCurrentCalMonth = async () => {
+    return page.evaluate((names) => {
+      const allText = document.body.innerText;
+      for (let y = 2025; y <= 2030; y++) {
+        for (const m of names) {
+          if (allText.includes(`${m} ${y}`)) return `${m} ${y}`;
         }
       }
-      return found.join(' | ');
+      return null;
     }, monthNames);
-    
-    if (headerText.includes(monthNames[targetMonth]) && headerText.includes(String(targetYear))) {
-      await dbLog('date-picker', 'success', `Reached ${targetMonthStr} after ${i} clicks. Header: "${headerText}"`);
-      console.log(`  ✅ Calendar showing: ${headerText}`);
+  };
+  
+  const currentCalHeader = await getCurrentCalMonth();
+  await dbLog('date-picker', 'info', `Calendar shows: "${currentCalHeader}", need: "${targetMonthStr}"`);
+  
+  for (let i = 0; i < 24; i++) {
+    const header = await getCurrentCalMonth();
+    if (header && header.includes(monthNames[targetMonth]) && header.includes(String(targetYear))) {
+      await dbLog('date-picker', 'success', `Reached ${targetMonthStr} after ${i} clicks`);
+      console.log(`  ✅ Calendar at ${targetMonthStr}`);
       break;
     }
     
-    if (i >= monthsToAdvance + 1) {
-      await dbLog('date-picker', 'error', `Overshot! ${i} clicks, still not at ${targetMonthStr}. Header: "${headerText}"`);
-      await dbShot(page, 'date-picker-overshot', `Calendar after ${i} clicks`);
-      throw new Error(`Calendar navigation failed for ${targetMonthStr}`);
-    }
-    
-    // Click next month — find by POSITION: rightmost button with SVG near top of calendar area
-    const clickResult = await page.evaluate(() => {
-      // Collect ALL visible buttons with SVG icons
-      const allBtns = Array.from(document.querySelectorAll('button'))
-        .filter(b => b.offsetParent !== null && b.querySelector('svg'));
+    // Click the ">" button — it's a plain text button, not SVG
+    const clicked = await page.evaluate(() => {
+      const btns = Array.from(document.querySelectorAll('button, [role="button"], span, div'))
+        .filter(el => el.offsetParent !== null);
       
-      if (allBtns.length === 0) return { method: 'none', detail: 'No SVG buttons found' };
-      
-      // Sort by x position — rightmost first
-      const sorted = allBtns.map(b => ({
-        el: b,
-        rect: b.getBoundingClientRect(),
-        text: (b.textContent || '').trim().substring(0, 20),
-        aria: b.getAttribute('aria-label') || ''
-      })).sort((a, b) => b.rect.x - a.rect.x);
-      
-      // The "next month" button should be:
-      // 1. In the upper portion of the page (y < 400 for calendar area)  
-      // 2. Rightmost of the arrow-pair buttons
-      const topBtns = sorted.filter(b => b.rect.y < 500 && b.rect.y > 50);
-      
-      if (topBtns.length >= 1) {
-        // Click the rightmost SVG button in the top area
-        topBtns[0].el.click();
-        return { method: 'rightmost-svg-top', detail: `Clicked at x=${Math.round(topBtns[0].rect.x)} y=${Math.round(topBtns[0].rect.y)}, text="${topBtns[0].text}", aria="${topBtns[0].aria}"` };
+      // Priority 1: Button/element whose trimmed text is exactly ">"
+      for (const el of btns) {
+        const t = (el.textContent || '').trim();
+        if (t === '>') { el.click(); return { method: 'exact->', tag: el.tagName }; }
       }
-      
-      // Fallback: just click the rightmost SVG button anywhere
-      sorted[0].el.click();
-      return { method: 'rightmost-svg-any', detail: `Clicked at x=${Math.round(sorted[0].rect.x)} y=${Math.round(sorted[0].rect.y)}` };
+      // Priority 2: aria-label containing "next"
+      for (const el of btns) {
+        const a = (el.getAttribute('aria-label') || '').toLowerCase();
+        if (a.includes('next month') || a.includes('next')) { el.click(); return { method: 'aria-next', label: a }; }
+      }
+      // Priority 3: Button with "›" or "→"  
+      for (const el of btns) {
+        const t = (el.textContent || '').trim();
+        if (t === '›' || t === '→' || t === '»') { el.click(); return { method: 'arrow-char', text: t }; }
+      }
+      return { method: 'none' };
     });
     
-    await dbLog('date-nav-click', 'info', `Click ${i+1}/${monthsToAdvance}: ${clickResult.method} — ${clickResult.detail}. Header was: "${headerText}"`);
-    console.log(`  ➡️ Nav click ${i+1}: ${clickResult.method} — ${clickResult.detail}`);
+    await dbLog('date-nav-click', 'info', `Click ${i+1}: ${clicked.method} (${JSON.stringify(clicked)}). Header: "${header}"`);
+    console.log(`  ➡️ Nav click ${i+1}: ${clicked.method}`);
     
-    if (clickResult.method === 'none') {
-      // No SVG buttons — try aria-label approach
-      const ariaResult = await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button')).filter(b => b.offsetParent !== null);
-        for (const b of btns) {
-          const label = (b.getAttribute('aria-label') || '').toLowerCase();
-          if (label.includes('next') || label.includes('forward') || label.includes('right')) {
-            b.click();
-            return { found: true, aria: b.getAttribute('aria-label') };
-          }
-        }
-        // Try text arrows
-        for (const b of btns) {
-          const t = (b.textContent || '').trim();
-          if (t === '›' || t === '>' || t === '»' || t === '→') {
-            b.click();
-            return { found: true, text: t };
-          }
-        }
-        return { found: false };
-      });
-      
-      if (!ariaResult.found) {
-        await dbShot(page, `date-nav-fail-${i}`, `No navigation button found on click ${i+1}`);
-        await dbLog('date-picker', 'error', 'No navigation button found at all!');
-        throw new Error(`No calendar navigation button found`);
-      }
+    if (clicked.method === 'none') {
+      await dbShot(page, `date-nav-fail-${i}`, `No > button found on click ${i+1}`);
+      await dbLog('date-picker', 'error', 'No ">" navigation button found!');
+      throw new Error('No calendar ">" navigation button found');
     }
     
-    await page.waitForTimeout(600);
+    await page.waitForTimeout(500);
   }
   
   // Click the target day
