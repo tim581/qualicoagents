@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.9.1 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v3.0 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -192,354 +192,82 @@ async function pickDate(page, targetDate, fieldLabel) {
   await dbLog('date-picker-discovery', 'info', JSON.stringify(discovery).substring(0, 600));
 
   // Mark the target element with a data attribute so Playwright can find it
+  // === REACT-DATEPICKER approach (discovered from v2.9 debug dump) ===
+  // The calendar is a standard react-datepicker with known CSS classes:
+  //   .react-datepicker__current-month  → "April 2026"
+  //   .react-datepicker__navigation--next → forward button (OUTSIDE header!)
+  //   .react-datepicker__day--0XX → day cells (zero-padded)
+  
+  // STEP 1: Click the date input to open the calendar
+  // From v2.9 discovery: input has placeholder="Set date", class="chakra-input"
   const findResult = await page.evaluate((label) => {
     const allEls = [...document.querySelectorAll('*')];
     const labelEl = allEls.find(el => el.textContent?.trim() === label && el.children.length === 0);
     if (!labelEl) return { ok: false, reason: 'Label not found' };
-    
     let container = labelEl.parentElement;
     for (let i = 0; i < 5 && container; i++) {
-      // Prefer button first, then input
-      const btn = container.querySelector('button:not([aria-label])');
-      if (btn && btn !== labelEl) {
-        btn.setAttribute('data-pw-target', 'date-field');
-        return { ok: true, tag: 'BUTTON', text: btn.textContent?.trim()?.substring(0, 50) };
-      }
-      const input = container.querySelector('input:not([type="hidden"])');
-      if (input && input !== labelEl) {
+      const input = container.querySelector('input[placeholder="Set date"], input.chakra-input');
+      if (input) {
         input.setAttribute('data-pw-target', 'date-field');
-        return { ok: true, tag: 'INPUT', classes: (input.className || '').substring(0, 60) };
+        return { ok: true, tag: 'INPUT' };
       }
       container = container.parentElement;
     }
-    return { ok: false, reason: 'No element found near label' };
+    return { ok: false, reason: 'No date input near label' };
   }, fieldLabel);
   
-  await dbLog('date-picker', 'info', `Find result: ${JSON.stringify(findResult)}`);
+  await dbLog('date-picker', 'info', `Find: ${JSON.stringify(findResult)}`);
   
   if (findResult.ok) {
-    // Use PLAYWRIGHT click (triggers React events!) not DOM click
     await page.locator('[data-pw-target="date-field"]').click({ timeout: 5000 });
     await page.evaluate(() => document.querySelector('[data-pw-target]')?.removeAttribute('data-pw-target'));
-    await dbLog('date-picker', 'success', 'Clicked date field via Playwright');
+    await dbLog('date-picker', 'success', 'Clicked date input');
   } else {
-    // Fallback: try "Set date" text or any element that looks date-related
-    const setDate = page.getByText('Set date');
-    if (await setDate.count() > 0) {
-      await setDate.first().click({ timeout: 5000 });
-    } else {
-      throw new Error(`Cannot open date picker for "${fieldLabel}": ${findResult.reason}`);
-    }
+    throw new Error(`Cannot open date picker for "${fieldLabel}": ${findResult.reason}`);
   }
   
   await page.waitForTimeout(1000);
-  await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
-
-  // STEP 2: Find calendar by locating the MONTH HEADER TEXT ("April 2026")
-  // Then examine siblings/parent to find navigation arrows
-  const calendarInfo = await page.evaluate(() => {
-    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    
-    // Strategy: find ALL elements whose DIRECT text is "MonthName YYYY" (not children text)
-    const allEls = [...document.querySelectorAll('*')];
-    const monthHeaders = [];
-    
-    for (const el of allEls) {
-      const direct = el.textContent?.trim() || '';
-      // Must be short text (just month + year) and visible
-      if (direct.length > 20 || !el.offsetParent) continue;
-      const match = direct.match(/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})$/);
-      if (match) {
-        monthHeaders.push({
-          text: direct,
-          tag: el.tagName,
-          classes: (el.className || '').substring(0, 80),
-          // Check parent and grandparent for siblings
-          parentTag: el.parentElement?.tagName,
-          parentChildCount: el.parentElement?.children.length,
-          parentHTML: el.parentElement?.innerHTML.substring(0, 500),
-          grandparentTag: el.parentElement?.parentElement?.tagName,
-          grandparentChildCount: el.parentElement?.parentElement?.children.length,
-          // All siblings of the month header
-          siblings: [...(el.parentElement?.children || [])].map(s => ({
-            tag: s.tagName,
-            text: s.textContent?.trim()?.substring(0, 30),
-            hasSvg: s.querySelector('svg') !== null,
-            classes: (s.className || '').substring(0, 60),
-            innerHTML: s.innerHTML.substring(0, 200),
-            clickable: s.tagName === 'BUTTON' || s.getAttribute('role') === 'button' || s.style?.cursor === 'pointer' || s.tabIndex >= 0
-          }))
-        });
-      }
-    }
-    
-    // Also search for day-of-week headers as backup calendar indicator
-    const dowHeaders = allEls.filter(el => {
-      const t = el.textContent?.trim();
-      return t && /^(Mo|Tu|We|Th|Fr|Sa|Su|Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/.test(t) && el.offsetParent;
-    }).map(el => ({ tag: el.tagName, text: el.textContent?.trim(), parentTag: el.parentElement?.tagName })).slice(0, 14);
-    
-    return { monthHeaders, dowHeaders, totalElements: allEls.length };
-  });
   
-  await dbLog('calendar-popover-search', 'info', JSON.stringify(calendarInfo).substring(0, 2500));
-  
-  // STEP 3: FIND THE CALENDAR using day-of-week pattern (Su Mo Tu We Th Fr Sa)
-  // From PDF: calendar is a small popover/table with month header + DOW headers + day grid
-  // The DOW pattern is UNIQUE to the calendar — no other page element has it
-  
-  const calFind = await page.evaluate(() => {
-    const allEls = [...document.querySelectorAll('*')];
-    
-    // Find smallest element containing BOTH a month name AND "Su" "Mo" "Tu" DOW pattern
-    const candidates = [];
-    for (const el of allEls) {
-      const text = el.textContent || '';
-      if (text.length > 2000 || text.length < 30) continue; // Calendar is moderate size
-      if (!el.offsetParent) continue;
-      
-      // Must have day-of-week abbreviations
-      if (!/\bSu\b/.test(text) || !/\bMo\b/.test(text) || !/\bTh\b/.test(text) || !/\bSa\b/.test(text)) continue;
-      
-      // Must have a month name
-      if (!/January|February|March|April|May|June|July|August|September|October|November|December/.test(text)) continue;
-      
-      // Must have day numbers
-      if (!/\b15\b/.test(text) || !/\b20\b/.test(text)) continue;
-      
-      candidates.push({
-        tag: el.tagName,
-        textLen: text.length,
-        classes: (el.className || '').substring(0, 100),
-        role: el.getAttribute('role'),
-        // Check direct children structure
-        childTags: [...el.children].map(c => c.tagName).join(',')
-      });
-    }
-    
-    if (candidates.length === 0) return { found: false, reason: 'No DOW-pattern element found' };
-    
-    // Pick the SMALLEST candidate (most specific = the calendar itself, not a parent)
-    candidates.sort((a, b) => a.textLen - b.textLen);
-    const best = candidates[0];
-    
-    // Now find this element again and mark it
-    for (const el of allEls) {
-      const text = el.textContent || '';
-      if (text.length !== best.textLen) continue;
-      if (el.tagName !== best.tag) continue;
-      if (!/\bSu\b/.test(text) || !/\bMo\b/.test(text)) continue;
-      
-      el.setAttribute('data-pw-calendar', 'true');
-      
-      // Dump its full HTML so we can see the nav elements
-      return {
-        found: true,
-        tag: best.tag,
-        textLen: best.textLen,
-        classes: best.classes,
-        candidateCount: candidates.length,
-        html: el.innerHTML.substring(0, 2500)
-      };
-    }
-    return { found: false, reason: 'Re-find failed' };
-  });
-  
-  await dbLog('calendar-find-dow', 'info', JSON.stringify({ found: calFind.found, tag: calFind.tag, textLen: calFind.textLen, candidateCount: calFind.candidateCount }).substring(0, 500));
-  
-  if (calFind.found) {
-    // Log the raw HTML — this tells us EXACTLY what nav elements look like
-    await dbLog('calendar-html-raw', 'info', calFind.html?.substring(0, 2500));
-    console.log(`  🔍 Calendar found: ${calFind.tag}, ${calFind.textLen} chars, ${calFind.candidateCount} candidates`);
-  } else {
-    await dbShot(page, 'no-calendar-dow', `Calendar not found: ${calFind.reason}`);
-    throw new Error(`Calendar not found via DOW pattern: ${calFind.reason}`);
+  // Verify calendar opened — react-datepicker should now be visible
+  const calendarVisible = await page.locator('.react-datepicker').count();
+  await dbLog('date-picker', 'info', `react-datepicker visible: ${calendarVisible > 0}`);
+  if (calendarVisible === 0) {
+    await dbShot(page, 'no-calendar', 'Calendar did not open');
+    throw new Error('react-datepicker not visible after clicking date input');
   }
-
-  // STEP 4: Navigate to target month
-  // From PDF: the header row has < MonthName YYYY > with < and > as clickable siblings
-  // But they might NOT be <button> — could be <th>, <div>, <span>, or anything
-  // Strategy: find the month text, then find its RIGHT sibling = forward nav
+  await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
+  
+  // STEP 2: Navigate to target month using .react-datepicker__navigation--next
+  const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const targetMonthName = `${months[targetDate.getMonth()]} ${targetDate.getFullYear()}`;
   
   for (let attempt = 0; attempt < 24; attempt++) {
-    // Read current month and find the NEXT nav element
-    const navInfo = await page.evaluate((names) => {
-      const cal = document.querySelector('[data-pw-calendar="true"]');
-      if (!cal) return { error: 'Calendar marker lost' };
-      
-      // Find the month header text within the calendar
-      const allInCal = [...cal.querySelectorAll('*')];
-      let monthEl = null;
-      let currentMonth = null;
-      
-      for (const el of allInCal) {
-        // Get DIRECT text only (not children text)
-        let directText = '';
-        for (const node of el.childNodes) {
-          if (node.nodeType === 3) directText += node.textContent;
-        }
-        directText = directText.trim();
-        
-        // Also check full textContent for short elements
-        const fullText = (el.textContent || '').trim();
-        const checkTexts = [directText, fullText];
-        
-        for (const txt of checkTexts) {
-          if (txt.length > 25) continue;
-          const match = txt.match(/^(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})$/);
-          if (match) {
-            monthEl = el;
-            currentMonth = txt;
-            break;
-          }
-        }
-        if (monthEl) break;
-      }
-      
-      if (!monthEl) {
-        return { error: 'Month header not found in calendar', 
-                 sampleTexts: allInCal.slice(0, 30).map(e => (e.textContent||'').trim().substring(0,30)) };
-      }
-      
-      // Found month header! Now find nav elements
-      // Look at siblings of month header element
-      const parent = monthEl.parentElement;
-      const siblings = parent ? [...parent.children] : [];
-      const myIndex = siblings.indexOf(monthEl);
-      
-      // The element AFTER the month header should be ">" nav
-      // The element BEFORE should be "<" nav
-      const siblingInfo = siblings.map((s, i) => ({
-        index: i,
-        tag: s.tagName,
-        text: (s.textContent || '').trim().substring(0, 20),
-        hasSvg: s.querySelector('svg') !== null,
-        innerHTML: s.innerHTML.substring(0, 150),
-        isMonth: s === monthEl
-      }));
-      
-      // Mark the RIGHT sibling (next month nav) for Playwright click
-      let nextEl = null;
-      if (myIndex >= 0 && myIndex < siblings.length - 1) {
-        nextEl = siblings[myIndex + 1];
-      }
-      
-      // If no right sibling, try: look for any element with > or chevron character
-      if (!nextEl) {
-        for (const el of allInCal) {
-          const t = (el.textContent || '').trim();
-          if ((t === '>' || t === '›' || t === '❯' || t === '▸' || t === '→') && el.children.length <= 1) {
-            nextEl = el;
-            break;
-          }
-        }
-      }
-      
-      // If still no nextEl, try aria-label
-      if (!nextEl) {
-        nextEl = cal.querySelector('[aria-label*="next" i], [aria-label*="forward" i], [aria-label*="Next" i]');
-      }
-      
-      if (nextEl) {
-        nextEl.setAttribute('data-pw-nav', 'next');
-        return {
-          currentMonth,
-          myIndex,
-          totalSiblings: siblings.length,
-          nextTag: nextEl.tagName,
-          nextText: (nextEl.textContent || '').trim().substring(0, 20),
-          nextHtml: nextEl.innerHTML.substring(0, 150),
-          siblingInfo
-        };
-      }
-      
-      return {
-        currentMonth,
-        error: 'No next-nav found',
-        myIndex,
-        totalSiblings: siblings.length,
-        parentTag: parent?.tagName,
-        parentHtml: parent?.innerHTML.substring(0, 500),
-        siblingInfo
-      };
-    }, monthNames);
+    const currentMonth = await page.locator('.react-datepicker__current-month').first().textContent();
+    await dbLog('date-nav', 'info', `Month ${attempt}: "${currentMonth?.trim()}" → target "${targetMonthName}"`);
     
-    await dbLog('date-nav-check', 'info', JSON.stringify(navInfo).substring(0, 800));
-    
-    if (navInfo.error) {
-      await dbShot(page, `nav-error-${attempt}`, navInfo.error);
-      throw new Error(`Calendar nav error: ${navInfo.error}`);
-    }
-    
-    if (navInfo.currentMonth === targetMonthStr) {
-      await dbLog('date-nav', 'success', `Reached ${targetMonthStr} after ${attempt} clicks`);
-      console.log(`  ✅ Calendar at ${targetMonthStr}`);
-      // Clean up any nav marker
-      await page.evaluate(() => document.querySelector('[data-pw-nav]')?.removeAttribute('data-pw-nav'));
+    if (currentMonth?.trim() === targetMonthName) {
+      await dbLog('date-nav', 'success', `Reached target month: ${targetMonthName}`);
       break;
     }
     
+    // Click the NEXT button
+    await page.locator('.react-datepicker__navigation--next').click({ timeout: 3000 });
+    await page.waitForTimeout(300);
+    
     if (attempt === 23) {
-      await dbShot(page, 'date-nav-fail', `Stuck at ${navInfo.currentMonth}, need ${targetMonthStr}`);
-      throw new Error(`Could not navigate to ${targetMonthStr} after 24 attempts. Stuck at ${navInfo.currentMonth}`);
+      await dbShot(page, 'date-nav-fail', `Could not reach ${targetMonthName}`);
+      throw new Error(`Could not navigate to ${targetMonthName} after 24 attempts`);
     }
-    
-    // Click the next button via Playwright (triggers React events!)
-    try {
-      await page.locator('[data-pw-nav="next"]').click({ timeout: 3000 });
-      await page.evaluate(() => document.querySelector('[data-pw-nav]')?.removeAttribute('data-pw-nav'));
-      await dbLog('date-nav-click', 'success', `Click ${attempt+1}: next=${navInfo.nextTag} text="${navInfo.nextText}"`);
-    } catch (e) {
-      await dbLog('date-nav-click', 'error', `Click ${attempt+1} failed: ${e.message.substring(0, 200)}`);
-      await dbShot(page, `nav-click-fail-${attempt}`, e.message.substring(0, 100));
-      throw e;
-    }
-    
-    await page.waitForTimeout(500);
   }
 
-  // STEP 5: Click the target day — scoped to calendar
-  await page.waitForTimeout(300);
-  console.log(`  🔘 Clicking day ${targetDay}...`);
+  // STEP 3: Click the target day
+  // react-datepicker day class: .react-datepicker__day--0XX (zero-padded)
+  const dayPadded = String(targetDay).padStart(3, '0'); // day 9 → "009"
+  const daySelector = `.react-datepicker__day--${dayPadded}:not(.react-datepicker__day--outside-month)`;
   
-  const dayClicked = await page.evaluate((day) => {
-    const cal = document.querySelector('[data-pw-calendar="true"]');
-    if (!cal) return { clicked: false, reason: 'Calendar marker lost' };
-    
-    // Find leaf elements (no children) with exact day text
-    const allInCal = [...cal.querySelectorAll('*')];
-    for (const el of allInCal) {
-      if (el.textContent?.trim() === String(day) && el.offsetParent !== null && el.children.length === 0) {
-        el.setAttribute('data-pw-day', 'target');
-        return { clicked: true, tag: el.tagName };
-      }
-    }
-    // Retry allowing children
-    for (const el of allInCal) {
-      if (el.textContent?.trim() === String(day) && el.offsetParent !== null && el.children.length <= 1) {
-        el.setAttribute('data-pw-day', 'target');
-        return { clicked: true, tag: el.tagName, hasChildren: true };
-      }
-    }
-    return { clicked: false };
-  }, targetDay);
-
-  if (dayClicked.clicked) {
-    await page.locator('[data-pw-day="target"]').click({ timeout: 3000 });
-    await page.evaluate(() => document.querySelector('[data-pw-day]')?.removeAttribute('data-pw-day'));
-    await dbLog('date-day-click', 'success', `Clicked day ${targetDay} (${dayClicked.tag})`);
-  } else {
-    await dbLog('date-day-click', 'error', `Day ${targetDay} not found`);
-    // Fallback: Playwright text match
-    await page.locator('[data-pw-calendar="true"]').getByText(String(targetDay), { exact: true }).first().click({ timeout: 5000 });
-  }
-
-  // Clean up
-  await page.evaluate(() => {
-    document.querySelector('[data-pw-calendar]')?.removeAttribute('data-pw-calendar');
-    document.querySelector('[data-pw-nav]')?.removeAttribute('data-pw-nav');
-    document.querySelector('[data-pw-day]')?.removeAttribute('data-pw-day');
-  });
+  await dbLog('date-day', 'info', `Clicking day ${targetDay} with selector: ${daySelector}`);
+  await page.locator(daySelector).first().click({ timeout: 5000 });
+  await dbLog('date-day', 'success', `Clicked day ${targetDay}`);
   
   await dbLog('date-picker', 'success', `Selected ${formatDate(targetDate)} for ${fieldLabel}`);
   console.log(`  ✅ Date selected: ${formatDate(targetDate)}`);
@@ -1169,8 +897,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.9.1 — simplified pickDate, env RUN_MODE');
-    console.log('📌 Script version: v2.9.1');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v3.0 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v3.0');
     await login(page);
     
     let poResult = null;
