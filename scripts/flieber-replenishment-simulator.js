@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.2 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.3 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -609,7 +609,8 @@ async function fillCoverageInput(page, days) {
 // ── EXTRACT SIMULATION ID FROM URL ────────────────────────────────────────────
 
 function extractSimId(url) {
-  const match = url.match(/\/replenishment\/(?:purchase|transfer)\/([a-f0-9-]+)/);
+  // URL pattern: /replenishment-simulator/UUID or /replenishment/(purchase|transfer)/UUID
+  const match = url.match(/\/replenishment(?:-simulator|\/(?:purchase|transfer))\/([a-f0-9-]+)/);
   return match ? match[1] : null;
 }
 
@@ -775,7 +776,7 @@ async function runPOSimulation(page) {
   console.log('  ⏳ Waiting for simulation to complete...');
   await dbLog('po-simulate', 'info', 'Waiting for simulation results...');
   
-  await page.waitForURL('**/replenishment/purchase/**', { timeout: 120000 });
+  await page.waitForURL('**/replenishment-simulator/**', { timeout: 120000 });
   await page.waitForTimeout(5000); // extra wait for data to load
   
   const simUrl = page.url();
@@ -790,7 +791,19 @@ async function runPOSimulation(page) {
   await dbShot(page, 'po-8-results', 'PO simulation results page');
   console.log(`  ✅ PO Simulation ID: ${simId}`);
   
-  // Step 9: Fetch results via GraphQL API
+  // Step 9: Click Save button (big green button top-right)
+  console.log('  💾 Clicking Save...');
+  try {
+    const saveBtn = page.locator('button').filter({ hasText: /^Save$/ }).first();
+    await saveBtn.click({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    await dbLog('po-save', 'success', 'Clicked Save button');
+    await dbShot(page, 'po-9-saved', 'After clicking Save');
+  } catch (e) {
+    await dbLog('po-save', 'warning', `Save button click failed: ${e.message}`);
+  }
+  
+  // Step 10: Fetch results via GraphQL API
   const results = await fetchSimulationResults(simId, 'po');
   await logResults(results, 'po', simId);
   
@@ -862,7 +875,7 @@ async function runTOSimulation(page) {
   console.log('  ⏳ Waiting for simulation to complete...');
   await dbLog('to-simulate', 'info', 'Waiting for simulation results...');
   
-  await page.waitForURL('**/replenishment/transfer/**', { timeout: 120000 });
+  await page.waitForURL('**/replenishment-simulator/**', { timeout: 120000 });
   await page.waitForTimeout(5000);
   
   const simUrl = page.url();
@@ -877,7 +890,19 @@ async function runTOSimulation(page) {
   await dbShot(page, 'to-9-results', 'TO simulation results page');
   console.log(`  ✅ TO Simulation ID: ${simId}`);
   
-  // Step 10: Fetch results via GraphQL API
+  // Step 10: Click Save button (big green button top-right)
+  console.log('  💾 Clicking Save...');
+  try {
+    const saveBtn = page.locator('button').filter({ hasText: /^Save$/ }).first();
+    await saveBtn.click({ timeout: 10000 });
+    await page.waitForTimeout(2000);
+    await dbLog('to-save', 'success', 'Clicked Save button');
+    await dbShot(page, 'to-10-saved', 'After clicking Save');
+  } catch (e) {
+    await dbLog('to-save', 'warning', `Save button click failed: ${e.message}`);
+  }
+  
+  // Step 11: Fetch results via GraphQL API
   const results = await fetchSimulationResults(simId, 'to');
   await logResults(results, 'to', simId);
   
