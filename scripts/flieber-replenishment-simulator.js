@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.4 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.5 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -162,13 +162,43 @@ async function pickDate(page, targetDate, fieldLabel) {
                       'July', 'August', 'September', 'October', 'November', 'December'];
   const targetMonthStr = `${monthNames[targetMonth]} ${targetYear}`;
 
-  // STEP 1: Click "Set date" placeholder to open calendar
-  const setDateBtns = page.getByText('Set date');
-  const setDateCount = await setDateBtns.count();
-  await dbLog('date-picker', 'info', `Found ${setDateCount} "Set date" buttons`);
-  const idx = fieldLabel.toLowerCase().includes('departure') ? 0 :
-              (fieldLabel.toLowerCase().includes('arrival') && setDateCount > 1) ? 1 : 0;
-  await setDateBtns.nth(idx).click({ timeout: 5000 });
+  // STEP 1: Click the date input/button near the label to open calendar
+  // Flieber uses Chakra UI — date fields are inputs/divs near a label, NOT "Set date" buttons
+  const clicked = await page.evaluate((label) => {
+    // Find all elements containing the label text
+    const allEls = [...document.querySelectorAll('*')];
+    const labelEl = allEls.find(el => {
+      const t = (el.textContent || '').trim();
+      return t === label && el.children.length === 0;
+    });
+    if (!labelEl) return { ok: false, reason: 'Label not found: ' + label };
+
+    // Walk up to the form group/container, then find the clickable date element
+    let container = labelEl.parentElement;
+    for (let i = 0; i < 5 && container; i++) {
+      // Look for input, button, or div with role=button inside the container
+      const clickable = container.querySelector('input[type="text"], input[type="date"], input:not([type="hidden"]), button, [role="button"], [class*="date"], [class*="picker"]');
+      if (clickable && clickable !== labelEl) {
+        clickable.click();
+        return { ok: true, tag: clickable.tagName, classes: (clickable.className || '').substring(0, 80) };
+      }
+      container = container.parentElement;
+    }
+    return { ok: false, reason: 'No clickable element found near label' };
+  }, fieldLabel);
+
+  await dbLog('date-picker', 'info', `Click result: ${JSON.stringify(clicked)}`);
+  if (!clicked.ok) {
+    // Fallback: try clicking any "Set date" text on page
+    const setDateBtns = page.getByText('Set date');
+    const count = await setDateBtns.count();
+    await dbLog('date-picker', 'info', `Fallback: found ${count} "Set date" buttons`);
+    if (count > 0) {
+      await setDateBtns.first().click({ timeout: 5000 });
+    } else {
+      throw new Error(`Cannot open date picker for "${fieldLabel}": ${clicked.reason}`);
+    }
+  }
   await page.waitForTimeout(1000);
   await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
 
@@ -940,8 +970,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.4 — simplified pickDate, env RUN_MODE');
-    console.log('📌 Script version: v2.4');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.5 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v2.5');
     await login(page);
     
     let poResult = null;
