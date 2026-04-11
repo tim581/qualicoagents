@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.6 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.7 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -235,30 +235,65 @@ async function pickDate(page, targetDate, fieldLabel) {
   await page.waitForTimeout(1000);
   await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
 
-  // STEP 2: Dump visible page text near calendar for debugging
+  // STEP 2: COMPREHENSIVE button/popover dump — find ALL buttons on page + any popover containers
   const pageDebug = await page.evaluate(() => {
-    // Find all elements that look like month headers
-    const all = document.querySelectorAll('*');
+    const results = { popovers: [], buttons: [], monthHeaders: [] };
+    
+    // Find popover/portal containers
+    const popoverSelectors = [
+      '.chakra-popover__content', '[data-popper-placement]', '[role="dialog"]',
+      '.chakra-modal__content', '[data-chakra-portal]', '.chakra-portal'
+    ];
+    for (const sel of popoverSelectors) {
+      const els = document.querySelectorAll(sel);
+      if (els.length > 0) {
+        results.popovers.push({ selector: sel, count: els.length, 
+          html: [...els].map(e => e.innerHTML.substring(0, 200)).slice(0, 3) });
+      }
+    }
+    
+    // Find ALL visible buttons on page with their content
+    const buttons = document.querySelectorAll('button, [role="button"]');
+    for (const btn of buttons) {
+      if (btn.offsetParent === null) continue; // skip hidden
+      const text = (btn.textContent || '').trim();
+      const hasSvg = btn.querySelector('svg') !== null;
+      const ariaLabel = btn.getAttribute('aria-label') || '';
+      // Only log interesting buttons (small text or SVG or near calendar)
+      if (text.length < 20 || hasSvg || ariaLabel) {
+        results.buttons.push({
+          text: text.substring(0, 30),
+          hasSvg,
+          ariaLabel: ariaLabel.substring(0, 50),
+          classes: (btn.className || '').substring(0, 60),
+          tag: btn.tagName,
+          innerHTML: btn.innerHTML.substring(0, 120)
+        });
+      }
+    }
+    
+    // Find month headers
     const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-    const found = [];
-    for (const el of all) {
+    const allEls = document.querySelectorAll('*');
+    for (const el of allEls) {
       const t = (el.textContent || '').trim();
-      if (t.length < 40) {
+      if (t.length < 30 && el.children.length === 0) {
         for (const m of months) {
           if (t.includes(m) && t.match(/\d{4}/)) {
-            found.push({ text: t, tag: el.tagName, classes: el.className?.substring?.(0, 80) || '' });
+            results.monthHeaders.push({ text: t, tag: el.tagName, classes: (el.className || '').substring(0, 60) });
           }
         }
       }
-      // Also find > and < buttons
-      if ((t === '>' || t === '<' || t === '›' || t === '‹') && el.offsetParent !== null) {
-        found.push({ text: t, tag: el.tagName, classes: el.className?.substring?.(0, 80) || '', clickable: true });
-      }
     }
-    return found.slice(0, 20);
+    
+    return results;
   });
-  await dbLog('date-debug-elements', 'info', JSON.stringify(pageDebug));
-  console.log(`  🔍 Calendar elements found: ${pageDebug.length}`);
+  
+  // Log each part separately to avoid truncation
+  await dbLog('date-debug-popovers', 'info', JSON.stringify(pageDebug.popovers));
+  await dbLog('date-debug-buttons', 'info', JSON.stringify(pageDebug.buttons.slice(0, 15)));
+  await dbLog('date-debug-months', 'info', JSON.stringify(pageDebug.monthHeaders));
+  console.log(`  🔍 Popovers: ${pageDebug.popovers.length}, Buttons: ${pageDebug.buttons.length}, Month headers: ${pageDebug.monthHeaders.length}`);
 
   // STEP 3: Navigate to target month
   for (let attempt = 0; attempt < 24; attempt++) {
@@ -291,26 +326,57 @@ async function pickDate(page, targetDate, fieldLabel) {
       throw new Error(`Could not navigate to ${targetMonthStr} after 24 attempts. Stuck at ${currentMonthText}`);
     }
 
-    // Click the ">" button — try multiple strategies
+    // Click the forward navigation button — SVG-aware strategies
     let clicked = false;
 
-    // Strategy A: Find visible ">" text element and click via Playwright
+    // Strategy A: Find button with SVG near the month header (calendar nav buttons have SVG chevrons)
     try {
-      const arrows = page.locator('button, span, div, a').filter({ hasText: /^>$/ });
-      const arrowCount = await arrows.count();
-      if (arrowCount > 0) {
-        await arrows.first().click({ timeout: 2000 });
+      const navResult = await page.evaluate((targetMonth) => {
+        // Find the month header text
+        const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+        const allEls = [...document.querySelectorAll('*')];
+        let monthHeader = null;
+        for (const el of allEls) {
+          const t = (el.textContent || '').trim();
+          if (t.length < 30 && el.children.length === 0 && months.some(m => t.includes(m)) && t.match(/\d{4}/)) {
+            monthHeader = el;
+            break;
+          }
+        }
+        if (!monthHeader) return { found: false, reason: 'No month header found' };
+        
+        // Walk UP to find the header row container (usually contains: [<] [Month Year] [>])
+        let container = monthHeader.parentElement;
+        for (let i = 0; i < 5 && container; i++) {
+          const buttons = container.querySelectorAll('button, [role="button"]');
+          if (buttons.length >= 2) {
+            // Found a container with 2+ buttons — the last one is likely "next"
+            const lastBtn = buttons[buttons.length - 1];
+            lastBtn.setAttribute('data-pw-nav', 'next');
+            return { found: true, buttonCount: buttons.length, lastBtnText: (lastBtn.textContent || '').trim().substring(0, 20), 
+                     lastBtnHasSvg: lastBtn.querySelector('svg') !== null, containerTag: container.tagName };
+          }
+          container = container.parentElement;
+        }
+        return { found: false, reason: 'No button pair found near month header' };
+      }, targetMonthStr);
+      
+      await dbLog('date-nav-strategy-a', 'info', JSON.stringify(navResult));
+      
+      if (navResult.found) {
+        await page.locator('[data-pw-nav="next"]').click({ timeout: 3000 });
+        await page.evaluate(() => document.querySelector('[data-pw-nav]')?.removeAttribute('data-pw-nav'));
         clicked = true;
-        await dbLog('date-nav-click', 'info', `Click ${attempt+1}: Playwright ">" locator (${arrowCount} found)`);
+        await dbLog('date-nav-click', 'info', `Click ${attempt+1}: Playwright nav button (${navResult.buttonCount} buttons, hasSvg=${navResult.lastBtnHasSvg})`);
       }
     } catch (e) {
-      await dbLog('date-nav-click', 'warning', `Strategy A failed: ${e.message.substring(0, 100)}`);
+      await dbLog('date-nav-click', 'warning', `Strategy A (SVG-aware) failed: ${e.message.substring(0, 150)}`);
     }
 
-    // Strategy B: aria-label "Next month" or similar
+    // Strategy B: aria-label patterns
     if (!clicked) {
       try {
-        const nextBtn = page.locator('[aria-label*="next" i], [aria-label*="Next" i]').first();
+        const nextBtn = page.locator('[aria-label*="next" i], [aria-label*="forward" i], [aria-label*="right" i]').first();
         if (await nextBtn.count() > 0) {
           await nextBtn.click({ timeout: 2000 });
           clicked = true;
@@ -321,27 +387,22 @@ async function pickDate(page, targetDate, fieldLabel) {
       }
     }
 
-    // Strategy C: Use evaluate to find and click ">" in DOM
+    // Strategy C: text ">" fallback
     if (!clicked) {
-      const result = await page.evaluate(() => {
-        const all = document.querySelectorAll('button, span, div, a, [role="button"]');
-        for (const el of all) {
-          const t = (el.textContent || '').trim();
-          if ((t === '>' || t === '›') && el.offsetParent !== null) {
-            el.click();
-            return { method: 'evaluate', tag: el.tagName, text: t };
-          }
+      try {
+        const arrows = page.locator('button, span, div').filter({ hasText: /^>$/ });
+        if (await arrows.count() > 0) {
+          await arrows.first().click({ timeout: 2000 });
+          clicked = true;
+          await dbLog('date-nav-click', 'info', `Click ${attempt+1}: text ">" (${await arrows.count()} found)`);
         }
-        return { method: 'none' };
-      });
-      if (result.method !== 'none') {
-        clicked = true;
-        await dbLog('date-nav-click', 'info', `Click ${attempt+1}: evaluate ${JSON.stringify(result)}`);
-      } else {
-        await dbLog('date-nav-click', 'error', `Click ${attempt+1}: NO ">" found anywhere on page!`);
-        await dbShot(page, `date-nav-dump-${attempt}`, 'No > button found');
-        throw new Error('No ">" navigation button found on page');
-      }
+      } catch (e) {}
+    }
+
+    if (!clicked) {
+      await dbShot(page, `date-nav-dump-${attempt}`, 'No nav button found');
+      await dbLog('date-nav-click', 'error', `Click ${attempt+1}: ALL strategies failed`);
+      throw new Error('No calendar navigation button found');
     }
 
     await page.waitForTimeout(500);
@@ -1003,8 +1064,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.6 — simplified pickDate, env RUN_MODE');
-    console.log('📌 Script version: v2.6');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.7 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v2.7');
     await login(page);
     
     let poResult = null;
