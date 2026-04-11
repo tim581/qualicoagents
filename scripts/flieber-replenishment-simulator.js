@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v2.3 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v2.4 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -31,7 +31,7 @@ const GRAPHQL_TOKEN    = 'Bearer 019cca1e-4959-72af-8113-f95bb6dba3a1:iJd1NgmpCq
 
 // ── MODE ──────────────────────────────────────────────────────────────────────
 // Set to 'po', 'to', or 'both' to control which simulations to run
-const RUN_MODE = 'both'; // 'po' | 'to' | 'both'
+const RUN_MODE = process.env.RUN_MODE || 'both'; // 'po' | 'to' | 'both' — set by executor
 
 // PO parameters
 const PO_ARRIVAL_DAYS   = 120; // calendar days from today (60 production + 60 shipping)
@@ -163,131 +163,154 @@ async function pickDate(page, targetDate, fieldLabel) {
   const targetMonthStr = `${monthNames[targetMonth]} ${targetYear}`;
 
   // STEP 1: Click "Set date" placeholder to open calendar
-  // PO has 1 date field (arrival), TO has 2 (departure=first, arrival=second)
   const setDateBtns = page.getByText('Set date');
   const setDateCount = await setDateBtns.count();
+  await dbLog('date-picker', 'info', `Found ${setDateCount} "Set date" buttons`);
   const idx = fieldLabel.toLowerCase().includes('departure') ? 0 :
               (fieldLabel.toLowerCase().includes('arrival') && setDateCount > 1) ? 1 : 0;
   await setDateBtns.nth(idx).click({ timeout: 5000 });
-  await page.waitForTimeout(800);
+  await page.waitForTimeout(1000);
   await dbShot(page, 'date-picker-opened', `Calendar opened for ${fieldLabel}`);
 
-  // STEP 2: Find the calendar popover container
-  // Chakra renders calendars in a popover/portal. Find it by looking for the month/year header.
-  const calendarContainer = await page.evaluate((names) => {
-    // Find the element showing "Month Year" text — its ancestor is the calendar
-    for (let y = 2025; y <= 2030; y++) {
-      for (const m of names) {
-        const target = `${m} ${y}`;
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-        while (walker.nextNode()) {
-          if (walker.currentNode.textContent.trim() === target) {
-            // Walk up to find a container that has the nav buttons
-            let el = walker.currentNode.parentElement;
-            for (let i = 0; i < 10; i++) {
-              if (!el) break;
-              // A calendar container will have day numbers (1-31) and nav buttons
-              const hasDay = el.querySelector('button') || el.querySelector('td');
-              if (hasDay && el.querySelectorAll('button, td').length > 10) {
-                // Tag it so we can find it with Playwright
-                el.setAttribute('data-cal-root', 'true');
-                return target;
-              }
-              el = el.parentElement;
-            }
+  // STEP 2: Dump visible page text near calendar for debugging
+  const pageDebug = await page.evaluate(() => {
+    // Find all elements that look like month headers
+    const all = document.querySelectorAll('*');
+    const months = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+    const found = [];
+    for (const el of all) {
+      const t = (el.textContent || '').trim();
+      if (t.length < 40) {
+        for (const m of months) {
+          if (t.includes(m) && t.match(/\d{4}/)) {
+            found.push({ text: t, tag: el.tagName, classes: el.className?.substring?.(0, 80) || '' });
           }
         }
       }
+      // Also find > and < buttons
+      if ((t === '>' || t === '<' || t === '›' || t === '‹') && el.offsetParent !== null) {
+        found.push({ text: t, tag: el.tagName, classes: el.className?.substring?.(0, 80) || '', clickable: true });
+      }
     }
-    return null;
-  }, monthNames);
+    return found.slice(0, 20);
+  });
+  await dbLog('date-debug-elements', 'info', JSON.stringify(pageDebug));
+  console.log(`  🔍 Calendar elements found: ${pageDebug.length}`);
 
-  await dbLog('date-picker', 'info', `Calendar header found: "${calendarContainer}", need: "${targetMonthStr}"`);
-
-  // STEP 3: Navigate to target month by clicking ">" INSIDE the calendar
-  for (let i = 0; i < 24; i++) {
-    // Check current month
-    const currentMonth = await page.evaluate((names) => {
-      const cal = document.querySelector('[data-cal-root="true"]');
-      if (!cal) return null;
-      const text = cal.innerText;
-      for (let y = 2025; y <= 2030; y++) {
-        for (const m of names) {
-          if (text.includes(`${m} ${y}`)) return `${m} ${y}`;
+  // STEP 3: Navigate to target month
+  for (let attempt = 0; attempt < 24; attempt++) {
+    // Check if we're on the right month — search entire page for "Month Year" text
+    const currentMonthText = await page.evaluate((names) => {
+      const all = document.querySelectorAll('*');
+      for (const el of all) {
+        const t = (el.textContent || '').trim();
+        if (t.length < 30 && el.children.length === 0) {
+          for (let y = 2025; y <= 2030; y++) {
+            for (const m of names) {
+              if (t === `${m} ${y}`) return t;
+            }
+          }
         }
       }
       return null;
     }, monthNames);
 
-    if (currentMonth === targetMonthStr) {
-      await dbLog('date-nav', 'success', `Reached ${targetMonthStr} after ${i} clicks`);
+    await dbLog('date-nav-check', 'info', `Attempt ${attempt}: current="${currentMonthText}", target="${targetMonthStr}"`);
+
+    if (currentMonthText === targetMonthStr) {
+      await dbLog('date-nav', 'success', `Reached ${targetMonthStr} after ${attempt} clicks`);
       console.log(`  ✅ Calendar at ${targetMonthStr}`);
       break;
     }
 
-    if (i === 23) {
-      await dbShot(page, 'date-nav-fail', `Could not reach ${targetMonthStr}. Stuck at ${currentMonth}`);
-      throw new Error(`Could not navigate to ${targetMonthStr} after 24 attempts. Stuck at ${currentMonth}`);
+    if (attempt === 23) {
+      await dbShot(page, 'date-nav-fail', `Stuck at ${currentMonthText}, need ${targetMonthStr}`);
+      throw new Error(`Could not navigate to ${targetMonthStr} after 24 attempts. Stuck at ${currentMonthText}`);
     }
 
-    // Click ">" INSIDE the calendar container only
-    const navResult = await page.evaluate(() => {
-      const cal = document.querySelector('[data-cal-root="true"]');
-      if (!cal) return { method: 'no-calendar' };
-      
-      // Find all clickable elements inside the calendar
-      const btns = cal.querySelectorAll('button, [role="button"], span, a');
-      for (const el of btns) {
-        const t = (el.textContent || '').trim();
-        // The ">" next month button — exact single character
-        if (t === '>' || t === '›' || t === '→') {
-          el.click();
-          return { method: 'text-arrow', char: t, tag: el.tagName };
-        }
-      }
-      // Fallback: aria-label
-      for (const el of btns) {
-        const a = (el.getAttribute('aria-label') || '').toLowerCase();
-        if (a.includes('next')) {
-          el.click();
-          return { method: 'aria-next', label: a };
-        }
-      }
-      return { method: 'none' };
-    });
+    // Click the ">" button — try multiple strategies
+    let clicked = false;
 
-    await dbLog('date-nav-click', 'info', `Click ${i+1}: ${JSON.stringify(navResult)}. Was: "${currentMonth}"`);
-    console.log(`  ➡️ Nav click ${i+1}: ${navResult.method}`);
-
-    if (navResult.method === 'none' || navResult.method === 'no-calendar') {
-      await dbShot(page, `date-nav-fail-${i}`, `No > button found in calendar`);
-      throw new Error(`No ">" button found inside calendar container`);
+    // Strategy A: Find visible ">" text element and click via Playwright
+    try {
+      const arrows = page.locator('button, span, div, a').filter({ hasText: /^>$/ });
+      const arrowCount = await arrows.count();
+      if (arrowCount > 0) {
+        await arrows.first().click({ timeout: 2000 });
+        clicked = true;
+        await dbLog('date-nav-click', 'info', `Click ${attempt+1}: Playwright ">" locator (${arrowCount} found)`);
+      }
+    } catch (e) {
+      await dbLog('date-nav-click', 'warning', `Strategy A failed: ${e.message.substring(0, 100)}`);
     }
 
-    await page.waitForTimeout(400);
+    // Strategy B: aria-label "Next month" or similar
+    if (!clicked) {
+      try {
+        const nextBtn = page.locator('[aria-label*="next" i], [aria-label*="Next" i]').first();
+        if (await nextBtn.count() > 0) {
+          await nextBtn.click({ timeout: 2000 });
+          clicked = true;
+          await dbLog('date-nav-click', 'info', `Click ${attempt+1}: aria-label next`);
+        }
+      } catch (e) {
+        await dbLog('date-nav-click', 'warning', `Strategy B failed: ${e.message.substring(0, 100)}`);
+      }
+    }
+
+    // Strategy C: Use evaluate to find and click ">" in DOM
+    if (!clicked) {
+      const result = await page.evaluate(() => {
+        const all = document.querySelectorAll('button, span, div, a, [role="button"]');
+        for (const el of all) {
+          const t = (el.textContent || '').trim();
+          if ((t === '>' || t === '›') && el.offsetParent !== null) {
+            el.click();
+            return { method: 'evaluate', tag: el.tagName, text: t };
+          }
+        }
+        return { method: 'none' };
+      });
+      if (result.method !== 'none') {
+        clicked = true;
+        await dbLog('date-nav-click', 'info', `Click ${attempt+1}: evaluate ${JSON.stringify(result)}`);
+      } else {
+        await dbLog('date-nav-click', 'error', `Click ${attempt+1}: NO ">" found anywhere on page!`);
+        await dbShot(page, `date-nav-dump-${attempt}`, 'No > button found');
+        throw new Error('No ">" navigation button found on page');
+      }
+    }
+
+    await page.waitForTimeout(500);
   }
 
-  // STEP 4: Click the target day number INSIDE the calendar
+  // STEP 4: Click the target day number
   await page.waitForTimeout(300);
+  console.log(`  🔘 Clicking day ${targetDay}...`);
+  
+  // Find button/cell with exact day number text (leaf node to avoid clicking month headers)
   const dayClicked = await page.evaluate((day) => {
-    const cal = document.querySelector('[data-cal-root="true"]');
-    if (!cal) return { clicked: false, reason: 'no-calendar' };
-    
-    // Find buttons/cells with the day number
-    const elements = cal.querySelectorAll('button, td, [role="gridcell"]');
-    for (const el of elements) {
-      if (el.textContent?.trim() === String(day) && el.offsetParent !== null) {
+    const all = document.querySelectorAll('button, td, [role="gridcell"]');
+    for (const el of all) {
+      if (el.textContent?.trim() === String(day) && el.offsetParent !== null && el.children.length === 0) {
         el.click();
         return { clicked: true, tag: el.tagName };
       }
     }
-    return { clicked: false, reason: 'day-not-found' };
+    // Retry with children allowed (some calendars wrap day in a span)
+    for (const el of all) {
+      if (el.textContent?.trim() === String(day) && el.offsetParent !== null) {
+        el.click();
+        return { clicked: true, tag: el.tagName, hasChildren: true };
+      }
+    }
+    return { clicked: false };
   }, targetDay);
 
   if (!dayClicked.clicked) {
-    await dbLog('date-picker', 'error', `Day ${targetDay} not found: ${dayClicked.reason}`);
+    await dbLog('date-picker', 'error', `Day ${targetDay} not found`);
     // Last resort: Playwright text match
-    await page.locator('[data-cal-root="true"]').locator(`text="${targetDay}"`).first().click({ timeout: 5000 });
+    await page.getByText(String(targetDay), { exact: true }).first().click({ timeout: 5000 });
   }
 
   await dbLog('date-picker', 'success', `Selected ${formatDate(targetDate)} for ${fieldLabel}`);
@@ -917,6 +940,8 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v2.4 — simplified pickDate, env RUN_MODE');
+    console.log('📌 Script version: v2.4');
     await login(page);
     
     let poResult = null;
