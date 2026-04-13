@@ -284,15 +284,15 @@ async function acceptCookies(page, locale) {
  * Amazon uses localized country names depending on the domain.
  */
 const COUNTRY_NAMES = {
-  'amazon.de':     ['Deutschland', 'Germany'],
-  'amazon.fr':     ['France'],
-  'amazon.es':     ['España', 'Spain'],
-  'amazon.it':     ['Italia', 'Italy'],
-  'amazon.com.be': ['België', 'Belgique', 'Belgium'],
-  'amazon.nl':     ['Nederland', 'Netherlands'],
-  'amazon.com':    ['United States'],
-  'amazon.ca':     ['Canada'],
-  'amazon.co.uk':  ['United Kingdom'],
+  'amazon.de':     ['Deutschland', 'Germany', 'Berlin'],
+  'amazon.fr':     ['France', 'Paris'],
+  'amazon.es':     ['España', 'Spain', 'Madrid'],
+  'amazon.it':     ['Italia', 'Italy', 'Milano', 'Milan'],
+  'amazon.com.be': ['België', 'Belgique', 'Belgium', 'Bruxelles', 'Brussel', 'Brussels'],
+  'amazon.nl':     ['Nederland', 'Netherlands', 'Amsterdam'],
+  'amazon.com':    ['United States', 'New York', 'NYC'],
+  'amazon.ca':     ['Canada', 'Toronto'],
+  'amazon.co.uk':  ['United Kingdom', 'London'],
 };
 
 /**
