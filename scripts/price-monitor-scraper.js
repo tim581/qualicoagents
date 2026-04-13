@@ -316,142 +316,153 @@ async function setDeliveryLocation(page, channel) {
   console.log(`  📍 Setting delivery to ${channel.country} — ${channel.postalCode}`);
   await dbLog(`location-${channel.name}`, 'info', `Setting: ${channel.country} ${channel.postalCode}`);
 
-  try {
-    // ─── PRE-CHECK: Is delivery location already correct? (persistent context may have it) ───
+  // ─── Helper: check if postal code is already correct in header ───
+  async function isLocationCorrect() {
     try {
-      const currentLocation = await page.locator('#glow-ingress-line2').textContent({ timeout: 3000 });
-      const trimmed = currentLocation.trim();
+      const line2 = await page.locator('#glow-ingress-line2').textContent({ timeout: 5000 });
+      const trimmed = line2.trim();
       const postalShort = channel.postalCode.replace(/\s/g, '').substring(0, 3);
+      // Check postal code appears in header
       if (trimmed.includes(channel.postalCode) || trimmed.includes(postalShort)) {
-        console.log(`  ✅ Delivery already set to "${trimmed}" — skipping popup!`);
-        await dbLog(`location-${channel.name}`, 'success', `Already set: ${trimmed}`);
-        return;
+        return { ok: true, header: trimmed };
       }
-      console.log(`  📍 Current location: "${trimmed}" — needs change to ${channel.postalCode}`);
+      // For some markets, header shows city name — check it's NOT Belgium (unless we want BE)
+      if (trimmed.toLowerCase().includes('belgi') && !channel.domain.includes('.be')) {
+        return { ok: false, header: trimmed, reason: 'Still shows Belgium' };
+      }
+      // Check if header matches expected country
+      const countryNames = COUNTRY_NAMES[channel.domain] || [];
+      for (const name of countryNames) {
+        if (trimmed.toLowerCase().includes(name.toLowerCase())) {
+          return { ok: true, header: trimmed };
+        }
+      }
+      return { ok: false, header: trimmed, reason: `Unexpected: "${trimmed}"` };
     } catch (e) {
-      console.log(`  📍 Could not read current location, will set it...`);
+      return { ok: false, header: null, reason: e.message };
     }
+  }
 
-    // ─── STEP 1: Click delivery location link (top-left) ───
-    console.log(`  📍 Step 1: Clicking delivery location link...`);
+  // ─── Helper: attempt the popup flow once ───
+  async function attemptPopupFlow() {
+    // Click delivery location link (top-left)
+    console.log(`  📍 Clicking delivery location link...`);
     const locationLink = page.locator('#nav-global-location-popover-link');
     await locationLink.waitFor({ state: 'visible', timeout: 5000 });
     await locationLink.click();
     await page.waitForTimeout(2500);
 
-    // ─── STEP 2: Wait for popup to appear ───
-    console.log(`  📍 Step 2: Waiting for location popup...`);
-    // The popup has the postal code input
+    // Wait for popup to appear
     const popupVisible = await page.locator('#GLUXZipUpdateInput').isVisible({ timeout: 5000 }).catch(() => false);
-    
     if (!popupVisible) {
-      // Sometimes popup takes longer or has a different structure
-      console.log(`  ⚠️ Popup input not found by ID, trying broader selectors...`);
       await page.waitForTimeout(2000);
-      
-      // Try to find any input in the popup
       const anyInput = page.locator('.a-popover-wrapper input[type="text"], .a-popover-wrapper input:not([type])').first();
-      if (await anyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-        console.log(`  📍 Found alternative input in popup`);
-      } else {
-        console.log(`  ❌ No postal code input found in popup at all!`);
-        // Take screenshot for debugging
-        await dbLog(`location-${channel.name}`, 'error', 'Popup input not found');
-        return;
+      if (!await anyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+        throw new Error('No postal code input found in popup');
       }
     }
 
-    // ─── STEP 3: Clear and fill postal code ───
-    console.log(`  📍 Step 3: Entering postal code "${channel.postalCode}"...`);
+    // Clear and fill postal code
+    console.log(`  📍 Entering postal code "${channel.postalCode}"...`);
     const zipInput = page.locator('#GLUXZipUpdateInput').or(
       page.locator('.a-popover-wrapper input[type="text"]').first()
     );
-    
-    // Triple-click to select all, then type (more reliable than fill)
     await zipInput.click({ clickCount: 3 });
     await page.waitForTimeout(300);
     await zipInput.fill('');
     await page.waitForTimeout(300);
     await zipInput.fill(channel.postalCode);
     await page.waitForTimeout(500);
-    
-    // Verify what was entered
-    const inputValue = await zipInput.inputValue();
-    console.log(`  📍 Input value: "${inputValue}"`);
 
-    // ─── STEP 4: Click "Bestätigen" / "Apply" / "Confirm" ───
-    console.log(`  📍 Step 4: Clicking confirm button...`);
-    // The confirm button is right next to the postal code input
+    // Click "Bestätigen" / "Apply"
+    console.log(`  📍 Clicking confirm...`);
     const confirmBtn = page.locator(
-      '#GLUXZipUpdate, ' +                                          // Standard ID
-      'input[aria-labelledby="GLUXZipUpdate-announce"], ' +         // Aria variant
-      '.a-popover-wrapper input[type="submit"], ' +                 // Generic submit
-      'span:has-text("Bestätigen"), ' +                             // DE
-      'span:has-text("Apply"), ' +                                  // EN
-      'span:has-text("Appliquer"), ' +                              // FR
-      'span:has-text("Aplicar"), ' +                                // ES
-      'span:has-text("Applica"), ' +                                // IT
-      'span:has-text("Toepassen")'                                  // NL
+      '#GLUXZipUpdate, ' +
+      'input[aria-labelledby="GLUXZipUpdate-announce"], ' +
+      '.a-popover-wrapper input[type="submit"], ' +
+      'span:has-text("Bestätigen"), span:has-text("Apply"), ' +
+      'span:has-text("Appliquer"), span:has-text("Aplicar"), ' +
+      'span:has-text("Applica"), span:has-text("Toepassen")'
     );
-    
     await confirmBtn.first().click({ timeout: 5000 });
-    console.log(`  📍 Confirm clicked!`);
     await page.waitForTimeout(3000);
 
-    // ─── STEP 5: Click "Fertig" / "Done" if visible ───
-    console.log(`  📍 Step 5: Looking for Done/Fertig button...`);
+    // Click "Fertig" / "Done" if visible
     const doneBtn = page.locator(
-      '#GLUXConfirmClose, ' +                                       // Standard ID
-      'button.a-button-close, ' +                                   // Close button
-      'button:has-text("Fertig"), ' +                               // DE
-      'button:has-text("Done"), ' +                                 // EN
-      'button:has-text("Terminé"), ' +                              // FR
-      'button:has-text("Hecho"), ' +                                // ES
-      'button:has-text("Fine"), ' +                                 // IT
-      'button:has-text("Klaar"), ' +                                // NL
-      '.a-popover-footer button'                                    // Generic footer button
+      '#GLUXConfirmClose, button.a-button-close, ' +
+      'button:has-text("Fertig"), button:has-text("Done"), ' +
+      'button:has-text("Terminé"), button:has-text("Hecho"), ' +
+      'button:has-text("Fine"), button:has-text("Klaar"), ' +
+      '.a-popover-footer button'
     );
-    
     if (await doneBtn.first().isVisible({ timeout: 3000 }).catch(() => false)) {
       await doneBtn.first().click();
-      console.log(`  📍 Done/Fertig clicked!`);
       await page.waitForTimeout(2000);
-    } else {
-      console.log(`  📍 No Done button (popup may have auto-closed)`);
     }
 
-    // ─── STEP 6: Reload page to lock in cookies ───
-    console.log(`  📍 Step 6: Reloading page to apply location...`);
+    // Reload to lock in cookies
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
     await page.waitForTimeout(3000);
-
-    // ─── STEP 7: Verify location header ───
-    console.log(`  📍 Step 7: Verifying location...`);
-    try {
-      const line2 = await page.locator('#glow-ingress-line2').textContent({ timeout: 5000 });
-      const trimmed = line2.trim();
-      console.log(`  📍 Location header now shows: "${trimmed}"`);
-      
-      // Success check: postal code should appear in header, OR country name should match
-      const postalShort = channel.postalCode.replace(/\s/g, '').substring(0, 3);
-      if (trimmed.includes(channel.postalCode) || trimmed.includes(postalShort)) {
-        console.log(`  ✅ VERIFIED: Postal code "${channel.postalCode}" confirmed in header!`);
-        await dbLog(`location-${channel.name}`, 'success', `Verified: ${trimmed}`);
-      } else if (trimmed.toLowerCase().includes('belgi') && !channel.domain.includes('.be')) {
-        console.log(`  ❌ FAILED: Still shows Belgium! Prices may be wrong.`);
-        await dbLog(`location-${channel.name}`, 'error', `Still Belgium: ${trimmed}`);
-      } else {
-        console.log(`  ⚠️ Header: "${trimmed}" — may be OK (some markets show city name)`);
-        await dbLog(`location-${channel.name}`, 'warning', `Header: ${trimmed}`);
-      }
-    } catch (e) {
-      console.log(`  ⚠️ Could not read location header: ${e.message}`);
-    }
-
-  } catch (e) {
-    console.log(`  ❌ FAILED to set delivery location: ${e.message}`);
-    await dbLog(`location-${channel.name}`, 'error', `Failed: ${e.message}`);
   }
+
+  // ═══════════════════════════════════════════════════════════
+  // MAIN FLOW: Pre-check → Attempt (with retry) → Hard verify
+  // ═══════════════════════════════════════════════════════════
+
+  // Pre-check: already correct?
+  const preCheck = await isLocationCorrect();
+  if (preCheck.ok) {
+    console.log(`  ✅ Delivery already correct: "${preCheck.header}" — skipping popup!`);
+    await dbLog(`location-${channel.name}`, 'success', `Already set: ${preCheck.header}`);
+    return true;
+  }
+  console.log(`  📍 Current: "${preCheck.header}" — needs change`);
+
+  // Attempt 1
+  try {
+    console.log(`  📍 Attempt 1/2...`);
+    await attemptPopupFlow();
+
+    const check1 = await isLocationCorrect();
+    if (check1.ok) {
+      console.log(`  ✅ VERIFIED on attempt 1: "${check1.header}"`);
+      await dbLog(`location-${channel.name}`, 'success', `Verified: ${check1.header}`);
+      return true;
+    }
+    console.log(`  ⚠️ Attempt 1 failed: ${check1.reason}`);
+  } catch (e) {
+    console.log(`  ⚠️ Attempt 1 error: ${e.message}`);
+  }
+
+  // Attempt 2 (retry)
+  try {
+    console.log(`  📍 Attempt 2/2 (retry)...`);
+    // Navigate to fresh product page first
+    const firstVariant = PRODUCTS[channel.name]?.variants?.[0];
+    if (firstVariant) {
+      await page.goto(`https://www.${channel.domain}/dp/${firstVariant.asin}?th=1`, { 
+        waitUntil: 'domcontentloaded', timeout: 20000 
+      });
+      await page.waitForTimeout(3000);
+    }
+    await attemptPopupFlow();
+
+    const check2 = await isLocationCorrect();
+    if (check2.ok) {
+      console.log(`  ✅ VERIFIED on attempt 2: "${check2.header}"`);
+      await dbLog(`location-${channel.name}`, 'success', `Verified retry: ${check2.header}`);
+      return true;
+    }
+    console.log(`  ❌ Attempt 2 failed: ${check2.reason}`);
+  } catch (e) {
+    console.log(`  ❌ Attempt 2 error: ${e.message}`);
+  }
+
+  // HARD FAIL — could not set postal code
+  console.log(`  🚫 HARD FAIL: Could NOT verify delivery location for ${channel.name}!`);
+  console.log(`  🚫 SKIPPING this market to avoid incorrect prices.`);
+  await dbLog(`location-${channel.name}`, 'CRITICAL', `HARD FAIL: Could not set ${channel.postalCode} — market SKIPPED`);
+  return false;
 }
 
 /**
@@ -718,8 +729,14 @@ async function scrapeAmazonMarket(browser, channelId) {
     // Step 2: Accept cookies
     await acceptCookies(page, channel.locale);
 
-    // Step 3: Set delivery location (COUNTRY + postal code)
-    await setDeliveryLocation(page, channel);
+    // Step 3: Set delivery location (COUNTRY + postal code) — HARD GATE
+    const locationOk = await setDeliveryLocation(page, channel);
+    if (!locationOk) {
+      console.log(`  🚫 SKIPPING ${channel.name} — delivery location NOT verified!`);
+      console.log(`  🚫 Prices would be wrong without correct local delivery.`);
+      await dbLog(`market-${channelId}`, 'SKIPPED', `Delivery location failed — market skipped entirely`);
+      return; // EXIT — do NOT scrape this market
+    }
 
     // Step 4: Scrape ALL mat variants via direct ASIN navigation
     const allVariants = [...products.variants, ...(products.trays || [])];
