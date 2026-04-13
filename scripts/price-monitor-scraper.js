@@ -295,188 +295,147 @@ const COUNTRY_NAMES = {
 };
 
 /**
- * Country code mapping for Amazon's delivery API.
- */
-const COUNTRY_CODES = {
-  'amazon.de': 'DE', 'amazon.fr': 'FR', 'amazon.es': 'ES', 'amazon.it': 'IT',
-  'amazon.com.be': 'BE', 'amazon.nl': 'NL', 'amazon.com': 'US', 'amazon.ca': 'CA', 'amazon.co.uk': 'GB',
-};
-
-/**
- * Set delivery location on Amazon using THREE strategies:
- *   1. API call (fastest, most reliable)
- *   2. Popup interaction (fallback)
- *   3. Verify via page header
+ * Set delivery location on Amazon.
  * 
- * Critical: Without correct location, Amazon shows prices for Tim's default (Belgium).
+ * EXACT FLOW (based on Amazon DE popup screenshot):
+ *   1. Click "Liefern nach [country]" link (top-left header)
+ *   2. Popup appears: "Wähle deinen Standort aus"
+ *   3. Fill LOCAL postal code into input field
+ *   4. Click "Bestätigen" / "Apply" / "Appliquer"
+ *   5. Wait for page to update
+ *   6. Click "Fertig" / "Done" / "Terminé" if visible
+ *   7. Reload page to lock in new location cookies
+ *   8. Verify header shows correct postal code (not "Belgien")
+ * 
+ * For NON-LOCAL delivery (e.g. delivering to France while on amazon.de),
+ * use the "Zustellung außerhalb" dropdown instead.
+ * But typically we scrape each domain with its LOCAL postal code.
  */
 async function setDeliveryLocation(page, channel) {
   console.log(`  📍 Setting delivery to ${channel.country} — ${channel.postalCode}`);
-  await dbLog(`location-${channel.name}`, 'info', `Setting country: ${channel.country}, postal: ${channel.postalCode}`);
+  await dbLog(`location-${channel.name}`, 'info', `Setting: ${channel.country} ${channel.postalCode}`);
 
-  const countryCode = COUNTRY_CODES[channel.domain] || 'DE';
-  let locationSet = false;
-
-  // ═══════════════════════════════════════════════════════
-  // STRATEGY 1: Direct API call (no popup interaction)
-  // ═══════════════════════════════════════════════════════
   try {
-    console.log(`  🔧 Strategy 1: API call to set location...`);
+    // ─── STEP 1: Click delivery location link (top-left) ───
+    console.log(`  📍 Step 1: Clicking delivery location link...`);
+    const locationLink = page.locator('#nav-global-location-popover-link');
+    await locationLink.waitFor({ state: 'visible', timeout: 5000 });
+    await locationLink.click();
+    await page.waitForTimeout(2500);
+
+    // ─── STEP 2: Wait for popup to appear ───
+    console.log(`  📍 Step 2: Waiting for location popup...`);
+    // The popup has the postal code input
+    const popupVisible = await page.locator('#GLUXZipUpdateInput').isVisible({ timeout: 5000 }).catch(() => false);
     
-    const apiResult = await page.evaluate(async ({ postal, country }) => {
-      try {
-        // Amazon's internal address-change endpoint
-        const resp = await fetch('/gp/delivery/ajax/address-change.html', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'anti-csrftoken-a2z': document.querySelector('input[name="anti-csrftoken-a2z"]')?.value || 
-                                  document.cookie.match(/session-token=([^;]+)/)?.[1] || '',
-          },
-          body: new URLSearchParams({
-            locationType: 'LOCATION_INPUT',
-            zipCode: postal,
-            storeContext: 'generic',
-            deviceType: 'web',
-            pageType: 'Gateway',
-            actionSource: 'glow',
-            almBrandId: 'undefined',
-            node: '0',
-            section: 'compact',
-            country: country,
-          }).toString(),
-        });
-        
-        const text = await resp.text();
-        return { ok: resp.ok, status: resp.status, body: text.substring(0, 300) };
-      } catch (e) {
-        return { ok: false, error: e.message };
-      }
-    }, { postal: channel.postalCode, country: countryCode });
-
-    if (apiResult.ok) {
-      console.log(`  ✅ API call succeeded (status ${apiResult.status})`);
-      // Reload page to apply new location
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
-      await page.waitForTimeout(3000);
-      locationSet = true;
-    } else {
-      console.log(`  ⚠️ API returned: ${apiResult.status || apiResult.error}`);
-    }
-  } catch (e) {
-    console.log(`  ⚠️ Strategy 1 failed: ${e.message}`);
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // STRATEGY 2: Popup interaction (fallback)
-  // ═══════════════════════════════════════════════════════
-  if (!locationSet) {
-    try {
-      console.log(`  🔧 Strategy 2: Popup interaction...`);
-      
-      // Click the delivery location link
-      const locationLink = page.locator('#nav-global-location-popover-link, #glow-ingress-block');
-      await locationLink.click({ timeout: 5000 });
+    if (!popupVisible) {
+      // Sometimes popup takes longer or has a different structure
+      console.log(`  ⚠️ Popup input not found by ID, trying broader selectors...`);
       await page.waitForTimeout(2000);
-
-      // Try country dropdown first
-      const countryDropdown = page.locator('#GLUXCountryListDropdown, #GLUXCountryList, select[id*="GLUX"]');
-      const dropdownVisible = await countryDropdown.isVisible({ timeout: 3000 }).catch(() => false);
       
-      if (dropdownVisible) {
-        console.log(`  🌍 Country dropdown found`);
-        // Try by value (country code) first — most reliable
-        try {
-          await countryDropdown.selectOption({ value: countryCode }, { timeout: 2000 });
-          console.log(`  🌍 Country set by code: ${countryCode}`);
-        } catch (e) {
-          // Try by label
-          const countryNames = COUNTRY_NAMES[channel.domain] || [channel.country];
-          for (const name of countryNames) {
-            try {
-              await countryDropdown.selectOption({ label: name }, { timeout: 2000 });
-              console.log(`  🌍 Country set by label: ${name}`);
-              break;
-            } catch (e2) { /* try next */ }
-          }
-        }
-        await page.waitForTimeout(1000);
+      // Try to find any input in the popup
+      const anyInput = page.locator('.a-popover-wrapper input[type="text"], .a-popover-wrapper input:not([type])').first();
+      if (await anyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+        console.log(`  📍 Found alternative input in popup`);
       } else {
-        // No dropdown visible — look for "Manage address book" or "Change" link
-        console.log(`  ⚠️ No country dropdown — looking for alternative...`);
-        const changeLink = page.locator('a:has-text("Change"), a:has-text("Ändern"), a:has-text("Modifier"), a:has-text("Cambiar"), a:has-text("Cambia"), a:has-text("Wijzig")');
-        if (await changeLink.first().isVisible({ timeout: 2000 }).catch(() => false)) {
-          await changeLink.first().click();
-          await page.waitForTimeout(2000);
-          
-          const dropdown2 = page.locator('#GLUXCountryListDropdown, #GLUXCountryList, select[id*="GLUX"]');
-          if (await dropdown2.isVisible({ timeout: 3000 }).catch(() => false)) {
-            try {
-              await dropdown2.selectOption({ value: countryCode }, { timeout: 2000 });
-              console.log(`  🌍 Country set after "Change" click: ${countryCode}`);
-            } catch (e) { /* continue to postal code */ }
-            await page.waitForTimeout(1000);
-          }
-        }
+        console.log(`  ❌ No postal code input found in popup at all!`);
+        // Take screenshot for debugging
+        await dbLog(`location-${channel.name}`, 'error', 'Popup input not found');
+        return;
       }
-
-      // Enter postal code
-      const zipInput = page.locator('#GLUXZipUpdateInput, input[data-action="GLUXPostalInputAction"]');
-      if (await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await zipInput.fill('');
-        await zipInput.fill(channel.postalCode);
-        console.log(`  📮 Postal code entered: ${channel.postalCode}`);
-        await page.waitForTimeout(500);
-
-        // Click Apply
-        const applyBtn = page.locator('#GLUXZipUpdate, [data-action="GLUXPostalUpdateAction"] input[type="submit"], input[aria-labelledby="GLUXZipUpdate-announce"]');
-        await applyBtn.click({ timeout: 3000 });
-        await page.waitForTimeout(3000);
-        locationSet = true;
-      } else {
-        console.log(`  ⚠️ No postal code input found in popup`);
-      }
-
-      // Handle "Continue" / "Done" button
-      try {
-        const continueBtn = page.locator('#GLUXConfirmClose, .a-popover-footer button, button:has-text("Continue"), button:has-text("Weiter"), button:has-text("Fertig"), button:has-text("Done")');
-        if (await continueBtn.first().isVisible({ timeout: 2000 }).catch(() => false)) {
-          await continueBtn.first().click();
-          await page.waitForTimeout(2000);
-        }
-      } catch (e) { /* popup already closed */ }
-      
-    } catch (e) {
-      console.log(`  ⚠️ Strategy 2 failed: ${e.message}`);
     }
-  }
 
-  // ═══════════════════════════════════════════════════════
-  // VERIFY: Check the location header text
-  // ═══════════════════════════════════════════════════════
-  await page.waitForTimeout(2000);
-  try {
-    const locationText = await page.locator('#glow-ingress-line2, #nav-global-location-popover-link .nav-line-2').textContent({ timeout: 3000 });
-    const trimmed = locationText.trim();
-    console.log(`  📍 Location header: "${trimmed}"`);
-    await dbLog(`location-${channel.name}`, locationSet ? 'success' : 'warning', `Header: ${trimmed}`);
+    // ─── STEP 3: Clear and fill postal code ───
+    console.log(`  📍 Step 3: Entering postal code "${channel.postalCode}"...`);
+    const zipInput = page.locator('#GLUXZipUpdateInput').or(
+      page.locator('.a-popover-wrapper input[type="text"]').first()
+    );
     
-    // Warn if still Belgium on non-BE market
-    if ((trimmed.includes('Belgi') || trimmed.includes('Belgium')) && !channel.domain.includes('.be')) {
-      console.log(`  ❌ WARNING: Still Belgium! Retrying with page reload...`);
-      await dbLog(`location-${channel.name}`, 'error', `Still Belgium after attempts!`);
-      
-      // Last resort: reload and check again
-      await page.reload({ waitUntil: 'domcontentloaded', timeout: 15000 });
-      await page.waitForTimeout(3000);
-      const loc2 = await page.locator('#glow-ingress-line2, #nav-global-location-popover-link .nav-line-2').textContent({ timeout: 3000 }).catch(() => '?');
-      console.log(`  📍 After reload: "${loc2.trim()}"`);
-    }
-  } catch (e) {
-    console.log(`  ⚠️ Could not read location header`);
-  }
+    // Triple-click to select all, then type (more reliable than fill)
+    await zipInput.click({ clickCount: 3 });
+    await page.waitForTimeout(300);
+    await zipInput.fill('');
+    await page.waitForTimeout(300);
+    await zipInput.fill(channel.postalCode);
+    await page.waitForTimeout(500);
+    
+    // Verify what was entered
+    const inputValue = await zipInput.inputValue();
+    console.log(`  📍 Input value: "${inputValue}"`);
 
-  console.log(`  ${locationSet ? '✅' : '⚠️'} Location ${locationSet ? 'set' : 'attempted'}: ${channel.country} — ${channel.postalCode}`);
+    // ─── STEP 4: Click "Bestätigen" / "Apply" / "Confirm" ───
+    console.log(`  📍 Step 4: Clicking confirm button...`);
+    // The confirm button is right next to the postal code input
+    const confirmBtn = page.locator(
+      '#GLUXZipUpdate, ' +                                          // Standard ID
+      'input[aria-labelledby="GLUXZipUpdate-announce"], ' +         // Aria variant
+      '.a-popover-wrapper input[type="submit"], ' +                 // Generic submit
+      'span:has-text("Bestätigen"), ' +                             // DE
+      'span:has-text("Apply"), ' +                                  // EN
+      'span:has-text("Appliquer"), ' +                              // FR
+      'span:has-text("Aplicar"), ' +                                // ES
+      'span:has-text("Applica"), ' +                                // IT
+      'span:has-text("Toepassen")'                                  // NL
+    );
+    
+    await confirmBtn.first().click({ timeout: 5000 });
+    console.log(`  📍 Confirm clicked!`);
+    await page.waitForTimeout(3000);
+
+    // ─── STEP 5: Click "Fertig" / "Done" if visible ───
+    console.log(`  📍 Step 5: Looking for Done/Fertig button...`);
+    const doneBtn = page.locator(
+      '#GLUXConfirmClose, ' +                                       // Standard ID
+      'button.a-button-close, ' +                                   // Close button
+      'button:has-text("Fertig"), ' +                               // DE
+      'button:has-text("Done"), ' +                                 // EN
+      'button:has-text("Terminé"), ' +                              // FR
+      'button:has-text("Hecho"), ' +                                // ES
+      'button:has-text("Fine"), ' +                                 // IT
+      'button:has-text("Klaar"), ' +                                // NL
+      '.a-popover-footer button'                                    // Generic footer button
+    );
+    
+    if (await doneBtn.first().isVisible({ timeout: 3000 }).catch(() => false)) {
+      await doneBtn.first().click();
+      console.log(`  📍 Done/Fertig clicked!`);
+      await page.waitForTimeout(2000);
+    } else {
+      console.log(`  📍 No Done button (popup may have auto-closed)`);
+    }
+
+    // ─── STEP 6: Reload page to lock in cookies ───
+    console.log(`  📍 Step 6: Reloading page to apply location...`);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+    await page.waitForTimeout(3000);
+
+    // ─── STEP 7: Verify location header ───
+    console.log(`  📍 Step 7: Verifying location...`);
+    try {
+      const line2 = await page.locator('#glow-ingress-line2').textContent({ timeout: 5000 });
+      const trimmed = line2.trim();
+      console.log(`  📍 Location header now shows: "${trimmed}"`);
+      
+      // Success check: postal code should appear in header, OR country name should match
+      const postalShort = channel.postalCode.replace(/\s/g, '').substring(0, 3);
+      if (trimmed.includes(channel.postalCode) || trimmed.includes(postalShort)) {
+        console.log(`  ✅ VERIFIED: Postal code "${channel.postalCode}" confirmed in header!`);
+        await dbLog(`location-${channel.name}`, 'success', `Verified: ${trimmed}`);
+      } else if (trimmed.toLowerCase().includes('belgi') && !channel.domain.includes('.be')) {
+        console.log(`  ❌ FAILED: Still shows Belgium! Prices may be wrong.`);
+        await dbLog(`location-${channel.name}`, 'error', `Still Belgium: ${trimmed}`);
+      } else {
+        console.log(`  ⚠️ Header: "${trimmed}" — may be OK (some markets show city name)`);
+        await dbLog(`location-${channel.name}`, 'warning', `Header: ${trimmed}`);
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Could not read location header: ${e.message}`);
+    }
+
+  } catch (e) {
+    console.log(`  ❌ FAILED to set delivery location: ${e.message}`);
+    await dbLog(`location-${channel.name}`, 'error', `Failed: ${e.message}`);
+  }
 }
 
 /**
