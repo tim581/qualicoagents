@@ -22,6 +22,7 @@
 
 'use strict';
 require('dotenv').config();
+const path = require('path');
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -316,6 +317,21 @@ async function setDeliveryLocation(page, channel) {
   await dbLog(`location-${channel.name}`, 'info', `Setting: ${channel.country} ${channel.postalCode}`);
 
   try {
+    // ─── PRE-CHECK: Is delivery location already correct? (persistent context may have it) ───
+    try {
+      const currentLocation = await page.locator('#glow-ingress-line2').textContent({ timeout: 3000 });
+      const trimmed = currentLocation.trim();
+      const postalShort = channel.postalCode.replace(/\s/g, '').substring(0, 3);
+      if (trimmed.includes(channel.postalCode) || trimmed.includes(postalShort)) {
+        console.log(`  ✅ Delivery already set to "${trimmed}" — skipping popup!`);
+        await dbLog(`location-${channel.name}`, 'success', `Already set: ${trimmed}`);
+        return;
+      }
+      console.log(`  📍 Current location: "${trimmed}" — needs change to ${channel.postalCode}`);
+    } catch (e) {
+      console.log(`  📍 Could not read current location, will set it...`);
+    }
+
     // ─── STEP 1: Click delivery location link (top-left) ───
     console.log(`  📍 Step 1: Clicking delivery location link...`);
     const locationLink = page.locator('#nav-global-location-popover-link');
@@ -687,11 +703,8 @@ async function scrapeAmazonMarket(browser, channelId) {
   console.log(`${'═'.repeat(60)}`);
   await dbLog(`market-${channelId}`, 'info', `Starting ${channel.name}`);
 
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    viewport: { width: 1920, height: 1080 },
-    locale: channel.locale,
-  });
+  // Use the shared persistent context (cookies persist between runs!)
+  const context = browser; // browser IS the persistent context
   const page = await context.newPage();
 
   try {
@@ -740,7 +753,7 @@ async function scrapeAmazonMarket(browser, channelId) {
     console.log(`  ❌ Market error: ${err.message}`);
     await dbLog(`market-${channelId}`, 'error', err.message);
   } finally {
-    await context.close();
+    await page.close(); // Close page only — context is shared & persistent
   }
 }
 
@@ -1077,22 +1090,26 @@ async function main() {
   const previousPrices = await loadPreviousPrices();
   console.log(`📂 Loaded ${Object.keys(previousPrices).length} previous prices for comparison`);
 
-  // Step 1: Launch browser
-  console.log('\n🚀 Launching browser...');
-  const browser = await chromium.launch({
+  // Step 1: Launch browser with PERSISTENT context (saves cookies between runs!)
+  // This means: login once → stays logged in. Delivery location set once → persists.
+  const userDataDir = path.join(__dirname, '.browser-data');
+  console.log(`\n🚀 Launching browser (persistent context: ${userDataDir})...`);
+  const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false, // Use visible browser on Tim's PC
     args: ['--disable-blink-features=AutomationControlled'],
+    viewport: { width: 1920, height: 1080 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
   });
 
   try {
     // Step 2: Scrape all Amazon markets (sequential — one at a time)
     const marketOrder = [22, 23, 32, 30, 31, 27, 26, 25, 24]; // DE first (reference)
     for (const channelId of marketOrder) {
-      await scrapeAmazonMarket(browser, channelId);
+      await scrapeAmazonMarket(context, channelId);
     }
 
-    // Step 3: Close browser (not needed for HTTP scraping)
-    await browser.close();
+    // Step 3: Close browser
+    await context.close();
     console.log('\n🛑 Browser closed');
 
     // Step 4: Bol.com (HTTP)
