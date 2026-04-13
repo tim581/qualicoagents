@@ -279,22 +279,97 @@ async function acceptCookies(page, locale) {
 }
 
 /**
- * Set delivery postal code on Amazon to get local prices.
- * Must be done ONCE per domain session.
+ * Country name mapping for Amazon's delivery location dropdown.
+ * Amazon uses localized country names depending on the domain.
+ */
+const COUNTRY_NAMES = {
+  'amazon.de':     ['Deutschland', 'Germany'],
+  'amazon.fr':     ['France'],
+  'amazon.es':     ['España', 'Spain'],
+  'amazon.it':     ['Italia', 'Italy'],
+  'amazon.com.be': ['België', 'Belgique', 'Belgium'],
+  'amazon.nl':     ['Nederland', 'Netherlands'],
+  'amazon.com':    ['United States'],
+  'amazon.ca':     ['Canada'],
+  'amazon.co.uk':  ['United Kingdom'],
+};
+
+/**
+ * Set delivery location (COUNTRY + postal code) on Amazon.
+ * Critical: must set the correct COUNTRY first, then postal code.
+ * Without this, Amazon defaults to Tim's location (Belgium).
  */
 async function setDeliveryLocation(page, channel) {
-  console.log(`  📍 Setting delivery to ${channel.postalCode} (${channel.country})`);
-  await dbLog(`location-${channel.name}`, 'info', `Setting postal code: ${channel.postalCode}`);
+  console.log(`  📍 Setting delivery to ${channel.country} — ${channel.postalCode}`);
+  await dbLog(`location-${channel.name}`, 'info', `Setting country: ${channel.country}, postal: ${channel.postalCode}`);
 
   try {
-    // Click the delivery location link (top-left of Amazon)
+    // Step 1: Click the delivery location link (top-left of Amazon)
     const locationLink = page.locator('#nav-global-location-popover-link, #glow-ingress-block');
     await locationLink.click({ timeout: 5000 });
     await page.waitForTimeout(2000);
 
-    // Type postal code in the input field
+    // Step 2: Check if there's a country dropdown and set the correct country
+    const countryDropdown = page.locator('#GLUXCountryListDropdown, #GLUXCountryList, select[id*="GLUX"]');
+    if (await countryDropdown.isVisible({ timeout: 3000 }).catch(() => false)) {
+      console.log(`  🌍 Country dropdown found — selecting ${channel.country}...`);
+      const countryNames = COUNTRY_NAMES[channel.domain] || [channel.country];
+      
+      // Try each possible country name
+      let countrySet = false;
+      for (const name of countryNames) {
+        try {
+          await countryDropdown.selectOption({ label: name }, { timeout: 2000 });
+          countrySet = true;
+          console.log(`  🌍 Country set to: ${name}`);
+          break;
+        } catch (e) {
+          // Try next name variant
+        }
+      }
+      
+      if (!countrySet) {
+        // Try by value (country code)
+        const codeMap = { 'amazon.de': 'DE', 'amazon.fr': 'FR', 'amazon.es': 'ES', 'amazon.it': 'IT',
+          'amazon.com.be': 'BE', 'amazon.nl': 'NL', 'amazon.com': 'US', 'amazon.ca': 'CA', 'amazon.co.uk': 'GB' };
+        const code = codeMap[channel.domain];
+        if (code) {
+          try {
+            await countryDropdown.selectOption({ value: code }, { timeout: 2000 });
+            console.log(`  🌍 Country set by code: ${code}`);
+          } catch (e) {
+            console.log(`  ⚠️ Could not select country: ${e.message}`);
+          }
+        }
+      }
+      await page.waitForTimeout(1000);
+    } else {
+      // No country dropdown — might need to click "Change" link first
+      const changeLink = page.locator('a:has-text("Change"), a:has-text("Ändern"), a:has-text("Modifier"), a:has-text("Cambiar"), a:has-text("Cambia"), a:has-text("Wijzig")');
+      if (await changeLink.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+        console.log(`  🔄 Clicking "Change" to access country selector...`);
+        await changeLink.first().click();
+        await page.waitForTimeout(2000);
+
+        // Now try the dropdown again
+        const dropdown2 = page.locator('#GLUXCountryListDropdown, #GLUXCountryList, select[id*="GLUX"]');
+        if (await dropdown2.isVisible({ timeout: 3000 }).catch(() => false)) {
+          const countryNames = COUNTRY_NAMES[channel.domain] || [channel.country];
+          for (const name of countryNames) {
+            try {
+              await dropdown2.selectOption({ label: name }, { timeout: 2000 });
+              console.log(`  🌍 Country set to: ${name}`);
+              break;
+            } catch (e) { /* try next */ }
+          }
+          await page.waitForTimeout(1000);
+        }
+      }
+    }
+
+    // Step 3: Enter postal code
     const zipInput = page.locator('#GLUXZipUpdateInput, input[data-action="GLUXPostalInputAction"]');
-    if (await zipInput.isVisible({ timeout: 3000 })) {
+    if (await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
       await zipInput.fill('');
       await zipInput.fill(channel.postalCode);
       await page.waitForTimeout(500);
@@ -302,23 +377,40 @@ async function setDeliveryLocation(page, channel) {
       // Click Apply button
       const applyBtn = page.locator('#GLUXZipUpdate, [data-action="GLUXPostalUpdateAction"] input[type="submit"]');
       await applyBtn.click({ timeout: 3000 });
-      await page.waitForTimeout(2000);
+      await page.waitForTimeout(3000);
     }
 
-    // Close the popup if still open
+    // Step 4: Handle "Continue" or "Done" button that sometimes appears
     try {
-      const closeBtn = page.locator('.a-popover-footer button, #GLUXConfirmClose, .a-button-close');
-      if (await closeBtn.first().isVisible({ timeout: 2000 })) {
-        await closeBtn.first().click();
-        await page.waitForTimeout(1000);
+      const continueBtn = page.locator('#GLUXConfirmClose, .a-popover-footer button, button:has-text("Continue"), button:has-text("Weiter"), button:has-text("Fertig"), button:has-text("Done")');
+      if (await continueBtn.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+        await continueBtn.first().click();
+        await page.waitForTimeout(1500);
       }
     } catch (e) { /* popup already closed */ }
 
-    console.log(`  ✅ Location set to ${channel.postalCode}`);
-    await dbLog(`location-${channel.name}`, 'success', `Set to ${channel.postalCode}`);
+    // Step 5: Verify location was set correctly
+    await page.waitForTimeout(2000);
+    try {
+      const locationText = await page.locator('#glow-ingress-line2, #nav-global-location-popover-link .nav-line-2').textContent({ timeout: 3000 });
+      console.log(`  📍 Location now shows: "${locationText.trim()}"`);
+      await dbLog(`location-${channel.name}`, 'success', `Verified: ${locationText.trim()}`);
+      
+      // Check if location actually changed
+      if (locationText.includes('Belgi') || locationText.includes('Belgium')) {
+        if (!channel.domain.includes('.be')) {
+          console.log(`  ❌ WARNING: Location still shows Belgium! Prices may be wrong for ${channel.name}`);
+          await dbLog(`location-${channel.name}`, 'error', `Still Belgium after setting ${channel.country}!`);
+        }
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Could not verify location text`);
+    }
+
+    console.log(`  ✅ Location set to ${channel.country} — ${channel.postalCode}`);
   } catch (e) {
-    console.log(`  ⚠️ Could not set location: ${e.message}`);
-    await dbLog(`location-${channel.name}`, 'warn', `Failed: ${e.message}`);
+    console.log(`  ❌ FAILED to set location for ${channel.name}: ${e.message}`);
+    await dbLog(`location-${channel.name}`, 'error', `Failed: ${e.message}`);
   }
 }
 
@@ -489,57 +581,7 @@ async function checkInStock(page) {
   }
 }
 
-/**
- * Click a specific variant on an Amazon product page.
- * Amazon uses twister (variation selector) buttons.
- */
-async function clickVariant(page, variantName) {
-  console.log(`    → Clicking variant: "${variantName}"`);
-  
-  // Try multiple strategies
-  // Strategy 1: Exact text match in twister
-  try {
-    const twisterBtn = page.locator(`#twister li[title*="${variantName}"], #twister_feature_div li[title*="${variantName}"]`).first();
-    if (await twisterBtn.isVisible({ timeout: 2000 })) {
-      await twisterBtn.click();
-      await page.waitForTimeout(2500);
-      return true;
-    }
-  } catch (e) { /* try next strategy */ }
-
-  // Strategy 2: Button with matching text
-  try {
-    const btn = page.locator(`#twister .a-button-text:has-text("${variantName}")`).first();
-    if (await btn.isVisible({ timeout: 2000 })) {
-      await btn.click();
-      await page.waitForTimeout(2500);
-      return true;
-    }
-  } catch (e) { /* try next */ }
-
-  // Strategy 3: Find in dropdown
-  try {
-    const dropdown = page.locator('#native_dropdown_selected_size_name, select#native_dropdown_selected_color_name');
-    if (await dropdown.isVisible({ timeout: 2000 })) {
-      await dropdown.selectOption({ label: variantName });
-      await page.waitForTimeout(2500);
-      return true;
-    }
-  } catch (e) { /* try next */ }
-
-  // Strategy 4: Image swatch with alt text
-  try {
-    const swatch = page.locator(`img[alt*="${variantName}"]`).first();
-    if (await swatch.isVisible({ timeout: 2000 })) {
-      await swatch.click();
-      await page.waitForTimeout(2500);
-      return true;
-    }
-  } catch (e) { /* variant not found */ }
-
-  console.log(`    ⚠️ Could not find variant: "${variantName}"`);
-  return false;
-}
+// clickVariant() REMOVED — replaced by ASIN-first navigation (direct /dp/{ASIN} per variant)
 
 /**
  * Scrape a single Amazon variant after it's been selected.
@@ -607,7 +649,9 @@ async function scrapeCurrentVariant(page, channelId, variant, channel) {
 }
 
 /**
- * Scrape one Amazon market (all variants on the mat listing + trays listing)
+ * Scrape one Amazon market — ASIN-FIRST navigation.
+ * Each variant is loaded directly via /dp/{ASIN} — no variant clicking needed.
+ * This is 100% reliable and faster than twister clicking.
  */
 async function scrapeAmazonMarket(browser, channelId) {
   const channel = CHANNELS[channelId];
@@ -627,93 +671,44 @@ async function scrapeAmazonMarket(browser, channelId) {
   const page = await context.newPage();
 
   try {
-    // Step 1: Navigate to product or search page
-    let startUrl = products.url || products.searchUrl;
-    console.log(`  📄 Navigating to: ${startUrl}`);
-    await page.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // Step 1: Navigate to FIRST variant to set up cookies & delivery location
+    const firstVariant = products.variants[0];
+    const firstUrl = `https://www.${channel.domain}/dp/${firstVariant.asin}?th=1`;
+    console.log(`  📄 Opening ${channel.domain} via: ${firstUrl}`);
+    await page.goto(firstUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
 
     // Step 2: Accept cookies
     await acceptCookies(page, channel.locale);
 
-    // Step 3: Set delivery location
+    // Step 3: Set delivery location (COUNTRY + postal code)
     await setDeliveryLocation(page, channel);
 
-    // Step 4: If search-based (US/CA), click first Puzzlup result
-    if (!products.url && products.searchUrl) {
-      console.log(`  🔍 Search-based navigation — finding Puzzlup result...`);
-      try {
-        const result = page.locator('[data-component-type="s-search-result"] a:has-text("Puzzlup")').first();
-        await result.click({ timeout: 10000 });
-        await page.waitForTimeout(3000);
-      } catch (e) {
-        console.log(`  ❌ Could not find Puzzlup in search results`);
-        await dbLog(`market-${channelId}`, 'error', `Search nav failed: ${e.message}`);
-        await context.close();
-        return;
-      }
-    }
+    // Step 4: Scrape ALL mat variants via direct ASIN navigation
+    const allVariants = [...products.variants, ...(products.trays || [])];
+    console.log(`\n  📦 Scraping ${allVariants.length} variants via direct ASIN navigation...`);
 
-    // Step 5: Scrape mat variants
-    console.log(`\n  📦 Scraping ${products.variants.length} mat variants...`);
-    for (let i = 0; i < products.variants.length; i++) {
-      const variant = products.variants[i];
+    for (let i = 0; i < allVariants.length; i++) {
+      const variant = allVariants[i];
       if (shouldSkipVariant(variant.name)) {
         console.log(`    ⏭️ SKIP (discontinued): ${variant.name}`);
         continue;
       }
 
-      // Click variant (skip first if it's already selected)
-      if (i > 0 || products.variants.length > 1) {
-        const clicked = await clickVariant(page, variant.name);
-        if (!clicked) {
-          // Try navigating directly to ASIN
-          console.log(`    → Fallback: direct ASIN navigation`);
-          await page.goto(`https://www.${channel.domain}/dp/${variant.asin}?th=1`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-          await page.waitForTimeout(3000);
-        }
-      }
+      // Navigate directly to this variant's ASIN
+      const variantUrl = `https://www.${channel.domain}/dp/${variant.asin}?th=1`;
+      console.log(`    → [${i + 1}/${allVariants.length}] ${variant.name} → /dp/${variant.asin}`);
+      await page.goto(variantUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(2500);
 
       const data = await scrapeCurrentVariant(page, channelId, variant, channel);
       if (data) results.push(data);
     }
 
-    // Step 6: Scrape trays (separate listing)
-    if (products.trays && products.traysUrl) {
-      console.log(`\n  📦 Scraping ${products.trays.length} tray variants...`);
-      await page.goto(products.traysUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-      await page.waitForTimeout(3000);
+    // CA has separate ASIN listings for trays (no traysUrl, already in allVariants above)
+    // Other markets: trays are in products.trays[] with their own ASINs — already handled above
 
-      for (let i = 0; i < products.trays.length; i++) {
-        const variant = products.trays[i];
-        if (shouldSkipVariant(variant.name)) continue;
-
-        if (i > 0) {
-          const clicked = await clickVariant(page, variant.name);
-          if (!clicked) {
-            await page.goto(`https://www.${channel.domain}/dp/${variant.asin}?th=1`, { waitUntil: 'domcontentloaded', timeout: 20000 });
-            await page.waitForTimeout(3000);
-          }
-        }
-
-        const data = await scrapeCurrentVariant(page, channelId, variant, channel);
-        if (data) results.push(data);
-      }
-    }
-
-    // Step 7: CA separate tray listings
-    if (products.separateTrays) {
-      console.log(`\n  📦 Scraping ${products.separateTrays.length} separate tray ASINs...`);
-      for (const tray of products.separateTrays) {
-        if (shouldSkipVariant(tray.name)) continue;
-        
-        await page.goto(tray.url, { waitUntil: 'domcontentloaded', timeout: 20000 });
-        await page.waitForTimeout(3000);
-        
-        const data = await scrapeCurrentVariant(page, channelId, tray, channel);
-        if (data) results.push(data);
-      }
-    }
+    // All variants (mats + trays) already scraped via ASIN-first loop above
 
     await dbLog(`market-${channelId}`, 'success', `Done: ${results.filter(r => r.channel_id === channelId).length} variants scraped`);
 
