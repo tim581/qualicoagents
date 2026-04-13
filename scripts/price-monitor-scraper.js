@@ -195,7 +195,19 @@ const WEBSHOP_PAGES = [
   { category: 'trays', url: 'https://puzzlup.be/puzzle-trays/' },
 ];
 
-// Map webshop product names to product IDs
+// Map webshop product URLs to product IDs (more reliable than name matching)
+const WEBSHOP_URL_MAP = {
+  'puzzlemat-1500-eco':    { productId: 1,  name: 'Eco 1500' },
+  'puzzlemat-1500-gift':   { productId: 12, name: 'Gift 1500' },
+  'puzzlemat-1000-gift':   { productId: 16, name: 'Gift 1000' },
+  'puzzlemat-3000-gift':   { productId: 4,  name: 'Gift 3000' },
+  'puzzlemat-3000-eco':    { productId: 5,  name: 'Eco 3000' },
+  'puzzlemat-1500-luxury': { productId: 10, name: 'Luxury 1500' },
+  'trays-1500':            { productId: 14, name: 'Trays 1500' },
+  'trays-3000':            { productId: 15, name: 'Trays 3000' },
+};
+
+// Legacy name map (fallback)
 const WEBSHOP_PRODUCT_MAP = {
   'eco 1500':    { productId: 1,  name: 'Eco 1500' },
   'gift 1500':   { productId: 12, name: 'Gift 1500' },
@@ -316,28 +328,46 @@ async function setDeliveryLocation(page, channel) {
   console.log(`  📍 Setting delivery to ${channel.country} — ${channel.postalCode}`);
   await dbLog(`location-${channel.name}`, 'info', `Setting: ${channel.country} ${channel.postalCode}`);
 
-  // ─── Helper: check if postal code is already correct in header ───
+  // ─── Helper: check if delivery location is correct ───
+  // Strategy: "Not the WRONG country" rather than "exact postal code"
+  // If persistent context already has a valid local address, accept it.
+  //
+  // WRONG countries = any country that isn't this market's country.
+  // We maintain a blocklist per domain of strings that indicate WRONG location.
+  const WRONG_LOCATION_STRINGS = {
+    'amazon.de':     ['belgi', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.fr':     ['belgi', 'deutschland', 'germany', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.es':     ['belgi', 'deutschland', 'germany', 'france', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.it':     ['belgi', 'deutschland', 'germany', 'france', 'españa', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.com.be': ['deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.nl':     ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'toronto', 'nyc'],
+    'amazon.com':    ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto'],
+    'amazon.ca':     ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'nyc', 'new york'],
+    'amazon.co.uk':  ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc', 'new york'],
+  };
+
   async function isLocationCorrect() {
     try {
       const line2 = await page.locator('#glow-ingress-line2').textContent({ timeout: 5000 });
       const trimmed = line2.trim();
-      const postalShort = channel.postalCode.replace(/\s/g, '').substring(0, 3);
-      // Check postal code appears in header
-      if (trimmed.includes(channel.postalCode) || trimmed.includes(postalShort)) {
-        return { ok: true, header: trimmed };
+      const lower = trimmed.toLowerCase();
+      
+      // If header is empty or says "Update location", not set yet
+      if (!trimmed || lower.includes('update location') || lower.includes('standort') || lower.includes('aktualisieren')) {
+        return { ok: false, header: trimmed, reason: 'No location set' };
       }
-      // For some markets, header shows city name — check it's NOT Belgium (unless we want BE)
-      if (trimmed.toLowerCase().includes('belgi') && !channel.domain.includes('.be')) {
-        return { ok: false, header: trimmed, reason: 'Still shows Belgium' };
-      }
-      // Check if header matches expected country
-      const countryNames = COUNTRY_NAMES[channel.domain] || [];
-      for (const name of countryNames) {
-        if (trimmed.toLowerCase().includes(name.toLowerCase())) {
-          return { ok: true, header: trimmed };
+      
+      // Check: does header contain any WRONG country/city?
+      const wrongStrings = WRONG_LOCATION_STRINGS[channel.domain] || [];
+      for (const wrong of wrongStrings) {
+        if (lower.includes(wrong)) {
+          return { ok: false, header: trimmed, reason: `Wrong location detected: "${wrong}" in "${trimmed}"` };
         }
       }
-      return { ok: false, header: trimmed, reason: `Unexpected: "${trimmed}"` };
+      
+      // Not a wrong country → accept it (could be any local address like "Balzac T4B 2T")
+      console.log(`  ✅ Location OK: "${trimmed}" (not a wrong country)`);
+      return { ok: true, header: trimmed };
     } catch (e) {
       return { ok: false, header: null, reason: e.message };
     }
@@ -891,9 +921,9 @@ async function scrapeWebshop() {
 
       const response = await fetch(page.url, {
         headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html',
-          'Accept-Language': 'en-GB,en;q=0.9',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml',
+          'Accept-Language': 'en-GB,en;q=0.9,nl;q=0.8',
         },
       });
 
@@ -904,30 +934,60 @@ async function scrapeWebshop() {
 
       const html = await response.text();
 
-      // Find all product cards with name and price
-      // WooCommerce pattern: product cards with price
-      const productRegex = /<li[^>]*class="[^"]*product[^"]*"[^>]*>[\s\S]*?<h2[^>]*>([\s\S]*?)<\/h2>[\s\S]*?<span class="[^"]*amount[^"]*"[^>]*>[€$£]?\s*([\d,.\s]+)<\/span>/gi;
-      
-      let match;
-      while ((match = productRegex.exec(html)) !== null) {
-        const rawName = match[1].replace(/<[^>]+>/g, '').trim().toLowerCase();
-        const priceStr = match[2].trim();
+      // puzzlup.be uses JetWooBuilder — split by jet-woo-products__item blocks
+      const blocks = html.split(/jet-woo-products__item\b/).slice(1);
+      console.log(`    Found ${blocks.length} product blocks`);
+
+      for (const block of blocks) {
+        // 1. Extract product URL (most reliable identifier)
+        const urlMatch = block.match(/href="https:\/\/puzzlup\.be\/product\/([^"\/]+)\/?"/);
+        if (!urlMatch) continue;
+        const urlSlug = urlMatch[1];
+        const productUrl = `https://puzzlup.be/product/${urlSlug}/`;
+
+        // 2. Match URL slug to known product
+        let mapped = WEBSHOP_URL_MAP[urlSlug];
         
-        // Try to match to known product
-        let mapped = null;
-        for (const [key, val] of Object.entries(WEBSHOP_PRODUCT_MAP)) {
-          if (rawName.includes(key) || key.includes(rawName.substring(0, 8))) {
-            mapped = val;
-            break;
+        // Fallback: try name matching
+        if (!mapped) {
+          const titleMatch = block.match(/product(?:__|-)title[^>]*>([^<]+)/);
+          if (titleMatch) {
+            const rawName = titleMatch[1].replace(/&#8211;/g, '-').replace(/&amp;/g, '&').trim().toLowerCase();
+            for (const [key, val] of Object.entries(WEBSHOP_PRODUCT_MAP)) {
+              if (rawName.includes(key)) {
+                mapped = val;
+                break;
+              }
+            }
           }
         }
 
         if (!mapped) {
-          console.log(`    ⚠️ Unknown webshop product: "${rawName}" — skipping`);
+          console.log(`    ⚠️ Unknown webshop product: "${urlSlug}" — skipping`);
           continue;
         }
 
-        const price = parsePrice(priceStr);
+        // 3. Extract price — pattern: €</span> followed by digits, or amount class with digits
+        let price = null;
+        const priceMatch = block.match(/(?:€|&euro;)\s*<\/span>\s*([0-9]+[,.]?[0-9]*)/);
+        if (priceMatch) {
+          price = parsePrice(priceMatch[1]);
+        } else {
+          const amountMatch = block.match(/amount[^>]*>(?:<[^>]+>)*\s*([0-9]+[,.]?[0-9]*)/);
+          if (amountMatch) {
+            price = parsePrice(amountMatch[1]);
+          }
+        }
+
+        if (!price) {
+          console.log(`    ⚠️ ${mapped.name}: no price found — skipping`);
+          continue;
+        }
+
+        // Avoid duplicates (same product can appear in multiple blocks)
+        if (results.some(r => r.channel_id === 36 && r.product_id === mapped.productId)) {
+          continue;
+        }
 
         results.push({
           product_id: mapped.productId,
@@ -939,12 +999,12 @@ async function scrapeWebshop() {
           rating: null,
           review_count: null,
           in_stock: true, // Webshop only shows in-stock products
-          listing_url: page.url,
+          listing_url: productUrl,
           asin: null,
           last_updated: new Date().toISOString(),
         });
 
-        console.log(`    ✅ ${mapped.name}: €${price || 'N/A'}`);
+        console.log(`    ✅ ${mapped.name}: €${price}`);
       }
 
     } catch (err) {
@@ -1025,13 +1085,27 @@ function detectChanges(previousPrices) {
  * UPSERT all results to amazon_monitor_fba_puzzlup
  */
 async function writeToSupabase() {
-  console.log(`\n💾 Writing ${results.length} records to Supabase...`);
-  await dbLog('db-write', 'info', `Upserting ${results.length} records`);
+  // Filter out records with null prices (would violate NOT NULL constraint)
+  const validResults = results.filter(r => r.fba_price !== null && r.fba_price !== undefined);
+  const skipped = results.length - validResults.length;
+  
+  if (skipped > 0) {
+    console.log(`\n⚠️ Skipping ${skipped} records with null prices`);
+    await dbLog('db-write', 'warn', `${skipped} records have null prices — skipped`);
+  }
+
+  console.log(`\n💾 Writing ${validResults.length} records to Supabase...`);
+  await dbLog('db-write', 'info', `Upserting ${validResults.length} records (${skipped} skipped — null price)`);
+
+  if (validResults.length === 0) {
+    console.log(`⚠️ No valid records to write`);
+    return;
+  }
 
   // Batch upsert
   const { error } = await supabase
     .from('amazon_monitor_fba_puzzlup')
-    .upsert(results, {
+    .upsert(validResults, {
       onConflict: 'product_id,channel_id,variant_name',
     });
 
@@ -1039,8 +1113,8 @@ async function writeToSupabase() {
     console.log(`❌ Supabase upsert failed: ${error.message}`);
     await dbLog('db-write', 'error', error.message);
   } else {
-    console.log(`✅ ${results.length} records upserted`);
-    await dbLog('db-write', 'success', `${results.length} records`);
+    console.log(`✅ ${validResults.length} records upserted`);
+    await dbLog('db-write', 'success', `${validResults.length} records`);
   }
 }
 
