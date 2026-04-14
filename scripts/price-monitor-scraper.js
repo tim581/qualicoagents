@@ -926,8 +926,11 @@ async function scrapeBolcom() {
         }
       }
 
-      // Check stock
-      const inStock = !html.includes('Niet leverbaar') && !html.includes('Uitverkocht');
+      // Check stock — positive signal "Op voorraad" is definitive
+      // "Niet leverbaar" / "Uitverkocht" can appear elsewhere in the HTML, so use positive matching
+      const hasOpVoorraad = /op\s*voorraad/i.test(html);
+      const hasNietLeverbaar = html.includes('Niet leverbaar') || html.includes('Uitverkocht');
+      const inStock = hasOpVoorraad ? true : !hasNietLeverbaar;
 
       // Extract rating
       let rating = null;
@@ -949,7 +952,7 @@ async function scrapeBolcom() {
         variant_name: product.name,
         fba_price: price,
         currency: 'EUR',
-        buybox_seller: 'D2C', // Own channel — no Buy Box
+        buybox_seller: /verkoop\s+door\s+qualico/i.test(html) ? 'Qualico NL (D2C)' : 'D2C',
         rating: rating,
         review_count: reviewCount,
         in_stock: inStock,
