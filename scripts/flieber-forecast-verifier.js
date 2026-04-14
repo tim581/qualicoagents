@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-verifier.js v2.0 — Export Flieber forecast CSV and compare against Supabase
+ * flieber-forecast-verifier.js v2.2 — Export Flieber forecast CSV and compare against Supabase
  *
  * KNOWN CSV FORMAT (confirmed from real export 2026-04-14):
  *   - Columns: Product Code, Product Name, Store, Tier, Forecast Model, Currency, Status,
@@ -98,56 +98,99 @@ async function login(page) {
 }
 
 // ── SELECT ALL STORES ────────────────────────────────────────────────────────
+// Uses the PROVEN approach from flieber-forecast-updater.js
 
 async function selectAllStores(page) {
-  await dbLog('select-all', 'info', 'Waiting for page to settle...');
-  await sleep(8000); // Let SPA fully load
+  await dbLog('select-all', 'info', 'Waiting 8s for SPA to settle...');
+  await sleep(8000);
 
-  // Check if the filter already shows "All regions, channels and stores"
-  const filterBtn = page.locator('button, [role="button"], [class*="filter"]')
-    .filter({ hasText: /region|channel|store/i }).first();
+  // Step 1: Check if already showing all stores
+  const filterBtn = page.getByText(/regions.*channels|all regions/i).first();
+  const filterVisible = await filterBtn.isVisible({ timeout: 5000 }).catch(() => false);
   
+  if (!filterVisible) {
+    await dbLog('select-all', 'warning', 'Filter button not found — taking screenshot');
+    await dbShot(page, 'select-all-no-filter', 'Could not find filter button');
+    // Try alternate: maybe the page shows a different text
+    const altBtn = page.locator('button').filter({ hasText: /region|channel|store|amazon|bol/i }).first();
+    const altVisible = await altBtn.isVisible({ timeout: 3000 }).catch(() => false);
+    if (altVisible) {
+      const altText = await altBtn.textContent().catch(() => '?');
+      await dbLog('select-all', 'info', `Found alternate filter: "${altText}"`);
+    }
+    throw new Error('Could not find store filter button');
+  }
+
   const filterText = await filterBtn.textContent().catch(() => '');
   await dbLog('select-all', 'info', `Current filter: "${filterText}"`);
-  
+
   if (filterText.toLowerCase().includes('all regions')) {
     await dbLog('select-all', 'success', 'Already showing all stores ✅');
     return;
   }
 
-  // Open the filter dropdown
-  await filterBtn.click({ timeout: 15000 });
+  // Step 2: Open the filter dropdown
+  await filterBtn.click({ timeout: 10000, force: true });
   await sleep(2000);
+  await dbLog('select-all', 'info', 'Filter dropdown opened');
+  await dbShot(page, 'select-all-dropdown', 'Filter dropdown opened');
 
-  // Use evaluate to find and click "Select all" checkbox
-  const clicked = await page.evaluate(() => {
-    const labels = [...document.querySelectorAll('label, span, div')];
-    for (const el of labels) {
-      if (el.textContent.trim().toLowerCase() === 'select all') {
-        el.click();
-        return true;
-      }
-    }
-    return false;
-  });
-
-  if (clicked) {
-    await dbLog('select-all', 'info', 'Clicked "Select all"');
+  // Step 3: Click "Stores >" submenu
+  const storesMenu = page.getByText(/^stores$/i).first();
+  const storesVisible = await storesMenu.isVisible({ timeout: 5000 }).catch(() => false);
+  if (storesVisible) {
+    await storesMenu.click({ timeout: 5000 });
+    await sleep(1000);
+    await dbLog('select-all', 'info', 'Clicked Stores submenu');
   } else {
-    await dbLog('select-all', 'warning', 'Could not find "Select all" — trying alternate method');
-    // Try clicking all unchecked checkboxes
-    const checkboxes = page.locator('input[type="checkbox"]:not(:checked)');
-    const count = await checkboxes.count();
-    for (let i = 0; i < count; i++) {
-      await checkboxes.nth(i).click({ force: true });
-      await sleep(100);
+    await dbLog('select-all', 'info', 'No Stores submenu — may be flat list');
+  }
+
+  // Step 4: Check ALL stores individually (proven approach)
+  const ALL_STORES = ['Amazon CA', 'Amazon EU', 'Amazon UK', 'Amazon USA', 'Bol', 'Puzzlup'];
+  
+  for (const store of ALL_STORES) {
+    const storeRow = page.locator('label, li, div[role="option"]').filter({ hasText: new RegExp(`^${store}$`) }).first();
+    const isVisible = await storeRow.isVisible({ timeout: 2000 }).catch(() => false);
+    if (!isVisible) {
+      await dbLog('select-all', 'warning', `Store "${store}" not visible`);
+      continue;
+    }
+
+    const isChecked = await storeRow.evaluate(el => {
+      const cb = el.querySelector('input[type="checkbox"]');
+      if (cb) return cb.checked;
+      return el.getAttribute('aria-checked') === 'true' || el.getAttribute('data-checked') !== null;
+    }).catch(() => null);
+
+    if (isChecked === false || isChecked === null) {
+      await storeRow.click({ timeout: 5000 }).catch(async (e) => {
+        await dbLog('select-all', 'warning', `Could not click ${store}: ${e.message}`);
+      });
+      await sleep(300);
+      await dbLog('select-all', 'info', `Checked "${store}"`);
+    } else {
+      await dbLog('select-all', 'info', `"${store}" already checked ✅`);
     }
   }
 
-  await sleep(1000);
-  // Close dropdown
-  await page.keyboard.press('Escape');
-  await sleep(2000);
+  await sleep(500);
+  await dbShot(page, 'select-all-all-checked', 'All stores checked');
+
+  // Step 5: Click Apply
+  const enabledApply = page.locator('button:not([disabled])').filter({ hasText: /^apply$/i }).first();
+  const applyVisible = await enabledApply.isVisible({ timeout: 5000 }).catch(() => false);
+  
+  if (applyVisible) {
+    await enabledApply.click({ timeout: 5000 });
+    await sleep(3000);
+    await dbLog('select-all', 'success', 'Clicked Apply — all stores selected');
+  } else {
+    // Close dropdown with Escape
+    await page.keyboard.press('Escape');
+    await sleep(2000);
+    await dbLog('select-all', 'info', 'No Apply button — closed with Escape');
+  }
 
   // Verify
   const newText = await filterBtn.textContent().catch(() => '');
@@ -401,8 +444,8 @@ async function compareWithSupabase(csvData) {
 // ── MAIN ─────────────────────────────────────────────────────────────────────
 
 (async () => {
-  console.log('🔍 Flieber Forecast Verifier v2.0');
-  await dbLog('main', 'info', 'Verifier v2.0 started');
+  console.log('🔍 Flieber Forecast Verifier v2.2');
+  await dbLog('main', 'info', 'Verifier v2.2 started');
 
   let browser;
   try {
