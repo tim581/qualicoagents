@@ -71,6 +71,9 @@ async function login(page) {
 async function selectAllStores(page) {
   await dbLog('select-all', 'info', 'Checking if all stores are selected...');
 
+  // Wait for page to fully settle before interacting with filters
+  await sleep(5000);
+
   // The top filter should say "All regions, channels and stores"
   const filterBtn = page.locator('text=/All regions.*channels.*stores|regions.*channels/i').first();
   const filterText = await filterBtn.textContent().catch(() => '');
