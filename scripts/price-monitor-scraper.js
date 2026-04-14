@@ -568,10 +568,10 @@ function detectCurrency(rawPrice, fallback) {
   // Collapse newlines for matching (UK shows "EUR44\n.\n77")
   const normalized = rawPrice.replace(/[\r\n]+/g, ' ');
   if (normalized.includes('C$') || normalized.includes('CA$')) return 'CAD';
-  if (normalized.includes('£') || /\bGBP\b/i.test(normalized)) return 'GBP';
-  if (normalized.includes('€') || /\bEUR\b/i.test(normalized)) return 'EUR';
+  if (normalized.includes('£') || /\bGBP/i.test(normalized)) return 'GBP';
+  if (normalized.includes('€') || /\bEUR/i.test(normalized)) return 'EUR';
   // "$" is ambiguous: USD on .com, CAD on .ca — use fallback to distinguish
-  if (normalized.includes('$') || /\bUSD\b/i.test(normalized)) {
+  if (normalized.includes('$') || /\bUSD/i.test(normalized)) {
     return fallback === 'CAD' ? 'CAD' : 'USD';
   }
   return fallback;
