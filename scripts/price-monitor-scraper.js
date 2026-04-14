@@ -411,6 +411,26 @@ async function setDeliveryLocation(page, channel) {
         }
       }
       
+      // Last resort: read the FULL location widget container for any location clues
+      try {
+        const fullWidget = await page.locator('#nav-global-location-popover-link').textContent({ timeout: 3000 });
+        const widgetText = (fullWidget || '').replace(/\s+/g, ' ').trim();
+        console.log(`  📍 Full widget text: "${widgetText}"`);
+        
+        if (widgetText && widgetText.length > 5) {
+          const widgetLower = widgetText.toLowerCase();
+          const wrongStrings = WRONG_LOCATION_STRINGS[channel.domain] || [];
+          const isWrong = wrongStrings.some(w => widgetLower.includes(w));
+          if (!isWrong) {
+            console.log(`  ✅ Location OK via full widget: "${widgetText}" (not a wrong country)`);
+            return { ok: true, header: widgetText };
+          } else {
+            const match = wrongStrings.find(w => widgetLower.includes(w));
+            return { ok: false, header: widgetText, reason: `Wrong location in widget: "${match}" in "${widgetText}"` };
+          }
+        }
+      } catch (e) { /* widget read failed */ }
+      
       return { ok: false, header: `${line1Text} | ${line2Text}`, reason: 'No recognizable location found' };
     } catch (e) {
       return { ok: false, header: null, reason: e.message };
