@@ -92,7 +92,8 @@ async function login(page) {
   await sleep(500);
   await page.locator('button:has-text("Continue"), button[type="submit"]').filter({ visible: true }).first().click({ timeout: 30000 });
 
-  await page.waitForURL('**app.flieber.com/app/**', { timeout: 60000 });
+  await page.waitForURL('**app.flieber.com/app/**', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await sleep(3000); // Let SPA settle
   await dbLog('login', 'success', 'Logged in ✅');
 }
 
