@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.8 — pro-rata current month, verify fills, 4h timeout
+ * flieber-forecast-updater.js  v8.9 — pro-rata current month, verify fills, 4h timeout
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -203,8 +203,8 @@ async function applyStoreFilter(page, storeName) {
   console.log(`\n🏪 Setting store filter → ${storeName}`);
   await dbLog('store-filter', 'info', `Target store: ${storeName}`);
 
-  await page.goto(FLIEBER_URL, { waitUntil: 'networkidle', timeout: 30000 });
-  await page.waitForTimeout(3000);
+  await page.goto(FLIEBER_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(5000); // let SPA fully settle
   await dbShot(page, 'store-filter-0-pageload', 'Page loaded, before opening filter');
 
   // Step 1: Open the channel/store filter dropdown
@@ -538,7 +538,7 @@ async function fillMonths(page, productName, monthlyValues) {
 
   await dbLog('fill-months', 'info', `v8 fill: clicking each cell by aria-colindex in .ht_master. rowIdx=${rowIdx}`);
 
-  // ── PRO-RATA for current month (v8.8) ──────────────────────────────────
+  // ── PRO-RATA for current month (v8.9) ──────────────────────────────────
   // The first month is the current month. Flieber expects remaining units
   // for the rest of the month, not the full month total.
   const today = new Date();
@@ -563,7 +563,7 @@ async function fillMonths(page, productName, monthlyValues) {
       ? `.ht_master tr[aria-rowindex="${rowIdx}"] td[aria-colindex="${colIndex}"]`
       : `.ht_master td[aria-colindex="${colIndex}"]`;
 
-    // ── SCROLL + RE-QUERY (v8.8) ──────────────────────────────────────
+    // ── SCROLL + RE-QUERY (v8.9) ──────────────────────────────────────
     // After scrolling, Handsontable re-renders the DOM (virtualized columns).
     // We MUST re-query the locator after each scroll to avoid stale references.
     let cell = page.locator(cellSel).first();
@@ -590,7 +590,7 @@ async function fillMonths(page, productName, monthlyValues) {
     await cell.dblclick({ timeout: 5000 });
     await page.waitForTimeout(400);
 
-    // ── SAFE CELL EDIT (v8.8+) ──────────────────────────────────────────
+    // ── SAFE CELL EDIT (v8.9+) ──────────────────────────────────────────
     // NEVER use Ctrl+A — in Handsontable it selects ALL grid cells.
     // Instead: wait for the editor textarea, clear it via JS, then type.
     const editorSel = '.handsontableInputHolder textarea, .handsontableInputHolder input';
@@ -623,7 +623,7 @@ async function fillMonths(page, productName, monthlyValues) {
     await page.keyboard.press('Tab');
     await page.waitForTimeout(300);
 
-    // ── VERIFY after fill (v8.8) ──────────────────────────────────────
+    // ── VERIFY after fill (v8.9) ──────────────────────────────────────
     // Re-read the cell to confirm the value actually took.
     const verifyCell = page.locator(cellSel).first();
     const newVal = await verifyCell.innerText().catch(() => '?');
@@ -768,7 +768,7 @@ async function waitForProductList(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.8\n');
+  console.log('🚀 Flieber Forecast Updater v8.9\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const completedStores = await getCompletedStores();
@@ -793,7 +793,7 @@ async function main() {
       : STORES;
 
     for (const store of storesToRun) {
-      // v8.8: Skip stores already completed in last 24h
+      // v8.9: Skip stores already completed in last 24h
       if (completedStores.includes(store.name)) {
         console.log(`⏭️  ${store.name} already done in last 24h — skipping`);
         await dbLog('main', 'info', `Skipped ${store.name} (already completed)`);
