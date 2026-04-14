@@ -1166,6 +1166,56 @@ function detectChanges(previousPrices) {
 /**
  * UPSERT all results to amazon_monitor_fba_puzzlup
  */
+// ══════════════════════════════════════════════════════════════════════════════
+// PART 5.5: LIVE EXCHANGE RATE CONVERSION (EUR → GBP/USD/CAD)
+// Belgian Amazon account shows ALL prices in EUR. For UK/US/CA we need local currency.
+// Uses ECB rates via frankfurter.app (free, no API key).
+// ══════════════════════════════════════════════════════════════════════════════
+
+// Which channels need EUR → local currency conversion
+const CURRENCY_CONVERSION = {
+  32: 'GBP',  // UK
+  30: 'USD',  // US
+  31: 'CAD',  // CA
+};
+
+async function fetchExchangeRates() {
+  console.log('\n💱 Fetching live ECB exchange rates...');
+  try {
+    const resp = await fetch('https://api.frankfurter.app/latest?from=EUR&to=GBP,USD,CAD');
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    console.log(`  ✅ Rates (${data.date}): 1 EUR = ${data.rates.GBP} GBP | ${data.rates.USD} USD | ${data.rates.CAD} CAD`);
+    return data.rates; // { GBP: 0.85, USD: 1.08, CAD: 1.47 }
+  } catch (err) {
+    console.log(`  ⚠️ Exchange rate API failed: ${err.message}`);
+    console.log('  ⚠️ Using fallback rates (may be slightly off)');
+    return { GBP: 0.86, USD: 1.08, CAD: 1.50 }; // Conservative fallback
+  }
+}
+
+async function convertToLocalCurrency(rates) {
+  let converted = 0;
+  for (const result of results) {
+    const targetCurrency = CURRENCY_CONVERSION[result.channel_id];
+    if (!targetCurrency) continue; // EUR market — no conversion needed
+    
+    if (result.currency === 'EUR' && result.fba_price) {
+      const rate = rates[targetCurrency];
+      const eurPrice = result.fba_price;
+      const localPrice = Math.round(eurPrice * rate * 100) / 100; // Round to 2 decimals
+      console.log(`  💱 ${CHANNELS[result.channel_id]?.name} ${result.variant_name}: €${eurPrice} × ${rate} = ${targetCurrency} ${localPrice}`);
+      result.fba_price = localPrice;
+      result.currency = targetCurrency;
+      converted++;
+    } else if (result.currency === targetCurrency) {
+      // Already in local currency (rare — page showed local price)
+      console.log(`  ✅ ${CHANNELS[result.channel_id]?.name} ${result.variant_name}: already ${targetCurrency} ${result.fba_price}`);
+    }
+  }
+  console.log(`  💱 Converted ${converted} prices from EUR to local currency`);
+}
+
 async function writeToSupabase() {
   // Filter out records with null prices (would violate NOT NULL constraint)
   const validResults = results.filter(r => r.fba_price !== null && r.fba_price !== undefined);
@@ -1275,42 +1325,27 @@ async function main() {
   });
 
   try {
-    // Step 2A: Scrape EUR markets with PERSISTENT context (logged in → EUR prices)
-    const eurMarkets = [22, 23, 27, 26, 25, 24]; // DE, FR, NL, BE, IT, ES
-    console.log(`\n💶 Phase 1: EUR markets (${eurMarkets.length}) — persistent context (logged in)`);
-    for (const channelId of eurMarkets) {
+    // Step 2: Scrape all Amazon markets (sequential — one at a time)
+    // All markets use persistent context (logged in). UK/US/CA will show EUR prices
+    // because of Belgian account — these get converted to local currency in Step 6.
+    const marketOrder = [22, 23, 32, 30, 31, 27, 26, 25, 24]; // DE first (reference)
+    for (const channelId of marketOrder) {
       await scrapeAmazonMarket(context, channelId);
     }
 
-    // Step 2B: Close persistent context
+    // Step 3: Close browser
     await context.close();
-    console.log('\n🛑 Persistent context closed');
-
-    // Step 2C: Scrape UK/US/CA with INCOGNITO context (no login → local currency GBP/USD/CAD)
-    const localCurrencyMarkets = [32, 30, 31]; // UK, US, CA
-    console.log(`\n💷💵 Phase 2: Local currency markets (${localCurrencyMarkets.length}) — incognito context (no login)`);
-    const tmpDataDir = path.join(require('os').tmpdir(), `puzzlup-incognito-${Date.now()}`);
-    console.log(`  📂 Temp browser data: ${tmpDataDir}`);
-    const incognitoContext = await chromium.launchPersistentContext(tmpDataDir, {
-      headless: false,
-      args: ['--disable-blink-features=AutomationControlled'],
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-    });
-
-    for (const channelId of localCurrencyMarkets) {
-      await scrapeAmazonMarket(incognitoContext, channelId);
-    }
-
-    // Step 2D: Close incognito context
-    await incognitoContext.close();
-    console.log('\n🛑 Incognito context closed');
+    console.log('\n🛑 Browser closed');
 
     // Step 4: Bol.com (HTTP)
     await scrapeBolcom();
 
     // Step 5: Webshop (HTTP)
     await scrapeWebshop();
+
+    // Step 5.5: Convert EUR → local currency for UK/US/CA
+    const exchangeRates = await fetchExchangeRates();
+    await convertToLocalCurrency(exchangeRates);
 
     // Step 6: Detect changes vs previous scrape
     detectChanges(previousPrices);
