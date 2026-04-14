@@ -92,9 +92,10 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 const SCRIPT_TASKS = {
-  'forecast-sync':  'flieber-forecast-updater.js',
-  'po-simulation':  'flieber-replenishment-simulator.js',
-  'to-simulation':  'flieber-replenishment-simulator.js',
+  'forecast-sync':    'flieber-forecast-updater.js',
+  'po-simulation':    'flieber-replenishment-simulator.js',
+  'to-simulation':    'flieber-replenishment-simulator.js',
+  'forecast-verify':  'flieber-forecast-verifier.js',
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
