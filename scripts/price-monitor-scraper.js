@@ -568,7 +568,10 @@ function detectCurrency(rawPrice, fallback) {
   if (rawPrice.includes('C$') || rawPrice.includes('CA$')) return 'CAD';
   if (rawPrice.includes('£')) return 'GBP';
   if (rawPrice.includes('€') || rawPrice.toLowerCase().includes('eur')) return 'EUR';
-  if (rawPrice.includes('$') || rawPrice.toLowerCase().includes('usd')) return 'USD';
+  // "$" is ambiguous: USD on .com, CAD on .ca — use fallback to distinguish
+  if (rawPrice.includes('$') || rawPrice.toLowerCase().includes('usd')) {
+    return fallback === 'CAD' ? 'CAD' : 'USD';
+  }
   return fallback;
 }
 
