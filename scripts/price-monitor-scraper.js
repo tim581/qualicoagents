@@ -182,7 +182,7 @@ const BOL_PRODUCTS = [
   { name: '1500 Puzzelmat Gift',           productId: 12, url: 'https://www.bol.com/nl/nl/p/puzzlup-1500-puzzelmat-neopreen-zelfsluitend-antislip-portapuzzle-met-luxe-geschenkverpakking-voor-alle-puzzels-van-500-1000-en-1500-stukjes-66-x-120-cm/9300000045218332/' },
   { name: '1500 Puzzelmat Eco',            productId: 1,  url: 'https://www.bol.com/nl/nl/p/puzzlup-puzzelmat-1500-stukjes-eco-puzzelrol/9300000133618629/' },
   { name: '3000 Puzzelmat XXL Gift',       productId: 4,  url: 'https://www.bol.com/nl/nl/p/puzzlup-3000-xxl-puzzelmat-neopreen-zelfsluitend-en-antislip-portapuzzle-met-luxe-geschenkverpakking-voor-alle-puzzels-van-500-1000-1500-2000-en-3000-stukjes-95-x-150-cm/9300000045283847/' },
-  { name: '3000 Puzzelmat XXL Eco',        productId: 5,  url: 'https://www.bol.com/nl/nl/p/puzzlup-puzzelmat-3000-stukjes-eco-puzzelrol/9300000133618630/' },
+  { name: '3000 Puzzelmat XXL Eco',        productId: 5,  url: 'https://www.bol.com/nl/nl/p/puzzlup-3000-puzzelmat-xxl-formaat-neopreen-zelfsluitend-en-antislip-portapuzzle-met-zwarte-eco-verpakking-tot-en-met-3000-stukjes-95-x-150-cm/9300000117610237/' },
   { name: 'Luxe 1500 Puzzelmat',           productId: 10, url: 'https://www.bol.com/nl/nl/p/puzzlup-luxe-puzzelmat-1500-stukjes-premium-puzzelrol/9300000240566271/' },
   { name: 'Stapelbare Puzzelbakjes',       productId: 14, url: 'https://www.bol.com/nl/nl/p/puzzlup-stapelbare-puzzelbakjes-sorteerbakjes-1500-stukjes/9300000176363501/' },
   { name: 'Stapelbare Puzzelbakjes XL 3000', productId: 15, url: 'https://www.bol.com/nl/nl/p/puzzlup-stapelbare-puzzelbakjes-sorteerbakjes-xl-3000-stukjes/9300000240566990/' },
