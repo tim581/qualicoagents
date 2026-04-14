@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.8 — skip already-completed stores + 60 min timeout
+ * flieber-forecast-updater.js  v8.8 — pro-rata current month, verify fills, 4h timeout
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.

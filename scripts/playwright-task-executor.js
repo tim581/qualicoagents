@@ -152,7 +152,7 @@ async function executeScriptTask(task) {
     const output = execSync(`node "${scriptPath}"`, {
       env,
       cwd: __dirname,
-      timeout: 3600000, // 60 min max
+      timeout: 14400000, // 4 hours max
       stdio: 'pipe',
       encoding: 'utf-8',
     });
