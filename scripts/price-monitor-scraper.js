@@ -563,6 +563,15 @@ async function setDeliveryLocation(page, channel) {
  * Parse a price string like "€34,95", "$69.95", "£79.95", "C$136.23"
  * Returns a float or null.
  */
+function detectCurrency(rawPrice, fallback) {
+  if (!rawPrice) return fallback;
+  if (rawPrice.includes('C$') || rawPrice.includes('CA$')) return 'CAD';
+  if (rawPrice.includes('£')) return 'GBP';
+  if (rawPrice.includes('€') || rawPrice.toLowerCase().includes('eur')) return 'EUR';
+  if (rawPrice.includes('$') || rawPrice.toLowerCase().includes('usd')) return 'USD';
+  return fallback;
+}
+
 function parsePrice(priceStr) {
   if (!priceStr) return null;
   // Remove currency symbols and whitespace
@@ -751,12 +760,18 @@ async function scrapeCurrentVariant(page, channelId, variant, channel) {
     }
   } catch (e) { /* no shipping block — fine */ }
 
+  // Detect actual currency from price text (Tim's account shows EUR everywhere)
+  const detectedCurrency = detectCurrency(raw, channel.currency);
+  if (detectedCurrency !== channel.currency) {
+    console.log(`    ⚠️ Currency mismatch: expected ${channel.currency}, page shows ${detectedCurrency}`);
+  }
+
   const result = {
     product_id: variant.productId,
     channel_id: channelId,
     variant_name: variant.name,
     fba_price: price,
-    currency: channel.currency,
+    currency: detectedCurrency,
     buybox_seller: buyboxSeller,
     rating: rating,
     review_count: reviewCount,
@@ -777,7 +792,7 @@ async function scrapeCurrentVariant(page, channelId, variant, channel) {
       variant: variant.name,
       seller: buyboxSeller,
       price: price,
-      currency: channel.currency,
+      currency: detectedCurrency,
     });
   } else if (buyboxSeller === 'SUPPRESSED') {
     alerts.push({
@@ -785,7 +800,7 @@ async function scrapeCurrentVariant(page, channelId, variant, channel) {
       channel: channel.name,
       variant: variant.name,
       price: price,
-      currency: channel.currency,
+      currency: detectedCurrency,
     });
   }
 
