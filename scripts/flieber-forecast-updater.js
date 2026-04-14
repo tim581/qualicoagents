@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.7 — skip already-completed stores + 60 min timeout
+ * flieber-forecast-updater.js  v8.8 — skip already-completed stores + 60 min timeout
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -538,23 +538,49 @@ async function fillMonths(page, productName, monthlyValues) {
 
   await dbLog('fill-months', 'info', `v8 fill: clicking each cell by aria-colindex in .ht_master. rowIdx=${rowIdx}`);
 
+  // ── PRO-RATA for current month (v8.8) ──────────────────────────────────
+  // The first month is the current month. Flieber expects remaining units
+  // for the rest of the month, not the full month total.
+  const today = new Date();
+  const totalDaysInMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+  const remainingDays = totalDaysInMonth - today.getDate();
+
   for (let i = 0; i < MONTHS.length; i++) {
     const mo       = MONTHS[i];
-    const val      = monthlyValues[mo] ?? 0;
-    const colIndex = i + 3; // col 3 = first month (April/current), col 4 = next month, etc.
+    let   val      = monthlyValues[mo] ?? 0;
+    const colIndex = i + 3; // col 3 = first month, col 4 = next month, etc.
 
-    // Target the cell directly in .ht_master — avoids frozen clone entirely
+    // Pro-rata for current month (i === 0): scale to remaining days
+    if (i === 0 && totalDaysInMonth > 0) {
+      const fullVal = val;
+      val = Math.round(fullVal * remainingDays / totalDaysInMonth);
+      await dbLog('fill-months', 'info',
+        `Pro-rata month[0] ${mo}: ${fullVal} × ${remainingDays}/${totalDaysInMonth} remaining days = ${val}`);
+    }
+
+    // Target the cell in .ht_master — avoids frozen clone entirely
     const cellSel = rowIdx
       ? `.ht_master tr[aria-rowindex="${rowIdx}"] td[aria-colindex="${colIndex}"]`
       : `.ht_master td[aria-colindex="${colIndex}"]`;
 
-    const cell = page.locator(cellSel).first();
-
-    // Scroll cell into view if needed (later months may be outside viewport)
-    const isVis = await cell.isVisible({ timeout: 2000 }).catch(() => false);
-    if (!isVis) {
+    // ── SCROLL + RE-QUERY (v8.8) ──────────────────────────────────────
+    // After scrolling, Handsontable re-renders the DOM (virtualized columns).
+    // We MUST re-query the locator after each scroll to avoid stale references.
+    let cell = page.locator(cellSel).first();
+    let isVis = await cell.isVisible({ timeout: 2000 }).catch(() => false);
+    let scrollAttempts = 0;
+    while (!isVis && scrollAttempts < 5) {
       await page.locator('.ht_master').first().evaluate(el => { el.scrollLeft += 300; });
-      await page.waitForTimeout(200);
+      await page.waitForTimeout(500); // give Handsontable time to re-render virtualized cols
+      cell = page.locator(cellSel).first(); // RE-QUERY after scroll!
+      isVis = await cell.isVisible({ timeout: 2000 }).catch(() => false);
+      scrollAttempts++;
+    }
+
+    if (!isVis) {
+      await dbLog('fill-months', 'error',
+        `Month[${i}] ${mo} col=${colIndex}: CELL NOT FOUND after ${scrollAttempts} scroll attempts — SKIPPING`);
+      continue;
     }
 
     // Read current value before editing
@@ -562,47 +588,50 @@ async function fillMonths(page, productName, monthlyValues) {
 
     // Double-click to enter EDIT mode
     await cell.dblclick({ timeout: 5000 });
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(400);
 
-    // ── SAFE CELL EDIT (v8.7) ──────────────────────────────────────────
-    // NEVER use Ctrl+A — in Handsontable it selects ALL grid cells, not
-    // just the text in the editor. If dblclick didn't fully enter edit
-    // mode, Ctrl+A + Delete wipes the entire spreadsheet.
-    //
-    // Instead: wait for the editor textarea, clear it directly, then type.
+    // ── SAFE CELL EDIT (v8.8+) ──────────────────────────────────────────
+    // NEVER use Ctrl+A — in Handsontable it selects ALL grid cells.
+    // Instead: wait for the editor textarea, clear it via JS, then type.
     const editorSel = '.handsontableInputHolder textarea, .handsontableInputHolder input';
-    const editorVisible = await page.locator(editorSel).first()
+    let editorOpen = await page.locator(editorSel).first()
       .isVisible({ timeout: 1500 }).catch(() => false);
 
-    if (editorVisible) {
-      // Editor is open — clear via evaluate (safe, no grid selection)
-      await page.locator(editorSel).first().evaluate(el => { el.value = ''; });
-      await page.keyboard.type(String(val));
-    } else {
+    if (!editorOpen) {
       // Fallback: dblclick didn't open editor — try click + F2 (edit mode shortcut)
       await cell.click({ timeout: 2000 });
       await page.keyboard.press('F2');
-      await page.waitForTimeout(300);
-      const retryEditor = await page.locator(editorSel).first()
+      await page.waitForTimeout(400);
+      editorOpen = await page.locator(editorSel).first()
         .isVisible({ timeout: 1500 }).catch(() => false);
-      if (retryEditor) {
-        await page.locator(editorSel).first().evaluate(el => { el.value = ''; });
-        await page.keyboard.type(String(val));
-      } else {
-        // Last resort: type directly (risky but better than Ctrl+A)
-        await page.keyboard.press('Home');
-        await page.keyboard.press('Shift+End');
-        await page.keyboard.type(String(val));
-      }
     }
 
-    // Commit with Enter
-    await page.keyboard.press('Enter');
-    await page.waitForTimeout(150);
-
-    if (i < 4 || i === MONTHS.length - 1) {
-      await dbLog('fill-months', 'info', `Month[${i}] ${mo} col=${colIndex}: "${curVal}" → ${val}`);
+    if (editorOpen) {
+      // Clear editor value via JS (safe — no grid selection risk)
+      await page.locator(editorSel).first().evaluate(el => { el.value = ''; });
+      await page.keyboard.type(String(val), { delay: 20 });
+    } else {
+      // Last resort: Home+Shift+End to select only cell text
+      await dbLog('fill-months', 'warn',
+        `Month[${i}] ${mo}: editor NOT visible — using Home+Shift+End fallback`);
+      await page.keyboard.press('Home');
+      await page.keyboard.press('Shift+End');
+      await page.keyboard.type(String(val), { delay: 20 });
     }
+
+    // Commit edit with Tab (moves right — harmless since we click each cell)
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+
+    // ── VERIFY after fill (v8.8) ──────────────────────────────────────
+    // Re-read the cell to confirm the value actually took.
+    const verifyCell = page.locator(cellSel).first();
+    const newVal = await verifyCell.innerText().catch(() => '?');
+    const ok = String(newVal).trim() === String(val);
+
+    // Log EVERY month — no more gaps in debug output
+    await dbLog('fill-months', ok ? 'info' : 'warn',
+      `Month[${i}] ${mo} col=${colIndex}: "${curVal}" → ${val} (verify: ${newVal}${ok ? ' ✅' : ' ⚠️ MISMATCH'})`);
   }
 
   await page.waitForTimeout(500);
@@ -739,7 +768,7 @@ async function waitForProductList(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.7\n');
+  console.log('🚀 Flieber Forecast Updater v8.8\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const completedStores = await getCompletedStores();
@@ -764,7 +793,7 @@ async function main() {
       : STORES;
 
     for (const store of storesToRun) {
-      // v8.7: Skip stores already completed in last 24h
+      // v8.8: Skip stores already completed in last 24h
       if (completedStores.includes(store.name)) {
         console.log(`⏭️  ${store.name} already done in last 24h — skipping`);
         await dbLog('main', 'info', `Skipped ${store.name} (already completed)`);
