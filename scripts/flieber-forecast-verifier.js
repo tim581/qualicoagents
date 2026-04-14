@@ -1,13 +1,21 @@
 /**
- * flieber-forecast-verifier.js v1.1 — Export Flieber forecast CSV and compare against Supabase
+ * flieber-forecast-verifier.js v2.0 — Export Flieber forecast CSV and compare against Supabase
+ *
+ * KNOWN CSV FORMAT (confirmed from real export 2026-04-14):
+ *   - Columns: Product Code, Product Name, Store, Tier, Forecast Model, Currency, Status,
+ *     Manually Adjusted On, many (-)NM/ND columns, then (+)1M through (+)12M Total Units Sold
+ *   - (+)1M = next month from today, (+)2M = +2 months, etc.
+ *   - Store values: "Amazon EU", "Amazon USA", "Amazon UK", "Amazon CA", "Bol", "Puzzlup"
+ *   - Product Code = EAN/barcode (e.g. "5419980047489")
  *
  * Flow:
  *   1. Login to Flieber
- *   2. Go to sales-forecast (all regions, all channels, all stores)
+ *   2. Go to sales-forecast (all stores, monthly view)
  *   3. Click "Export data" → "Export table data" → download CSV
  *   4. Parse CSV
- *   5. Query Supabase Puzzlup_sales_Forecast for same products/months
- *   6. Compare and report mismatches to Flieber_Debug_Log
+ *   5. Query Supabase for product mapping + forecasts
+ *   6. Compare (+)1M...(+)12M against Supabase months
+ *   7. Report to Flieber_Debug_Log
  */
 
 const { chromium } = require('playwright-core');
@@ -22,6 +30,16 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const FLIEBER_URL = 'https://app.flieber.com/app/sales-forecast?period=FULL&interval=month&is_pro=true';
 const RUN_ID = `verify_${Date.now()}`;
+
+// Store name → channel_id mapping (confirmed)
+const STORE_CHANNEL_MAP = {
+  'Amazon EU': 35,
+  'Amazon USA': 30,
+  'Amazon UK': 32,
+  'Amazon CA': 31,
+  'Bol': 33,
+  'Puzzlup': 36,
+};
 
 // ── HELPERS ──────────────────────────────────────────────────────────────────
 
@@ -38,13 +56,25 @@ async function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
+/**
+ * Calculate target month from (+)NM offset
+ * (+)1M from April 2026 = May 2026 = "2026-05-01"
+ */
+function offsetToMonth(offsetN) {
+  const now = new Date();
+  const targetMonth = now.getMonth() + offsetN; // 0-based
+  const targetYear = now.getFullYear() + Math.floor(targetMonth / 12);
+  const m = ((targetMonth % 12) + 12) % 12; // handle wrap
+  const mm = String(m + 1).padStart(2, '0');
+  return `${targetYear}-${mm}-01`;
+}
+
 // ── LOGIN ────────────────────────────────────────────────────────────────────
 
 async function login(page) {
   await dbLog('login', 'info', 'Navigating to Flieber...');
   await page.goto('https://app.flieber.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-  // Get credentials from Supabase
   const { data: creds } = await supabase
     .from('Browser_Credentials')
     .select('username, password')
@@ -66,73 +96,89 @@ async function login(page) {
   await dbLog('login', 'success', 'Logged in ✅');
 }
 
-// ── SELECT ALL REGIONS/CHANNELS/STORES ───────────────────────────────────────
+// ── SELECT ALL STORES ────────────────────────────────────────────────────────
 
 async function selectAllStores(page) {
-  await dbLog('select-all', 'info', 'Checking if all stores are selected...');
+  await dbLog('select-all', 'info', 'Waiting for page to settle...');
+  await sleep(8000); // Let SPA fully load
 
-  // Wait for page to fully settle before interacting with filters
-  await sleep(5000);
-
-  // The top filter should say "All regions, channels and stores"
-  const filterBtn = page.locator('text=/All regions.*channels.*stores|regions.*channels/i').first();
+  // Check if the filter already shows "All regions, channels and stores"
+  const filterBtn = page.locator('button, [role="button"], [class*="filter"]')
+    .filter({ hasText: /region|channel|store/i }).first();
+  
   const filterText = await filterBtn.textContent().catch(() => '');
+  await dbLog('select-all', 'info', `Current filter: "${filterText}"`);
   
   if (filterText.toLowerCase().includes('all regions')) {
-    await dbLog('select-all', 'success', `Already showing all stores: "${filterText}"`);
+    await dbLog('select-all', 'success', 'Already showing all stores ✅');
     return;
   }
 
-  // Need to open filter and select all
+  // Open the filter dropdown
   await filterBtn.click({ timeout: 15000 });
-  await sleep(1000);
+  await sleep(2000);
 
-  // Look for "Select all" or similar
-  const selectAll = page.locator('text=/select all/i').first();
-  if (await selectAll.isVisible({ timeout: 3000 }).catch(() => false)) {
-    await selectAll.click();
-    await sleep(500);
+  // Use evaluate to find and click "Select all" checkbox
+  const clicked = await page.evaluate(() => {
+    const labels = [...document.querySelectorAll('label, span, div')];
+    for (const el of labels) {
+      if (el.textContent.trim().toLowerCase() === 'select all') {
+        el.click();
+        return true;
+      }
+    }
+    return false;
+  });
+
+  if (clicked) {
+    await dbLog('select-all', 'info', 'Clicked "Select all"');
+  } else {
+    await dbLog('select-all', 'warning', 'Could not find "Select all" — trying alternate method');
+    // Try clicking all unchecked checkboxes
+    const checkboxes = page.locator('input[type="checkbox"]:not(:checked)');
+    const count = await checkboxes.count();
+    for (let i = 0; i < count; i++) {
+      await checkboxes.nth(i).click({ force: true });
+      await sleep(100);
+    }
   }
 
-  // Close the dropdown
-  await page.keyboard.press('Escape');
   await sleep(1000);
-  await dbLog('select-all', 'success', 'All stores selected');
+  // Close dropdown
+  await page.keyboard.press('Escape');
+  await sleep(2000);
+
+  // Verify
+  const newText = await filterBtn.textContent().catch(() => '');
+  await dbLog('select-all', 'success', `Filter after select: "${newText}"`);
 }
 
 // ── EXPORT CSV ───────────────────────────────────────────────────────────────
 
 async function exportCSV(page) {
-  await dbLog('export', 'info', 'Starting CSV export...');
+  await dbLog('export', 'info', 'Looking for Export button...');
 
-  // Scroll to bottom to find the "Export data" button
-  // The button is at the bottom of the page
+  // The "Export data" button might be at the bottom or inside a menu
   const exportBtn = page.locator('button:has-text("Export data")').first();
-  
-  // Wait for it to be visible (may need to scroll)
-  await exportBtn.scrollIntoViewIfNeeded({ timeout: 10000 });
-  await sleep(500);
-
-  // Click "Export data" to open the submenu
-  await exportBtn.click({ timeout: 10000 });
+  await exportBtn.scrollIntoViewIfNeeded({ timeout: 15000 });
   await sleep(1000);
-  await dbLog('export', 'info', 'Clicked "Export data" button');
+  await exportBtn.click({ timeout: 10000 });
+  await sleep(2000);
+  await dbLog('export', 'info', 'Clicked "Export data"');
 
-  // Now click "Export table data"
-  const exportTableBtn = page.locator('text=/Export table data/i').first();
+  // Set up download listener BEFORE clicking "Export table data"
+  const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
   
-  // Set up download listener BEFORE clicking
-  const downloadPromise = page.waitForEvent('download', { timeout: 60000 });
-  
+  const exportTableBtn = page.locator('text=/Export table data/i, button:has-text("Export table data")').first();
   await exportTableBtn.click({ timeout: 10000 });
   await dbLog('export', 'info', 'Clicked "Export table data" — waiting for download...');
 
-  // Wait for the download
   const download = await downloadPromise;
   const downloadPath = path.join(__dirname, `flieber-export-${Date.now()}.csv`);
   await download.saveAs(downloadPath);
-  
-  await dbLog('export', 'success', `CSV downloaded: ${downloadPath}`);
+
+  const fileSize = fs.statSync(downloadPath).size;
+  await dbLog('export', 'success', `CSV downloaded: ${(fileSize / 1024).toFixed(1)} KB`);
   return downloadPath;
 }
 
@@ -141,14 +187,9 @@ async function exportCSV(page) {
 function parseCSV(filePath) {
   const raw = fs.readFileSync(filePath, 'utf-8');
   const lines = raw.split('\n').filter(l => l.trim());
-  
   if (lines.length < 2) throw new Error('CSV has no data rows');
-  
-  // Parse header
+
   const headers = parseCSVLine(lines[0]);
-  console.log(`📊 CSV headers: ${headers.join(', ')}`);
-  
-  // Parse rows
   const rows = [];
   for (let i = 1; i < lines.length; i++) {
     const vals = parseCSVLine(lines[i]);
@@ -156,25 +197,20 @@ function parseCSV(filePath) {
     headers.forEach((h, idx) => { row[h.trim()] = (vals[idx] || '').trim(); });
     rows.push(row);
   }
-  
-  console.log(`📊 Parsed ${rows.length} rows from CSV`);
-  return { headers, rows };
+
+  console.log(`📊 Parsed ${rows.length} rows, ${headers.length} columns`);
+  return { headers: headers.map(h => h.trim()), rows };
 }
 
 function parseCSVLine(line) {
   const result = [];
   let current = '';
   let inQuotes = false;
-  
   for (let i = 0; i < line.length; i++) {
     const ch = line[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
+      if (inQuotes && line[i + 1] === '"') { current += '"'; i++; }
+      else { inQuotes = !inQuotes; }
     } else if (ch === ',' && !inQuotes) {
       result.push(current);
       current = '';
@@ -189,178 +225,183 @@ function parseCSVLine(line) {
 // ── COMPARE WITH SUPABASE ────────────────────────────────────────────────────
 
 async function compareWithSupabase(csvData) {
-  await dbLog('compare', 'info', `Comparing ${csvData.rows.length} CSV rows against Supabase...`);
-  
-  // Log ALL headers in chunks so nothing gets truncated
-  await dbLog('compare', 'info', `Total CSV columns: ${csvData.headers.length}, Total rows: ${csvData.rows.length}`);
-  
-  // Log headers in chunks of 15 so we can see ALL of them
-  for (let i = 0; i < csvData.headers.length; i += 15) {
-    const chunk = csvData.headers.slice(i, i + 15);
-    await dbLog('compare', 'info', `Headers [${i}-${i + chunk.length - 1}]: ${chunk.join(' | ')}`);
-  }
-  
-  // Log first 2 rows — but ONLY the last 20 columns (where month data likely is)
-  for (let i = 0; i < Math.min(2, csvData.rows.length); i++) {
-    const row = csvData.rows[i];
-    const entries = Object.entries(row);
-    const lastEntries = entries.slice(-20);
-    const sample = lastEntries.map(([k, v]) => `${k}=${v}`).join(', ');
-    await dbLog('compare', 'info', `Row ${i} LAST 20 cols: ${sample.substring(0, 1500)}`);
+  await dbLog('compare', 'info', `Starting comparison: ${csvData.rows.length} CSV rows, ${csvData.headers.length} columns`);
+
+  // ─── Step 1: Detect (+)NM Total Units Sold columns ─────────
+  const monthColumns = {}; // { offset_number: column_name }
+  for (const h of csvData.headers) {
+    const match = h.match(/^\(\+\)(\d+)M Total Units Sold$/);
+    if (match) {
+      monthColumns[parseInt(match[1])] = h;
+    }
   }
 
-  // Get product mapping from Supabase
-  const { data: skuMap } = await supabase
+  const offsets = Object.keys(monthColumns).map(Number).sort((a, b) => a - b);
+  await dbLog('compare', 'info', `Found ${offsets.length} forecast month columns: ${offsets.map(n => `(+)${n}M`).join(', ')}`);
+
+  if (offsets.length === 0) {
+    // Fallback: log all column names containing (+) for diagnosis
+    const plusCols = csvData.headers.filter(h => h.includes('(+)'));
+    await dbLog('compare', 'error', `No (+)NM columns found! Plus columns: ${plusCols.join(' | ')}`);
+    return { matches: 0, mismatches: 0, skipped: 0, missing: 0, errors: ['No month columns detected'] };
+  }
+
+  // ─── Step 2: Map offsets to actual months ─────────
+  const offsetToMonthMap = {};
+  for (const n of offsets) {
+    offsetToMonthMap[n] = offsetToMonth(n);
+  }
+  await dbLog('compare', 'info', `Month mapping: ${offsets.map(n => `(+)${n}M → ${offsetToMonthMap[n]}`).join(', ')}`);
+
+  // ─── Step 3: Load product mapping from Supabase ─────────
+  const { data: skuMap, error: skuErr } = await supabase
     .from('flieber_product_skus')
     .select('product_id, channel_id, flieber_product_name, flieber_product_code');
 
-  // Get all forecasts from Supabase
-  const { data: forecasts } = await supabase
+  if (skuErr || !skuMap) {
+    await dbLog('compare', 'error', `Failed to load SKU map: ${skuErr?.message}`);
+    return { matches: 0, mismatches: 0, skipped: 0, missing: 0, errors: [skuErr?.message] };
+  }
+
+  // Build lookup: flieber_product_code + channel_id → product_id
+  const codeLookup = {};   // "barcode_channelId" → product_id
+  const nameLookup = {};   // "productName_channelId" → product_id
+  for (const s of skuMap) {
+    if (s.flieber_product_code) {
+      codeLookup[`${s.flieber_product_code}_${s.channel_id}`] = s.product_id;
+    }
+    if (s.flieber_product_name) {
+      nameLookup[`${s.flieber_product_name.toLowerCase()}_${s.channel_id}`] = s.product_id;
+    }
+  }
+
+  await dbLog('compare', 'info', `Loaded ${skuMap.length} SKU mappings (${Object.keys(codeLookup).length} by code, ${Object.keys(nameLookup).length} by name)`);
+
+  // ─── Step 4: Load ALL forecasts from Supabase ─────────
+  const { data: forecasts, error: fcErr } = await supabase
     .from('Puzzlup_sales_Forecast')
     .select('product_id, channel_id, forecast_month, units_forecast');
 
-  if (!skuMap || !forecasts) {
-    await dbLog('compare', 'error', 'Could not fetch Supabase data');
-    return { matches: 0, mismatches: 0, errors: ['Could not fetch Supabase data'] };
+  if (fcErr || !forecasts) {
+    await dbLog('compare', 'error', `Failed to load forecasts: ${fcErr?.message}`);
+    return { matches: 0, mismatches: 0, skipped: 0, missing: 0, errors: [fcErr?.message] };
   }
 
-  await dbLog('compare', 'info', `Loaded ${skuMap.length} SKU mappings, ${forecasts.length} forecast rows from Supabase`);
-
-  // Build lookup: product_id + channel_id + month → units_forecast
+  // Build lookup: "productId_channelId_2026-05-01" → units_forecast
   const forecastLookup = {};
   for (const f of forecasts) {
-    const key = `${f.product_id}_${f.channel_id}_${f.forecast_month}`;
-    forecastLookup[key] = f.units_forecast;
+    forecastLookup[`${f.product_id}_${f.channel_id}_${f.forecast_month}`] = f.units_forecast;
   }
 
-  // Build product name → product_id + channel_id lookup
-  const productLookup = {};
-  for (const s of skuMap) {
-    if (s.flieber_product_name) {
-      productLookup[s.flieber_product_name] = { product_id: s.product_id, channel_id: s.channel_id };
-    }
-  }
+  await dbLog('compare', 'info', `Loaded ${forecasts.length} forecast rows from Supabase`);
 
-  // Now try to match CSV rows against Supabase
-  // CSV structure depends on Flieber export format — very flexible month detection
-  // Match: "Apr 2026", "(+)Apr 2026", "Apr 2026 Units", "2026-04", "04/2026", "Apr-26", "April 2026"
-  const MONTH_PATTERN = /(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*['']?\d{2,4}/i;
-  const DATE_PATTERN = /^\d{4}-\d{2}/;
-  const monthColumns = csvData.headers.filter(h => MONTH_PATTERN.test(h.trim()) || DATE_PATTERN.test(h.trim()));
-  
-  // Also check for columns with (+) prefix (Flieber may mark future months this way)
-  const plusColumns = csvData.headers.filter(h => /^\(\+\)/.test(h.trim()));
-  
-  await dbLog('compare', 'info', `Detected ${monthColumns.length} month columns: ${monthColumns.join(', ')}`);
-  if (plusColumns.length > 0) {
-    await dbLog('compare', 'info', `Found ${plusColumns.length} (+) columns: ${plusColumns.join(', ')}`);
-  }
-  
-  // If still no month columns, log candidates — any column that contains digits and isn't a metric
-  if (monthColumns.length === 0) {
-    const candidates = csvData.headers.filter(h => {
-      const t = h.trim();
-      return !t.startsWith('(-)') && !['Product Code','Product Name','Store','Tier','Forecast Model','Manually Adjusted On','Currency','Status'].includes(t) && /\d/.test(t);
-    });
-    await dbLog('compare', 'info', `No month cols found. Candidates with digits: ${candidates.join(' | ')}`);
-  }
-
+  // ─── Step 5: Compare each CSV row ─────────
   let matches = 0;
   let mismatches = 0;
   let skipped = 0;
+  let missing = 0;
   const mismatchDetails = [];
+  const matchSummary = [];
 
   for (const row of csvData.rows) {
-    // Try to identify the product — look for product name or EAN columns
-    const productName = row['Product'] || row['product'] || row['Name'] || row['name'] || '';
-    const store = row['Store'] || row['store'] || row['Channel'] || row['channel'] || '';
-    const ean = row['EAN'] || row['ean'] || row['Code'] || row['code'] || '';
+    const productCode = row['Product Code'] || '';
+    const productName = row['Product Name'] || '';
+    const store = row['Store'] || '';
 
-    // Find matching SKU in our lookup
-    let mapping = null;
-    for (const [name, m] of Object.entries(productLookup)) {
-      if (productName && name.toLowerCase().includes(productName.toLowerCase())) {
-        mapping = m;
-        break;
-      }
-      if (ean && name.includes(ean)) {
-        mapping = m;
-        break;
-      }
-    }
-
-    if (!mapping) {
+    // Map store → channel_id
+    const channelId = STORE_CHANNEL_MAP[store];
+    if (!channelId) {
       skipped++;
       continue;
     }
 
-    // Compare each month
-    for (const monthCol of monthColumns) {
-      const csvVal = parseFloat(row[monthCol]);
-      if (isNaN(csvVal)) continue;
-
-      // Convert month column to YYYY-MM format
-      const monthKey = normalizeMonth(monthCol);
-      if (!monthKey) continue;
-
-      const lookupKey = `${mapping.product_id}_${mapping.channel_id}_${monthKey}`;
-      const supaVal = forecastLookup[lookupKey];
-
-      if (supaVal === undefined) {
-        skipped++;
-        continue;
-      }
-
-      if (Math.abs(csvVal - Math.round(supaVal)) <= 1) {
-        matches++;
-      } else {
-        mismatches++;
-        if (mismatchDetails.length < 50) {
-          mismatchDetails.push(`${productName} (${store}) ${monthCol}: Flieber=${csvVal}, Supabase=${supaVal}`);
+    // Map product code → product_id (try by code first, then by name)
+    let productId = codeLookup[`${productCode}_${channelId}`];
+    if (!productId) {
+      productId = nameLookup[`${productName.toLowerCase()}_${channelId}`];
+    }
+    if (!productId) {
+      // Try fuzzy: check if any SKU mapping's product name contains the CSV product name
+      for (const s of skuMap) {
+        if (s.channel_id === channelId && s.flieber_product_name &&
+            s.flieber_product_name.toLowerCase() === productName.toLowerCase()) {
+          productId = s.product_id;
+          break;
         }
       }
     }
+    if (!productId) {
+      skipped++;
+      await dbLog('compare-skip', 'warning', `No mapping for: ${productName} (${productCode}) / ${store}`);
+      continue;
+    }
+
+    // Compare each month
+    let rowMatches = 0;
+    let rowMismatches = 0;
+    for (const n of offsets) {
+      const colName = monthColumns[n];
+      const csvValRaw = row[colName];
+      if (!csvValRaw || csvValRaw === '' || csvValRaw === '-') continue;
+
+      const csvVal = parseFloat(csvValRaw);
+      if (isNaN(csvVal)) continue;
+
+      const forecastMonth = offsetToMonthMap[n];
+      const key = `${productId}_${channelId}_${forecastMonth}`;
+      const supaVal = forecastLookup[key];
+
+      if (supaVal === undefined) {
+        missing++;
+        continue;
+      }
+
+      // Allow tolerance of ±2 units (Flieber recalculates from daily averages)
+      const diff = Math.abs(Math.round(csvVal) - supaVal);
+      if (diff <= 2) {
+        matches++;
+        rowMatches++;
+      } else {
+        mismatches++;
+        rowMismatches++;
+        if (mismatchDetails.length < 100) {
+          mismatchDetails.push(
+            `${productName} / ${store} / (+)${n}M (${forecastMonth}): Flieber=${csvVal} vs Supabase=${supaVal} (diff=${diff})`
+          );
+        }
+      }
+    }
+
+    matchSummary.push(`${productName} / ${store}: ✅${rowMatches} ❌${rowMismatches}`);
   }
 
-  const summary = `✅ Matches: ${matches}, ❌ Mismatches: ${mismatches}, ⏭️ Skipped: ${skipped}`;
-  await dbLog('compare', mismatches > 0 ? 'warning' : 'success', summary);
+  // ─── Step 6: Log results ─────────
+  const overallStatus = mismatches === 0 ? 'success' : 'warning';
+  const summary = `VERIFICATION RESULTS: ✅ ${matches} matches, ❌ ${mismatches} mismatches, ⏭️ ${skipped} skipped, ❓ ${missing} not-in-supabase`;
+  await dbLog('compare-result', overallStatus, summary);
 
+  // Log product-level summary in chunks
+  for (let i = 0; i < matchSummary.length; i += 15) {
+    const chunk = matchSummary.slice(i, i + 15).join('\n');
+    await dbLog('compare-products', 'info', chunk);
+  }
+
+  // Log mismatches in detail
   if (mismatchDetails.length > 0) {
-    // Log mismatches in chunks
     for (let i = 0; i < mismatchDetails.length; i += 10) {
       const chunk = mismatchDetails.slice(i, i + 10).join('\n');
       await dbLog('compare-mismatch', 'warning', chunk);
     }
   }
 
-  return { matches, mismatches, skipped, mismatchDetails };
-}
-
-function normalizeMonth(col) {
-  col = col.trim();
-  
-  // Already YYYY-MM format
-  if (/^\d{4}-\d{2}/.test(col)) return col.substring(0, 7);
-  
-  // "Apr 2026" format
-  const monthMap = {
-    'Jan': '01', 'Feb': '02', 'Mar': '03', 'Apr': '04',
-    'May': '05', 'Jun': '06', 'Jul': '07', 'Aug': '08',
-    'Sep': '09', 'Oct': '10', 'Nov': '11', 'Dec': '12',
-  };
-  const match = col.match(/^(\w{3})\s+(\d{4})$/);
-  if (match && monthMap[match[1]]) {
-    return `${match[2]}-${monthMap[match[1]]}`;
-  }
-  
-  return null;
+  return { matches, mismatches, skipped, missing, mismatchDetails };
 }
 
 // ── MAIN ─────────────────────────────────────────────────────────────────────
 
 (async () => {
-  console.log('🔍 Flieber Forecast Verifier v1.0');
-  await dbLog('main', 'info', 'Script started — forecast verification');
+  console.log('🔍 Flieber Forecast Verifier v2.0');
+  await dbLog('main', 'info', 'Verifier v2.0 started');
 
   let browser;
   try {
@@ -371,7 +412,7 @@ function normalizeMonth(col) {
     });
     const context = await browser.newContext({
       viewport: { width: 1920, height: 1080 },
-      acceptDownloads: true,  // CRITICAL for CSV download
+      acceptDownloads: true,
     });
     const page = await context.newPage();
 
@@ -381,33 +422,38 @@ function normalizeMonth(col) {
     // Step 2: Navigate to sales forecast
     await dbLog('navigate', 'info', 'Navigating to sales forecast...');
     await page.goto(FLIEBER_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await sleep(5000); // Let SPA settle
+    await sleep(8000); // SPA settle time
     await dbLog('navigate', 'success', 'Sales forecast page loaded');
 
     // Step 3: Ensure all stores selected
     await selectAllStores(page);
-    await sleep(2000);
+    await sleep(3000);
 
     // Step 4: Export CSV
     const csvPath = await exportCSV(page);
 
     // Step 5: Parse CSV
     const csvData = parseCSV(csvPath);
+    await dbLog('parse', 'success', `Parsed ${csvData.rows.length} rows, ${csvData.headers.length} columns`);
+
+    // Log unique stores found
+    const stores = [...new Set(csvData.rows.map(r => r['Store'] || 'unknown'))];
+    await dbLog('parse', 'info', `Stores in CSV: ${stores.join(', ')}`);
 
     // Step 6: Compare with Supabase
     const result = await compareWithSupabase(csvData);
 
-    // Cleanup CSV file
+    // Cleanup
     try { fs.unlinkSync(csvPath); } catch (e) {}
 
-    await dbLog('main', 'success', 
-      `Verification complete! Matches=${result.matches}, Mismatches=${result.mismatches}, Skipped=${result.skipped}`);
-    
-    console.log(`\n🏁 Done! Matches=${result.matches}, Mismatches=${result.mismatches}`);
+    await dbLog('main', result.mismatches > 0 ? 'warning' : 'success',
+      `Verification complete! ✅ ${result.matches} matches, ❌ ${result.mismatches} mismatches`);
+
+    console.log(`\n🏁 Done! ✅ ${result.matches} ❌ ${result.mismatches}`);
 
   } catch (error) {
     console.error(`❌ Fatal: ${error.message}`);
-    await dbLog('main', 'error', `Fatal: ${error.message}`);
+    await dbLog('main', 'error', `Fatal: ${error.message}\n${error.stack?.substring(0, 500)}`);
     process.exit(1);
   } finally {
     if (browser) await browser.close();
