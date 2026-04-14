@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.6 — skip already-completed stores + 60 min timeout
+ * flieber-forecast-updater.js  v8.7 — skip already-completed stores + 60 min timeout
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -560,18 +560,45 @@ async function fillMonths(page, productName, monthlyValues) {
     // Read current value before editing
     const curVal = await cell.innerText().catch(() => '?');
 
-    // Double-click to enter EDIT mode (no force: true needed — we're outside the frozen clone)
+    // Double-click to enter EDIT mode
     await cell.dblclick({ timeout: 5000 });
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(300);
 
-    // Clear existing value, then type the new one
-    await page.keyboard.press('Control+a');
-    await page.keyboard.press('Delete');
-    await page.keyboard.type(String(val));
+    // ── SAFE CELL EDIT (v8.7) ──────────────────────────────────────────
+    // NEVER use Ctrl+A — in Handsontable it selects ALL grid cells, not
+    // just the text in the editor. If dblclick didn't fully enter edit
+    // mode, Ctrl+A + Delete wipes the entire spreadsheet.
+    //
+    // Instead: wait for the editor textarea, clear it directly, then type.
+    const editorSel = '.handsontableInputHolder textarea, .handsontableInputHolder input';
+    const editorVisible = await page.locator(editorSel).first()
+      .isVisible({ timeout: 1500 }).catch(() => false);
 
-    // Commit with Enter (stays in same cell, no navigation side-effects)
+    if (editorVisible) {
+      // Editor is open — clear via evaluate (safe, no grid selection)
+      await page.locator(editorSel).first().evaluate(el => { el.value = ''; });
+      await page.keyboard.type(String(val));
+    } else {
+      // Fallback: dblclick didn't open editor — try click + F2 (edit mode shortcut)
+      await cell.click({ timeout: 2000 });
+      await page.keyboard.press('F2');
+      await page.waitForTimeout(300);
+      const retryEditor = await page.locator(editorSel).first()
+        .isVisible({ timeout: 1500 }).catch(() => false);
+      if (retryEditor) {
+        await page.locator(editorSel).first().evaluate(el => { el.value = ''; });
+        await page.keyboard.type(String(val));
+      } else {
+        // Last resort: type directly (risky but better than Ctrl+A)
+        await page.keyboard.press('Home');
+        await page.keyboard.press('Shift+End');
+        await page.keyboard.type(String(val));
+      }
+    }
+
+    // Commit with Enter
     await page.keyboard.press('Enter');
-    await page.waitForTimeout(100);
+    await page.waitForTimeout(150);
 
     if (i < 4 || i === MONTHS.length - 1) {
       await dbLog('fill-months', 'info', `Month[${i}] ${mo} col=${colIndex}: "${curVal}" → ${val}`);
@@ -712,7 +739,7 @@ async function waitForProductList(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.6\n');
+  console.log('🚀 Flieber Forecast Updater v8.7\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const completedStores = await getCompletedStores();
@@ -737,7 +764,7 @@ async function main() {
       : STORES;
 
     for (const store of storesToRun) {
-      // v8.6: Skip stores already completed in last 24h
+      // v8.7: Skip stores already completed in last 24h
       if (completedStores.includes(store.name)) {
         console.log(`⏭️  ${store.name} already done in last 24h — skipping`);
         await dbLog('main', 'info', `Skipped ${store.name} (already completed)`);
