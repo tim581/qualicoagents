@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-verifier.js v1.0 — Export Flieber forecast CSV and compare against Supabase
+ * flieber-forecast-verifier.js v1.1 — Export Flieber forecast CSV and compare against Supabase
  *
  * Flow:
  *   1. Login to Flieber
@@ -188,14 +188,22 @@ function parseCSVLine(line) {
 async function compareWithSupabase(csvData) {
   await dbLog('compare', 'info', `Comparing ${csvData.rows.length} CSV rows against Supabase...`);
   
-  // Log the headers so we can understand the CSV structure
-  await dbLog('compare', 'info', `CSV headers: ${csvData.headers.join(' | ')}`);
+  // Log ALL headers in chunks so nothing gets truncated
+  await dbLog('compare', 'info', `Total CSV columns: ${csvData.headers.length}, Total rows: ${csvData.rows.length}`);
   
-  // Log first 3 rows as sample
-  for (let i = 0; i < Math.min(3, csvData.rows.length); i++) {
+  // Log headers in chunks of 15 so we can see ALL of them
+  for (let i = 0; i < csvData.headers.length; i += 15) {
+    const chunk = csvData.headers.slice(i, i + 15);
+    await dbLog('compare', 'info', `Headers [${i}-${i + chunk.length - 1}]: ${chunk.join(' | ')}`);
+  }
+  
+  // Log first 2 rows — but ONLY the last 20 columns (where month data likely is)
+  for (let i = 0; i < Math.min(2, csvData.rows.length); i++) {
     const row = csvData.rows[i];
-    const sample = Object.entries(row).map(([k, v]) => `${k}=${v}`).join(', ');
-    await dbLog('compare', 'info', `Sample row ${i}: ${sample.substring(0, 1500)}`);
+    const entries = Object.entries(row);
+    const lastEntries = entries.slice(-20);
+    const sample = lastEntries.map(([k, v]) => `${k}=${v}`).join(', ');
+    await dbLog('compare', 'info', `Row ${i} LAST 20 cols: ${sample.substring(0, 1500)}`);
   }
 
   // Get product mapping from Supabase
@@ -231,9 +239,28 @@ async function compareWithSupabase(csvData) {
   }
 
   // Now try to match CSV rows against Supabase
-  // CSV structure depends on Flieber export format — we'll detect month columns
-  const monthColumns = csvData.headers.filter(h => /^\w{3}\s+\d{4}$|^\d{4}-\d{2}/.test(h.trim()));
+  // CSV structure depends on Flieber export format — very flexible month detection
+  // Match: "Apr 2026", "(+)Apr 2026", "Apr 2026 Units", "2026-04", "04/2026", "Apr-26", "April 2026"
+  const MONTH_PATTERN = /(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s*['']?\d{2,4}/i;
+  const DATE_PATTERN = /^\d{4}-\d{2}/;
+  const monthColumns = csvData.headers.filter(h => MONTH_PATTERN.test(h.trim()) || DATE_PATTERN.test(h.trim()));
+  
+  // Also check for columns with (+) prefix (Flieber may mark future months this way)
+  const plusColumns = csvData.headers.filter(h => /^\(\+\)/.test(h.trim()));
+  
   await dbLog('compare', 'info', `Detected ${monthColumns.length} month columns: ${monthColumns.join(', ')}`);
+  if (plusColumns.length > 0) {
+    await dbLog('compare', 'info', `Found ${plusColumns.length} (+) columns: ${plusColumns.join(', ')}`);
+  }
+  
+  // If still no month columns, log candidates — any column that contains digits and isn't a metric
+  if (monthColumns.length === 0) {
+    const candidates = csvData.headers.filter(h => {
+      const t = h.trim();
+      return !t.startsWith('(-)') && !['Product Code','Product Name','Store','Tier','Forecast Model','Manually Adjusted On','Currency','Status'].includes(t) && /\d/.test(t);
+    });
+    await dbLog('compare', 'info', `No month cols found. Candidates with digits: ${candidates.join(' | ')}`);
+  }
 
   let matches = 0;
   let mismatches = 0;
