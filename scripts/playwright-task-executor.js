@@ -1,4 +1,4 @@
-// playwright-task-executor.js v2.2 — auto-downloads scripts from GitHub before each run
+// playwright-task-executor.js v2.3 — auto-downloads scripts from GitHub before each run
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
@@ -241,6 +241,26 @@ async function pollTasks() {
           completed_at: new Date().toISOString()
         })
         .eq('id', task.id);
+
+      // ═══ AUTO-CHAIN: forecast-sync → forecast-verify ═══
+      if (task.task_type === 'forecast-sync' && result.success) {
+        console.log('🔗 Forecast sync done — auto-queuing verification task...');
+        const { error: chainErr } = await supabase
+          .from('Browser_Tasks')
+          .insert({
+            agent_name: task.agent_name || 'Multi Agent Mgr',
+            task_type: 'forecast-verify',
+            url: 'https://app.flieber.com/app/sales-forecast',
+            actions: [],
+            credentials_key: 'flieber_login',
+            status: 'pending'
+          });
+        if (chainErr) {
+          console.error('⚠️ Failed to queue verify task:', chainErr.message);
+        } else {
+          console.log('✅ Verification task queued — will run next poll cycle');
+        }
+      }
     }
 
   } catch (error) {
