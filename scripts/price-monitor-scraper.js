@@ -1173,7 +1173,7 @@ async function writeToSupabase() {
   const { error } = await supabase
     .from('amazon_monitor_fba_puzzlup')
     .upsert(validResults, {
-      onConflict: 'product_id,channel_id,variant_name',
+      onConflict: 'product_id,channel_id',
     });
 
   if (error) {
