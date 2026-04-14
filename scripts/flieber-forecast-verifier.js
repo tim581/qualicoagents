@@ -213,7 +213,7 @@ async function exportCSV(page) {
   // Set up download listener BEFORE clicking "Export table data"
   const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
   
-  const exportTableBtn = page.locator('text=/Export table data/i, button:has-text("Export table data")').first();
+  const exportTableBtn = page.getByText('Export table data').first();
   await exportTableBtn.click({ timeout: 10000 });
   await dbLog('export', 'info', 'Clicked "Export table data" — waiting for download...');
 
@@ -444,8 +444,8 @@ async function compareWithSupabase(csvData) {
 // ── MAIN ─────────────────────────────────────────────────────────────────────
 
 (async () => {
-  console.log('🔍 Flieber Forecast Verifier v2.2');
-  await dbLog('main', 'info', 'Verifier v2.2 started');
+  console.log('🔍 Flieber Forecast Verifier v2.3');
+  await dbLog('main', 'info', 'Verifier v2.3 started');
 
   let browser;
   try {
