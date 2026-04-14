@@ -346,28 +346,72 @@ async function setDeliveryLocation(page, channel) {
     'amazon.co.uk':  ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc', 'new york'],
   };
 
+  // "Update location" in all Amazon languages
+  const UPDATE_LOCATION_PHRASES = [
+    'update location', 'standort aktualisieren', 'aktualisieren',
+    'locatie bijwerken', 'bijwerken', 'mettre à jour', 'actualiser',
+    'actualizar ubicación', 'actualizar', 'aggiorna la posizione', 'aggiorna',
+    'update je locatie', 'wijzig', 'modifier'
+  ];
+
+  function isUpdateLocationText(text) {
+    const lower = text.toLowerCase();
+    return UPDATE_LOCATION_PHRASES.some(phrase => lower.includes(phrase));
+  }
+
   async function isLocationCorrect() {
     try {
-      const line2 = await page.locator('#glow-ingress-line2').textContent({ timeout: 5000 });
-      const trimmed = line2.trim();
-      const lower = trimmed.toLowerCase();
+      // Read both lines
+      let line1Text = '', line2Text = '';
+      try { line1Text = (await page.locator('#glow-ingress-line1').textContent({ timeout: 5000 })).trim(); } catch(e) {}
+      try { line2Text = (await page.locator('#glow-ingress-line2').textContent({ timeout: 5000 })).trim(); } catch(e) {}
       
-      // If header is empty or says "Update location", not set yet
-      if (!trimmed || lower.includes('update location') || lower.includes('standort') || lower.includes('aktualisieren')) {
-        return { ok: false, header: trimmed, reason: 'No location set' };
+      console.log(`  📍 Location header — Line1: "${line1Text}" | Line2: "${line2Text}"`);
+      
+      // Combine both lines for checking
+      const combined = `${line1Text} ${line2Text}`.toLowerCase();
+      
+      // If both empty, no location set
+      if (!line1Text && !line2Text) {
+        return { ok: false, header: '', reason: 'No location set (both lines empty)' };
       }
       
-      // Check: does header contain any WRONG country/city?
-      const wrongStrings = WRONG_LOCATION_STRINGS[channel.domain] || [];
-      for (const wrong of wrongStrings) {
-        if (lower.includes(wrong)) {
-          return { ok: false, header: trimmed, reason: `Wrong location detected: "${wrong}" in "${trimmed}"` };
+      // Check line2 first — this usually has the actual address (e.g. "Duffel 2570", "10115", "London")
+      if (line2Text && !isUpdateLocationText(line2Text)) {
+        // Line2 has actual text — check it's not a wrong country
+        const wrongStrings = WRONG_LOCATION_STRINGS[channel.domain] || [];
+        const isWrong = wrongStrings.some(w => line2Text.toLowerCase().includes(w));
+        if (!isWrong) {
+          console.log(`  ✅ Location OK: "${line2Text}" (not a wrong country)`);
+          return { ok: true, header: line2Text };
+        } else {
+          const match = wrongStrings.find(w => line2Text.toLowerCase().includes(w));
+          return { ok: false, header: line2Text, reason: `Wrong location in line2: "${match}" in "${line2Text}"` };
         }
       }
       
-      // Not a wrong country → accept it (could be any local address like "Balzac T4B 2T")
-      console.log(`  ✅ Location OK: "${trimmed}" (not a wrong country)`);
-      return { ok: true, header: trimmed };
+      // Line2 is "Update location" or equivalent — check line1 for actual address info
+      // Line1 often shows "Deliver to Tim" or "Bestemming: Tim" or "Livrer à Balzac T4B 2T"
+      if (line1Text) {
+        // Strip common prefixes to get the location part
+        const stripped = line1Text
+          .replace(/^(deliver(ing)?\s+to|bestemming:?|livrer\s+à|liefern\s+nach|entregar\s+a|consegna\s+a)\s*/i, '')
+          .trim();
+        
+        if (stripped && stripped.length > 1) {
+          const wrongStrings = WRONG_LOCATION_STRINGS[channel.domain] || [];
+          const isWrong = wrongStrings.some(w => stripped.toLowerCase().includes(w));
+          if (!isWrong) {
+            console.log(`  ✅ Location OK via line1: "${line1Text}" → "${stripped}" (not a wrong country)`);
+            return { ok: true, header: stripped };
+          } else {
+            const match = wrongStrings.find(w => stripped.toLowerCase().includes(w));
+            return { ok: false, header: stripped, reason: `Wrong location in line1: "${match}" in "${line1Text}"` };
+          }
+        }
+      }
+      
+      return { ok: false, header: `${line1Text} | ${line2Text}`, reason: 'No recognizable location found' };
     } catch (e) {
       return { ok: false, header: null, reason: e.message };
     }
