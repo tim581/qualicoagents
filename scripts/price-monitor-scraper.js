@@ -1275,15 +1275,36 @@ async function main() {
   });
 
   try {
-    // Step 2: Scrape all Amazon markets (sequential — one at a time)
-    const marketOrder = [22, 23, 32, 30, 31, 27, 26, 25, 24]; // DE first (reference)
-    for (const channelId of marketOrder) {
+    // Step 2A: Scrape EUR markets with PERSISTENT context (logged in → EUR prices)
+    const eurMarkets = [22, 23, 27, 26, 25, 24]; // DE, FR, NL, BE, IT, ES
+    console.log(`\n💶 Phase 1: EUR markets (${eurMarkets.length}) — persistent context (logged in)`);
+    for (const channelId of eurMarkets) {
       await scrapeAmazonMarket(context, channelId);
     }
 
-    // Step 3: Close browser
+    // Step 2B: Close persistent context
     await context.close();
-    console.log('\n🛑 Browser closed');
+    console.log('\n🛑 Persistent context closed');
+
+    // Step 2C: Scrape UK/US/CA with INCOGNITO context (no login → local currency GBP/USD/CAD)
+    const localCurrencyMarkets = [32, 30, 31]; // UK, US, CA
+    console.log(`\n💷💵 Phase 2: Local currency markets (${localCurrencyMarkets.length}) — incognito context (no login)`);
+    const tmpDataDir = path.join(require('os').tmpdir(), `puzzlup-incognito-${Date.now()}`);
+    console.log(`  📂 Temp browser data: ${tmpDataDir}`);
+    const incognitoContext = await chromium.launchPersistentContext(tmpDataDir, {
+      headless: false,
+      args: ['--disable-blink-features=AutomationControlled'],
+      viewport: { width: 1920, height: 1080 },
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    });
+
+    for (const channelId of localCurrencyMarkets) {
+      await scrapeAmazonMarket(incognitoContext, channelId);
+    }
+
+    // Step 2D: Close incognito context
+    await incognitoContext.close();
+    console.log('\n🛑 Incognito context closed');
 
     // Step 4: Bol.com (HTTP)
     await scrapeBolcom();
