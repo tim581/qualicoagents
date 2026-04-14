@@ -596,15 +596,19 @@ function parsePrice(priceStr) {
  * Looks for multiple price selectors in order of reliability.
  */
 async function extractPrice(page) {
+  // Selectors in order of reliability
   const selectors = [
     '.priceToPay .a-offscreen',
     '#corePrice_feature_div .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .a-offscreen',
+    '.reinventPricePriceToPayMargin .priceToPay .a-offscreen',
     '.a-price .a-offscreen',
     '#priceblock_ourprice',
     '#priceblock_dealprice',
     '.a-color-price',
     '#price_inside_buybox',
     '#newBuyBoxPrice',
+    '#apex_offerDisplay_desktop .a-offscreen',
   ];
 
   for (const sel of selectors) {
@@ -620,16 +624,53 @@ async function extractPrice(page) {
     } catch (e) { /* try next selector */ }
   }
 
-  // Fallback: try to find any price on page
+  // Fallback 1: try .a-offscreen textContent (may be hidden but present in DOM)
   try {
-    const allPrices = await page.locator('.a-price .a-offscreen').allTextContents();
-    for (const text of allPrices) {
+    const allOffscreen = await page.locator('.a-price .a-offscreen').allTextContents();
+    for (const text of allOffscreen) {
       const price = parsePrice(text);
       if (price && price > 5 && price < 9999) {
         return { price, raw: text.trim() };
       }
     }
   } catch (e) { /* no price found */ }
+
+  // Fallback 2: try innerText of .a-price (visible price without .a-offscreen)
+  try {
+    const priceElem = page.locator('.a-price').first();
+    if (await priceElem.isVisible({ timeout: 1000 })) {
+      const text = await priceElem.innerText();
+      const price = parsePrice(text);
+      if (price && price > 0 && price < 9999) {
+        return { price, raw: text.trim() };
+      }
+    }
+  } catch (e) { /* no price found */ }
+
+  // Fallback 3: regex search in page content for price patterns
+  try {
+    const bodyText = await page.locator('#centerCol').innerText();
+    const priceMatch = bodyText.match(/[€£$]\s*(\d{1,3}[.,]\d{2})/);
+    if (priceMatch) {
+      const price = parsePrice(priceMatch[0]);
+      if (price && price > 5 && price < 9999) {
+        console.log(`    🔍 Price found via regex fallback: ${priceMatch[0]}`);
+        return { price, raw: priceMatch[0] };
+      }
+    }
+  } catch (e) { /* no price found */ }
+
+  // DEBUG: Log what we see so we can fix next time
+  try {
+    const debugSelectors = ['.priceToPay', '.a-price', '#corePrice_feature_div', '#corePriceDisplay_desktop_feature_div', '#apex_offerDisplay_desktop'];
+    for (const sel of debugSelectors) {
+      const count = await page.locator(sel).count();
+      if (count > 0) {
+        const text = await page.locator(sel).first().innerText().catch(() => '(error)');
+        console.log(`    🐛 DEBUG ${sel}: count=${count}, text="${text?.substring(0, 80)}"`);
+      }
+    }
+  } catch (e) { /* debug only */ }
 
   return { price: null, raw: null };
 }
