@@ -565,11 +565,13 @@ async function setDeliveryLocation(page, channel) {
  */
 function detectCurrency(rawPrice, fallback) {
   if (!rawPrice) return fallback;
-  if (rawPrice.includes('C$') || rawPrice.includes('CA$')) return 'CAD';
-  if (rawPrice.includes('£')) return 'GBP';
-  if (rawPrice.includes('€') || rawPrice.toLowerCase().includes('eur')) return 'EUR';
+  // Collapse newlines for matching (UK shows "EUR44\n.\n77")
+  const normalized = rawPrice.replace(/[\r\n]+/g, ' ');
+  if (normalized.includes('C$') || normalized.includes('CA$')) return 'CAD';
+  if (normalized.includes('£') || /\bGBP\b/i.test(normalized)) return 'GBP';
+  if (normalized.includes('€') || /\bEUR\b/i.test(normalized)) return 'EUR';
   // "$" is ambiguous: USD on .com, CAD on .ca — use fallback to distinguish
-  if (rawPrice.includes('$') || rawPrice.toLowerCase().includes('usd')) {
+  if (normalized.includes('$') || /\bUSD\b/i.test(normalized)) {
     return fallback === 'CAD' ? 'CAD' : 'USD';
   }
   return fallback;
@@ -577,8 +579,11 @@ function detectCurrency(rawPrice, fallback) {
 
 function parsePrice(priceStr) {
   if (!priceStr) return null;
-  // Remove currency symbols and whitespace
-  let cleaned = priceStr.replace(/[€$£C\s]/g, '').trim();
+  // Collapse newlines/whitespace (Amazon UK splits "EUR44\n.\n77")
+  let cleaned = priceStr.replace(/[\r\n]+/g, '').replace(/\s+/g, ' ').trim();
+  // Remove currency TEXT labels (EUR, GBP, USD, CAD) AND symbols (€, $, £)
+  cleaned = cleaned.replace(/(EUR|GBP|USD|CAD|CA\$)/gi, '');
+  cleaned = cleaned.replace(/[€$£]/g, '').trim();
   // Handle European format: 34,95 → 34.95 or 1.234,56 → 1234.56
   if (cleaned.includes(',') && cleaned.includes('.')) {
     // 1.234,56 format
