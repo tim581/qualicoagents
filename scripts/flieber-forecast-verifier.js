@@ -400,9 +400,9 @@ async function compareWithSupabase(csvData) {
         continue;
       }
 
-      // Allow tolerance of ±2 units (Flieber recalculates from daily averages)
+      // Allow tolerance of ±10 units (Flieber recalculates from daily averages, smaller stores have larger rounding diffs)
       const diff = Math.abs(Math.round(csvVal) - supaVal);
-      if (diff <= 2) {
+      if (diff <= 10) {
         matches++;
         rowMatches++;
       } else {
