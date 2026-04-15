@@ -19,7 +19,7 @@ const { chromium } = require('playwright');
 const SITE_URL      = 'https://app.forceget.com';
 const INVENTORY_URL = 'https://app.forceget.com/inventory-management/inventory';
 const SITE_EMAIL    = 'tim@qualico.be';
-const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG';
+const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG]';
 
 // ── PRODUCT NAME MAPPING ──────────────────────────────────────────────────────
 
@@ -147,7 +147,8 @@ async function login(page) {
     await page.waitForSelector(pwSel, { timeout: 10000 });
     
     // Method 1: Try evaluate to set value directly (most reliable for special chars)
-    await page.evaluate((sel, pw) => {
+    // ⚠️ Playwright evaluate() accepts only 1 arg — wrap in object
+    await page.evaluate(({sel, pw}) => {
       const el = document.querySelector(sel);
       if (el) {
         // Use native input value setter to bypass React/Vue controlled inputs
@@ -156,7 +157,7 @@ async function login(page) {
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       }
-    }, pwSel, SITE_PASSWORD);
+    }, {sel: pwSel, pw: SITE_PASSWORD});
 
     // Verify it was set
     const pwVal = await page.$eval(pwSel, el => el.value);
