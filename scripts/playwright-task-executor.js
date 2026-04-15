@@ -92,10 +92,14 @@ const { execSync } = require('child_process');
 const path = require('path');
 
 const SCRIPT_TASKS = {
-  'forecast-sync':    'flieber-forecast-updater.js',
-  'po-simulation':    'flieber-replenishment-simulator.js',
-  'to-simulation':    'flieber-replenishment-simulator.js',
-  'forecast-verify':  'flieber-forecast-verifier.js',
+  'forecast-sync':            'flieber-forecast-updater.js',
+  'po-simulation':            'flieber-replenishment-simulator.js',
+  'to-simulation':            'flieber-replenishment-simulator.js',
+  'forecast-verify':          'flieber-forecast-verifier.js',
+  'inventory-sync-forceget':  'inventory-sync-forceget.js',
+  'inventory-sync-kamps':     'inventory-sync-kamps.js',
+  'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
+  'inventory-sync-bol':       'inventory-sync-bol.js',
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
@@ -146,6 +150,7 @@ async function executeScriptTask(task) {
   
   // For replenishment simulator, set RUN_MODE via env variable
   const env = { ...process.env };
+  env.BROWSER_TASK_ID = String(task.id);  // Pass task ID so scripts can update their own result
   if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
   if (task.task_type === 'to-simulation') env.RUN_MODE = 'to';
   
