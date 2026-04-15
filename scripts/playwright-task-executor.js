@@ -1,4 +1,4 @@
-// playwright-task-executor.js v2.3 — auto-downloads scripts from GitHub before each run
+// playwright-task-executor.js v2.4 — auto-downloads scripts from GitHub before each run
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
@@ -100,6 +100,7 @@ const SCRIPT_TASKS = {
   'inventory-sync-kamps':     'inventory-sync-kamps.js',
   'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
   'inventory-sync-bol':       'inventory-sync-bol.js',
+  'price-scrape':             'price-monitor-scraper.js',
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
