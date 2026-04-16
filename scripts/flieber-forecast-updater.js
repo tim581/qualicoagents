@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.9 — pro-rata current month, verify fills, 4h timeout
+ * flieber-forecast-updater.js  v8.10 — no 24h cooldown, always run all stores
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -62,20 +62,10 @@ const RUN_ID = `run_${Date.now()}`;
 console.log(`\n🔍 Debug run ID: ${RUN_ID}`);
 console.log(`   → Query Supabase "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}' after run\n`);
 
-// Check which stores were already completed in the last 24h (skip them on re-run)
+// v8.10: Cooldown removed — always run all stores when task is queued
+// Task system itself prevents duplicate execution (status: pending → running → done)
 async function getCompletedStores() {
-  try {
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const res = await fetch(
-      `${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log?step=eq.store-complete&status=eq.success&created_at=gte.${since}&select=message`,
-      { headers: { 'apikey': process.env.SUPABASE_KEY, 'Authorization': `Bearer ${process.env.SUPABASE_KEY}` } }
-    );
-    if (!res.ok) return [];
-    const rows = await res.json();
-    const completed = rows.map(r => r.message.trim());
-    if (completed.length > 0) console.log(`⏭️  Already completed in last 24h: ${completed.join(', ')}`);
-    return completed;
-  } catch { return []; }
+  return []; // No cooldown
 }
 
 async function dbLog(step, status, message) {
