@@ -1,11 +1,12 @@
 /**
- * inventory-sync-forceget.js  v1.2 — Scrape Forceget CA/US 3PL inventory
+ * inventory-sync-bol.js  v1.0 — Scrape Bol.com LvB stock levels
  *
- * v1.2 changes:
- *   - page.fill() as primary password method (handles special chars)
- *   - Better fallback chain: fill → evaluate → type
- *   - Added login retry with fresh page on failure
- *   - Version header updated
+ * Portal: https://partner.bol.com
+ * ⚠️ Bol.com partner portal login may use 2FA / SSO
+ * This is a DISCOVERY script — logs page structure to understand the portal
+ *
+ * LvB (Logistiek via Bol.com) stock is managed by Bol.com in their warehouses.
+ * We need: product name → units available at Bol warehouse
  *
  * Prerequisites: node playwright-task-executor.js on Tim's PC
  */
@@ -14,11 +15,8 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 
-const SITE_URL      = 'https://app.forceget.com';
-const INVENTORY_URL = 'https://app.forceget.com/inventory-management/inventory';
-const SITE_EMAIL    = 'tim@qualico.be';
-const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG]';
-const WAREHOUSE_NAME = 'Forceget';
+const SITE_URL      = 'https://partner.bol.com';
+const WAREHOUSE_NAME = 'Bol.com LvB';
 
 
 function matchProductName(text) {
@@ -40,7 +38,7 @@ function matchProductName(text) {
 }
 
 
-const RUN_ID = `forceget_inv_${Date.now()}`;
+const RUN_ID = `bol_inv_${Date.now()}`;
 console.log(`🔍 Debug run ID: ${RUN_ID}`);
 console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'\n`);
 
@@ -99,140 +97,70 @@ async function updateTaskResult(resultData) {
 }
 
 
-
-async function login(page) {
-  console.log('\n🔐 Logging in...');
-  await dbLog('login', 'info', 'Navigating to site...');
-  await page.goto('https://app.forceget.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(4000);
-  await dbShot(page, 'login-page', 'Initial page load');
-  await dbLog('login', 'info', `Current URL: ${page.url()}`);
-
-  // Check if already logged in
-  if (page.url().includes('/dashboard') || page.url().includes('/inventory')) {
-    await dbLog('login', 'success', 'Already logged in!');
-    return;
-  }
-
-  // Fill email — try multiple selectors
-  const emailSels = ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 
-                     'input[name="UserName"]', 'input[id*="mail" i]', 'input[id*="user" i]',
-                     'input[placeholder*="email" i]', 'input[placeholder*="user" i]'];
-  let emailFilled = false;
-  for (const sel of emailSels) {
-    try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await page.fill(sel, SITE_EMAIL);
-        await dbLog('login', 'info', `Email filled via ${sel}`);
-        emailFilled = true;
-        break;
-      }
-    } catch {}
-  }
-  if (!emailFilled) {
-    await dbLog('login', 'error', 'Could not find email field!');
-    await dbShot(page, 'login-no-email', 'Email field not found');
-  }
-
-  // Fill password — page.fill() first (handles special chars well)
-  const pwSels = ['input[type="password"]', 'input[name="password"]', 'input[name="Password"]',
-                  'input[id*="pass" i]'];
-  let pwFilled = false;
-  for (const sel of pwSels) {
-    try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        // Method 1: page.fill() — best for most forms
-        try {
-          await page.fill(sel, SITE_PASSWORD);
-          pwFilled = true;
-          await dbLog('login', 'info', `Password filled via page.fill(${sel})`);
-          break;
-        } catch (fillErr) {
-          await dbLog('login', 'warning', `page.fill failed: ${fillErr.message}`);
-          // Method 2: evaluate with native setter
-          try {
-            await page.evaluate((opts) => {
-              const el = document.querySelector(opts.sel);
-              if (el) {
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, opts.pw);
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }, {sel, pw: SITE_PASSWORD});
-            pwFilled = true;
-            await dbLog('login', 'info', 'Password filled via evaluate()');
-            break;
-          } catch (evalErr) {
-            await dbLog('login', 'warning', `evaluate() failed: ${evalErr.message}`);
-            // Method 3: click + type
-            try {
-              await page.click(sel);
-              await page.keyboard.type(SITE_PASSWORD, { delay: 30 });
-              pwFilled = true;
-              await dbLog('login', 'info', 'Password filled via keyboard.type()');
-              break;
-            } catch {}
-          }
-        }
-      }
-    } catch {}
-  }
-  if (!pwFilled) {
-    await dbLog('login', 'error', 'Could not fill password!');
-    await dbShot(page, 'login-no-pw', 'Password not filled');
-  }
-
-  await dbShot(page, 'login-filled', 'Credentials filled');
-
-  // Click submit
-  const btnSels = ['button[type="submit"]', 'input[type="submit"]',
-                   'button:has-text("Sign In")', 'button:has-text("Log In")',
-                   'button:has-text("Login")', 'button:has-text("Inloggen")',
-                   'input[value="Log On"]', 'input[value="Login"]'];
-  let clicked = false;
-  for (const sel of btnSels) {
-    try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await el.click();
-        clicked = true;
-        await dbLog('login', 'info', `Clicked ${sel}`);
-        break;
-      }
-    } catch {}
-  }
-  if (!clicked) {
-    await page.keyboard.press('Enter');
-    await dbLog('login', 'info', 'Pressed Enter as fallback');
-  }
-
-  await page.waitForTimeout(6000);
-  await dbLog('login', 'success', `Post-login URL: ${page.url()}`);
-  await dbShot(page, 'login-done', 'After login');
-}
-
-
-async function scrapeInventory(page) {
-  console.log('\n📦 Navigating to inventory page...');
-  await dbLog('inventory', 'info', 'Navigating to inventory page...');
+async function discoverPortal(page) {
+  console.log('\n🔍 Discovering Bol.com partner portal...');
+  await dbLog('discover', 'info', 'Navigating to partner.bol.com...');
   
-  await page.goto(INVENTORY_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(5000);
   
-  // Check if we got redirected back to login
-  if (page.url().includes('/login')) {
-    await dbLog('inventory', 'error', 'Redirected to login — authentication failed');
-    await dbShot(page, 'inventory-redirect', 'Redirected to login');
-    return [];
+  await dbShot(page, 'landing', 'Partner portal landing');
+  await dbLog('discover', 'info', `URL: ${page.url()}`);
+  
+  // Check if we need to login
+  if (page.url().includes('login') || page.url().includes('auth')) {
+    await dbLog('discover', 'info', 'Login page detected — Tim must authenticate manually first');
+    await dbShot(page, 'login-required', 'Login page');
+    
+    // Log the login page structure
+    const loginStructure = await page.evaluate(() => ({
+      title: document.title,
+      url: window.location.href,
+      forms: document.querySelectorAll('form').length,
+      inputs: Array.from(document.querySelectorAll('input')).map(i => ({ type: i.type, name: i.name, id: i.id })),
+      buttons: Array.from(document.querySelectorAll('button, input[type="submit"]')).map(b => b.textContent.trim()),
+      links: Array.from(document.querySelectorAll('a')).map(a => ({ text: a.textContent.trim().substring(0,30), href: a.href })).filter(l => l.text).slice(0, 20),
+    }));
+    await dbLog('login-structure', 'info', JSON.stringify(loginStructure).substring(0, 3000));
+    
+    // Wait 90s for Tim to manually log in
+    console.log('\n⏳ Bol.com login detected! Waiting 90s for manual login...');
+    console.log('   Tim: please log in to partner.bol.com in the browser window');
+    await page.waitForTimeout(90000);
+    
+    await dbLog('discover', 'info', `URL after wait: ${page.url()}`);
+    await dbShot(page, 'after-manual-login', 'After manual login wait');
   }
   
-  await dbLog('inventory', 'info', `On page: ${page.url()}`);
-  await dbShot(page, 'inventory-page', 'Inventory page loaded');
+  // ── Discover portal structure ──
+  // Look for inventory/voorraad/LvB sections
+  const inventoryUrls = [
+    'https://partner.bol.com/retailer/inventorymanagement',
+    'https://partner.bol.com/retailer/inventory',
+    'https://partner.bol.com/retailer/offers',
+    'https://partner.bol.com/retailer/lvb',
+    'https://partner.bol.com/retailer/products',
+  ];
   
+  // First, map the navigation
+  const navLinks = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll('nav a, .sidebar a, [class*="menu"] a, a[href*="retailer"]'))
+      .map(a => ({ text: a.textContent.trim(), href: a.getAttribute('href') }))
+      .filter(l => l.text.length > 0 && l.text.length < 60)
+      .slice(0, 50);
+  });
+  await dbLog('navigation', 'info', JSON.stringify(navLinks).substring(0, 3000));
   
+  // Try inventory URLs
+  for (const url of inventoryUrls) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 20000 });
+      await page.waitForTimeout(3000);
+      if (!page.url().includes('login') && !page.url().includes('auth')) {
+        await dbLog('inventory-found', 'info', `Found page at: ${url}`);
+        await dbShot(page, 'inventory-page', `Page: ${url}`);
+        
+        
   // ── DISCOVERY: Log page structure ──
   const pageStructure = await page.evaluate(() => ({
     title: document.title,
@@ -288,14 +216,12 @@ async function scrapeInventory(page) {
     await dbLog('page-text-2', 'info', allText.substring(3000, 6000));
   }
 
-  
-  // ── Check for warehouse tabs (CA vs US) ──
-  const warehouseNames = ['Toronto', 'Canada', 'CA', 'United States', 'US', 'USA', 'Los Angeles', 'LA', 'Fontana'];
-  for (const wh of warehouseNames) {
-    try {
-      const tab = await page.$(`button:has-text("${wh}"), a:has-text("${wh}"), [role="tab"]:has-text("${wh}")`);
-      if (tab) await dbLog('warehouse-tab', 'info', `Found warehouse tab: ${wh}`);
-    } catch {}
+        
+        break;
+      }
+    } catch (e) {
+      await dbLog('url-try', 'warning', `${url} failed: ${e.message}`);
+    }
   }
   
   
@@ -342,17 +268,11 @@ async function scrapeInventory(page) {
   await dbLog('results', 'info', `Scraped ${results.length} products: ${results.map(r => `${r.product_name}(${r.units_on_hand})`).join(', ')}`);
 
   
-  // Determine CA vs US region per product
+  // All LvB products are NL
   for (const r of results) {
-    const whLower = (r.warehouse || '').toLowerCase();
-    if (whLower.includes('us') || whLower.includes('united states') || whLower.includes('fontana') || whLower.includes('la') || whLower.includes('los angeles')) {
-      r.region = 'US';
-      r.channel = '3PL US';
-    } else {
-      r.region = 'Canada';
-      r.channel = '3PL CA';
-    }
-    r.channel_type = '3PL';
+    r.region = 'Europe';
+    r.channel = 'LvB NL';
+    r.channel_type = 'LvB';
   }
   
   return results;
@@ -361,32 +281,32 @@ async function scrapeInventory(page) {
 (async () => {
   let browser;
   try {
-    console.log('🚀 inventory-sync-forceget.js v1.2 starting...');
-    await dbLog('start', 'info', 'Script v1.2 starting');
+    console.log('🚀 inventory-sync-bol.js v1.0 starting...');
+    await dbLog('start', 'info', 'Script v1.0 starting (discovery mode)');
     browser = await chromium.launch({ headless: false });
-    const page = await browser.newPage();
+    const context = await browser.newContext();
+    const page = await context.newPage();
 
-    await login(page);
-    const products = await scrapeInventory(page);
+    const products = await discoverPortal(page);
 
     const result = {
-      warehouse: 'forceget',
+      warehouse: 'bol_lvb',
       run_id: RUN_ID,
       timestamp: new Date().toISOString(),
       products,
       total_units: products.reduce((s, r) => s + r.units_on_hand, 0),
       product_count: products.length,
+      note: 'Discovery run — login may require manual intervention',
     };
 
     await updateTaskResult(result);
-    console.log(`\n✅ Found ${products.length} products, ${result.total_units} total units`);
-    for (const p of products) console.log(`   ${p.product_name} @ ${p.region}: ${p.units_on_hand}`);
-    await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} units`);
+    console.log(`\n✅ Discovery complete. Found ${products.length} products.`);
+    await dbLog('complete', 'success', `Discovery done: ${products.length} products found`);
     await dbShot(page, 'complete', 'Final state');
   } catch (err) {
     console.error('❌ Fatal:', err.message);
     await dbLog('fatal', 'error', `${err.message}\n${err.stack}`);
-    await updateTaskResult({ warehouse: 'forceget', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
+    await updateTaskResult({ warehouse: 'bol_lvb', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
   } finally {
     if (browser) await browser.close();
     await new Promise(r => setTimeout(r, 2000));

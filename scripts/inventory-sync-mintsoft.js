@@ -1,11 +1,9 @@
 /**
- * inventory-sync-forceget.js  v1.2 — Scrape Forceget CA/US 3PL inventory
+ * inventory-sync-mintsoft.js  v1.0 — Scrape Mintsoft/WePrepFBA UK 3PL inventory
  *
- * v1.2 changes:
- *   - page.fill() as primary password method (handles special chars)
- *   - Better fallback chain: fill → evaluate → type
- *   - Added login retry with fresh page on failure
- *   - Version header updated
+ * Portal: https://om.mintsoft.co.uk
+ * Login: tim@qualico.be / password (special chars — use page.fill)
+ * Products: UK-based Puzzlup stock at WePrepFBA Ipswich
  *
  * Prerequisites: node playwright-task-executor.js on Tim's PC
  */
@@ -14,11 +12,10 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 
-const SITE_URL      = 'https://app.forceget.com';
-const INVENTORY_URL = 'https://app.forceget.com/inventory-management/inventory';
+const SITE_URL      = 'https://om.mintsoft.co.uk/UserAccount/LogOn';
 const SITE_EMAIL    = 'tim@qualico.be';
-const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG]';
-const WAREHOUSE_NAME = 'Forceget';
+const SITE_PASSWORD = ':(=efV\\5CzI[-KJYtoHA';
+const WAREHOUSE_NAME = 'Mintsoft/WePrepFBA';
 
 
 function matchProductName(text) {
@@ -40,7 +37,7 @@ function matchProductName(text) {
 }
 
 
-const RUN_ID = `forceget_inv_${Date.now()}`;
+const RUN_ID = `mintsoft_inv_${Date.now()}`;
 console.log(`🔍 Debug run ID: ${RUN_ID}`);
 console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'\n`);
 
@@ -103,13 +100,13 @@ async function updateTaskResult(resultData) {
 async function login(page) {
   console.log('\n🔐 Logging in...');
   await dbLog('login', 'info', 'Navigating to site...');
-  await page.goto('https://app.forceget.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.goto('https://om.mintsoft.co.uk/UserAccount/LogOn', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(4000);
   await dbShot(page, 'login-page', 'Initial page load');
   await dbLog('login', 'info', `Current URL: ${page.url()}`);
 
   // Check if already logged in
-  if (page.url().includes('/dashboard') || page.url().includes('/inventory')) {
+  if (!page.url().includes('/LogOn') && !page.url().includes('/login')) {
     await dbLog('login', 'success', 'Already logged in!');
     return;
   }
@@ -216,21 +213,39 @@ async function login(page) {
 
 
 async function scrapeInventory(page) {
-  console.log('\n📦 Navigating to inventory page...');
-  await dbLog('inventory', 'info', 'Navigating to inventory page...');
+  console.log('\n📦 Looking for inventory/stock page...');
+  await dbLog('inventory', 'info', 'Looking for inventory page...');
   
-  await page.goto(INVENTORY_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(5000);
+  // Mintsoft: try common inventory/products URLs
+  const inventoryUrls = [
+    'https://om.mintsoft.co.uk/Product',
+    'https://om.mintsoft.co.uk/Inventory',
+    'https://om.mintsoft.co.uk/Stock',
+    'https://om.mintsoft.co.uk/Product/Index',
+  ];
   
-  // Check if we got redirected back to login
-  if (page.url().includes('/login')) {
-    await dbLog('inventory', 'error', 'Redirected to login — authentication failed');
-    await dbShot(page, 'inventory-redirect', 'Redirected to login');
-    return [];
+  let foundPage = false;
+  for (const url of inventoryUrls) {
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      if (!page.url().includes('/LogOn')) {
+        await dbLog('inventory', 'info', `Found page at: ${url}`);
+        foundPage = true;
+        break;
+      }
+    } catch {}
+  }
+  
+  if (!foundPage) {
+    // Look for navigation links
+    await dbLog('inventory', 'warning', 'No direct URL worked, discovering navigation...');
+    await page.goto('https://om.mintsoft.co.uk', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
   }
   
   await dbLog('inventory', 'info', `On page: ${page.url()}`);
-  await dbShot(page, 'inventory-page', 'Inventory page loaded');
+  await dbShot(page, 'inventory-page', 'Inventory/products page');
   
   
   // ── DISCOVERY: Log page structure ──
@@ -289,15 +304,6 @@ async function scrapeInventory(page) {
   }
 
   
-  // ── Check for warehouse tabs (CA vs US) ──
-  const warehouseNames = ['Toronto', 'Canada', 'CA', 'United States', 'US', 'USA', 'Los Angeles', 'LA', 'Fontana'];
-  for (const wh of warehouseNames) {
-    try {
-      const tab = await page.$(`button:has-text("${wh}"), a:has-text("${wh}"), [role="tab"]:has-text("${wh}")`);
-      if (tab) await dbLog('warehouse-tab', 'info', `Found warehouse tab: ${wh}`);
-    } catch {}
-  }
-  
   
   // ── PARSE: Extract product names and quantities ──
   const results = [];
@@ -342,16 +348,10 @@ async function scrapeInventory(page) {
   await dbLog('results', 'info', `Scraped ${results.length} products: ${results.map(r => `${r.product_name}(${r.units_on_hand})`).join(', ')}`);
 
   
-  // Determine CA vs US region per product
+  // All products from Mintsoft are UK
   for (const r of results) {
-    const whLower = (r.warehouse || '').toLowerCase();
-    if (whLower.includes('us') || whLower.includes('united states') || whLower.includes('fontana') || whLower.includes('la') || whLower.includes('los angeles')) {
-      r.region = 'US';
-      r.channel = '3PL US';
-    } else {
-      r.region = 'Canada';
-      r.channel = '3PL CA';
-    }
+    r.region = 'UK';
+    r.channel = '3PL UK';
     r.channel_type = '3PL';
   }
   
@@ -361,8 +361,8 @@ async function scrapeInventory(page) {
 (async () => {
   let browser;
   try {
-    console.log('🚀 inventory-sync-forceget.js v1.2 starting...');
-    await dbLog('start', 'info', 'Script v1.2 starting');
+    console.log('🚀 inventory-sync-mintsoft.js v1.0 starting...');
+    await dbLog('start', 'info', 'Script v1.0 starting');
     browser = await chromium.launch({ headless: false });
     const page = await browser.newPage();
 
@@ -370,7 +370,7 @@ async function scrapeInventory(page) {
     const products = await scrapeInventory(page);
 
     const result = {
-      warehouse: 'forceget',
+      warehouse: 'mintsoft',
       run_id: RUN_ID,
       timestamp: new Date().toISOString(),
       products,
@@ -380,13 +380,13 @@ async function scrapeInventory(page) {
 
     await updateTaskResult(result);
     console.log(`\n✅ Found ${products.length} products, ${result.total_units} total units`);
-    for (const p of products) console.log(`   ${p.product_name} @ ${p.region}: ${p.units_on_hand}`);
+    for (const p of products) console.log(`   ${p.product_name}: ${p.units_on_hand}`);
     await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} units`);
     await dbShot(page, 'complete', 'Final state');
   } catch (err) {
     console.error('❌ Fatal:', err.message);
     await dbLog('fatal', 'error', `${err.message}\n${err.stack}`);
-    await updateTaskResult({ warehouse: 'forceget', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
+    await updateTaskResult({ warehouse: 'mintsoft', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
   } finally {
     if (browser) await browser.close();
     await new Promise(r => setTimeout(r, 2000));

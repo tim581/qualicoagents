@@ -1,11 +1,14 @@
 /**
- * inventory-sync-forceget.js  v1.2 — Scrape Forceget CA/US 3PL inventory
+ * inventory-sync-kamps.js  v1.0 — Scrape Kamps/Vanthiel EU 3PL inventory
  *
- * v1.2 changes:
- *   - page.fill() as primary password method (handles special chars)
- *   - Better fallback chain: fill → evaluate → type
- *   - Added login retry with fresh page on failure
- *   - Version header updated
+ * Portal: https://kampspijnacker.coraxwms.nl
+ * Login: Microsoft SSO → qualico@coraxwms.nl / Jt_58bEAKP!iJyW
+ * ⚠️ May require MFA — if MFA appears, script logs it and stops
+ * Products: EU/NL-based Puzzlup stock at Vanthiel/Kamps Pijnacker
+ *
+ * NOTE: Kamps WMS tracks stock in "colli" (master cartons), not units.
+ * Conversion: units = colli × units_per_master (from Puzzlup_Product_Info)
+ * The agent handles this conversion after scraping — script returns raw colli.
  *
  * Prerequisites: node playwright-task-executor.js on Tim's PC
  */
@@ -14,11 +17,10 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 
-const SITE_URL      = 'https://app.forceget.com';
-const INVENTORY_URL = 'https://app.forceget.com/inventory-management/inventory';
-const SITE_EMAIL    = 'tim@qualico.be';
-const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG]';
-const WAREHOUSE_NAME = 'Forceget';
+const SITE_URL      = 'https://kampspijnacker.coraxwms.nl';
+const SITE_EMAIL    = 'qualico@coraxwms.nl';
+const SITE_PASSWORD = 'Jt_58bEAKP!iJyW';
+const WAREHOUSE_NAME = 'Kamps/Vanthiel';
 
 
 function matchProductName(text) {
@@ -40,7 +42,7 @@ function matchProductName(text) {
 }
 
 
-const RUN_ID = `forceget_inv_${Date.now()}`;
+const RUN_ID = `kamps_inv_${Date.now()}`;
 console.log(`🔍 Debug run ID: ${RUN_ID}`);
 console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'\n`);
 
@@ -99,138 +101,183 @@ async function updateTaskResult(resultData) {
 }
 
 
+// ── MICROSOFT SSO LOGIN ──────────────────────────────────────────────────────
+// Microsoft SSO has a multi-step flow:
+// 1. Redirect to login.microsoftonline.com
+// 2. Enter email → Next
+// 3. Enter password → Sign in
+// 4. Possibly "Stay signed in?" → No/Yes
+// 5. Possibly MFA prompt → script stops
+// 6. Redirect back to Kamps portal
 
 async function login(page) {
-  console.log('\n🔐 Logging in...');
-  await dbLog('login', 'info', 'Navigating to site...');
-  await page.goto('https://app.forceget.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(4000);
-  await dbShot(page, 'login-page', 'Initial page load');
+  console.log('\n🔐 Logging in via Microsoft SSO...');
+  await dbLog('login', 'info', 'Navigating to Kamps portal...');
+  
+  await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  await page.waitForTimeout(5000);
+  
+  await dbShot(page, 'login-page', 'Initial page / SSO redirect');
   await dbLog('login', 'info', `Current URL: ${page.url()}`);
-
+  
   // Check if already logged in
-  if (page.url().includes('/dashboard') || page.url().includes('/inventory')) {
+  if (!page.url().includes('login') && !page.url().includes('microsoftonline')) {
     await dbLog('login', 'success', 'Already logged in!');
     return;
   }
-
-  // Fill email — try multiple selectors
-  const emailSels = ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 
-                     'input[name="UserName"]', 'input[id*="mail" i]', 'input[id*="user" i]',
-                     'input[placeholder*="email" i]', 'input[placeholder*="user" i]'];
-  let emailFilled = false;
-  for (const sel of emailSels) {
-    try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await page.fill(sel, SITE_EMAIL);
-        await dbLog('login', 'info', `Email filled via ${sel}`);
-        emailFilled = true;
-        break;
-      }
-    } catch {}
+  
+  // ── Step 1: Enter email ──
+  try {
+    const emailSel = 'input[type="email"], input[name="loginfmt"], input[name="login"]';
+    await page.waitForSelector(emailSel, { timeout: 15000 });
+    await page.fill(emailSel, SITE_EMAIL);
+    await dbLog('login', 'info', 'Email filled on Microsoft page');
+    
+    // Click Next
+    const nextBtn = await page.$('input[type="submit"][value="Next"], input[type="submit"], #idSIButton9');
+    if (nextBtn) {
+      await nextBtn.click();
+      await dbLog('login', 'info', 'Clicked Next');
+    } else {
+      await page.keyboard.press('Enter');
+    }
+    await page.waitForTimeout(3000);
+  } catch (e) {
+    await dbLog('login', 'error', `Email step failed: ${e.message}`);
+    await dbShot(page, 'login-email-fail', 'Email step failed');
   }
-  if (!emailFilled) {
-    await dbLog('login', 'error', 'Could not find email field!');
-    await dbShot(page, 'login-no-email', 'Email field not found');
-  }
-
-  // Fill password — page.fill() first (handles special chars well)
-  const pwSels = ['input[type="password"]', 'input[name="password"]', 'input[name="Password"]',
-                  'input[id*="pass" i]'];
-  let pwFilled = false;
-  for (const sel of pwSels) {
+  
+  await dbShot(page, 'login-after-email', 'After email entry');
+  
+  // ── Step 2: Enter password ──
+  try {
+    const pwSel = 'input[type="password"], input[name="passwd"]';
+    await page.waitForSelector(pwSel, { timeout: 15000 });
+    
+    // page.fill() first
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        // Method 1: page.fill() — best for most forms
-        try {
-          await page.fill(sel, SITE_PASSWORD);
-          pwFilled = true;
-          await dbLog('login', 'info', `Password filled via page.fill(${sel})`);
-          break;
-        } catch (fillErr) {
-          await dbLog('login', 'warning', `page.fill failed: ${fillErr.message}`);
-          // Method 2: evaluate with native setter
-          try {
-            await page.evaluate((opts) => {
-              const el = document.querySelector(opts.sel);
-              if (el) {
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, opts.pw);
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }, {sel, pw: SITE_PASSWORD});
-            pwFilled = true;
-            await dbLog('login', 'info', 'Password filled via evaluate()');
-            break;
-          } catch (evalErr) {
-            await dbLog('login', 'warning', `evaluate() failed: ${evalErr.message}`);
-            // Method 3: click + type
-            try {
-              await page.click(sel);
-              await page.keyboard.type(SITE_PASSWORD, { delay: 30 });
-              pwFilled = true;
-              await dbLog('login', 'info', 'Password filled via keyboard.type()');
-              break;
-            } catch {}
-          }
+      await page.fill(pwSel, SITE_PASSWORD);
+      await dbLog('login', 'info', 'Password filled via page.fill');
+    } catch {
+      // Fallback: evaluate
+      await page.evaluate((opts) => {
+        const el = document.querySelector(opts.sel);
+        if (el) {
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          setter.call(el, opts.pw);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
         }
+      }, {sel: pwSel, pw: SITE_PASSWORD});
+      await dbLog('login', 'info', 'Password filled via evaluate');
+    }
+    
+    // Click Sign In
+    const signInBtn = await page.$('input[type="submit"][value="Sign in"], input[type="submit"], #idSIButton9');
+    if (signInBtn) {
+      await signInBtn.click();
+      await dbLog('login', 'info', 'Clicked Sign in');
+    } else {
+      await page.keyboard.press('Enter');
+    }
+    await page.waitForTimeout(5000);
+  } catch (e) {
+    await dbLog('login', 'error', `Password step failed: ${e.message}`);
+    await dbShot(page, 'login-pw-fail', 'Password step failed');
+  }
+  
+  await dbShot(page, 'login-after-pw', 'After password entry');
+  
+  // ── Step 3: "Stay signed in?" prompt ──
+  try {
+    const staySignedIn = await page.$('input[type="submit"][value="No"], #idBtn_Back, input[type="submit"][value="Yes"], #idSIButton9');
+    if (staySignedIn) {
+      // Click "Yes" to stay signed in (avoids this prompt next time)
+      const yesBtn = await page.$('#idSIButton9, input[type="submit"][value="Yes"]');
+      if (yesBtn) {
+        await yesBtn.click();
+        await dbLog('login', 'info', 'Clicked Yes on "Stay signed in"');
+      } else {
+        await staySignedIn.click();
+        await dbLog('login', 'info', 'Clicked button on "Stay signed in" prompt');
       }
-    } catch {}
+      await page.waitForTimeout(5000);
+    }
+  } catch {}
+  
+  // ── Step 4: Check for MFA ──
+  const url = page.url();
+  if (url.includes('microsoftonline') || url.includes('login')) {
+    // Could be MFA
+    const pageText = await page.evaluate(() => document.body.innerText);
+    if (pageText.includes('Verify') || pageText.includes('authenticator') || pageText.includes('code') || pageText.includes('approve')) {
+      await dbLog('login', 'error', 'MFA DETECTED — script cannot proceed. Tim must approve on phone/authenticator.');
+      await dbShot(page, 'mfa-detected', 'MFA prompt');
+      // Wait 60s for Tim to manually approve
+      console.log('\n⏳ MFA detected! Waiting 60s for manual approval...');
+      await page.waitForTimeout(60000);
+      await dbLog('login', 'info', `URL after MFA wait: ${page.url()}`);
+    }
   }
-  if (!pwFilled) {
-    await dbLog('login', 'error', 'Could not fill password!');
-    await dbShot(page, 'login-no-pw', 'Password not filled');
-  }
-
-  await dbShot(page, 'login-filled', 'Credentials filled');
-
-  // Click submit
-  const btnSels = ['button[type="submit"]', 'input[type="submit"]',
-                   'button:has-text("Sign In")', 'button:has-text("Log In")',
-                   'button:has-text("Login")', 'button:has-text("Inloggen")',
-                   'input[value="Log On"]', 'input[value="Login"]'];
-  let clicked = false;
-  for (const sel of btnSels) {
-    try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await el.click();
-        clicked = true;
-        await dbLog('login', 'info', `Clicked ${sel}`);
-        break;
-      }
-    } catch {}
-  }
-  if (!clicked) {
-    await page.keyboard.press('Enter');
-    await dbLog('login', 'info', 'Pressed Enter as fallback');
-  }
-
-  await page.waitForTimeout(6000);
+  
   await dbLog('login', 'success', `Post-login URL: ${page.url()}`);
   await dbShot(page, 'login-done', 'After login');
 }
 
-
 async function scrapeInventory(page) {
-  console.log('\n📦 Navigating to inventory page...');
-  await dbLog('inventory', 'info', 'Navigating to inventory page...');
+  console.log('\n📦 Navigating to stock/inventory page...');
+  await dbLog('inventory', 'info', 'Looking for stock page...');
   
-  await page.goto(INVENTORY_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(5000);
+  // Try common Corax WMS inventory URLs
+  const stockUrls = [
+    SITE_URL + '/Voorraad',
+    SITE_URL + '/Stock',
+    SITE_URL + '/Inventory',
+    SITE_URL + '/Artikelen',
+    SITE_URL + '/Products',
+  ];
   
-  // Check if we got redirected back to login
-  if (page.url().includes('/login')) {
-    await dbLog('inventory', 'error', 'Redirected to login — authentication failed');
-    await dbShot(page, 'inventory-redirect', 'Redirected to login');
-    return [];
+  // First, discover the main navigation
+  await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  await page.waitForTimeout(3000);
+  
+  // Log navigation structure
+  const navLinks = await page.evaluate(() => {
+    return Array.from(document.querySelectorAll('nav a, .sidebar a, .menu a, a[href]'))
+      .map(a => ({ text: a.textContent.trim(), href: a.getAttribute('href') }))
+      .filter(l => l.text.length > 0 && l.text.length < 50)
+      .slice(0, 40);
+  });
+  await dbLog('navigation', 'info', JSON.stringify(navLinks).substring(0, 3000));
+  
+  // Try to find stock/voorraad link
+  let stockLink = navLinks.find(l => 
+    l.text.toLowerCase().includes('voorraad') || 
+    l.text.toLowerCase().includes('stock') || 
+    l.text.toLowerCase().includes('inventory')
+  );
+  
+  if (stockLink && stockLink.href) {
+    const fullUrl = stockLink.href.startsWith('http') ? stockLink.href : SITE_URL + stockLink.href;
+    await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+    await dbLog('inventory', 'info', `Navigated to: ${fullUrl}`);
+  } else {
+    // Try URLs directly
+    for (const url of stockUrls) {
+      try {
+        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(2000);
+        if (!page.url().includes('login') && !page.url().includes('error')) {
+          await dbLog('inventory', 'info', `Found page at: ${url}`);
+          break;
+        }
+      } catch {}
+    }
   }
   
   await dbLog('inventory', 'info', `On page: ${page.url()}`);
-  await dbShot(page, 'inventory-page', 'Inventory page loaded');
+  await dbShot(page, 'inventory-page', 'Stock page loaded');
   
   
   // ── DISCOVERY: Log page structure ──
@@ -289,15 +336,6 @@ async function scrapeInventory(page) {
   }
 
   
-  // ── Check for warehouse tabs (CA vs US) ──
-  const warehouseNames = ['Toronto', 'Canada', 'CA', 'United States', 'US', 'USA', 'Los Angeles', 'LA', 'Fontana'];
-  for (const wh of warehouseNames) {
-    try {
-      const tab = await page.$(`button:has-text("${wh}"), a:has-text("${wh}"), [role="tab"]:has-text("${wh}")`);
-      if (tab) await dbLog('warehouse-tab', 'info', `Found warehouse tab: ${wh}`);
-    } catch {}
-  }
-  
   
   // ── PARSE: Extract product names and quantities ──
   const results = [];
@@ -342,17 +380,13 @@ async function scrapeInventory(page) {
   await dbLog('results', 'info', `Scraped ${results.length} products: ${results.map(r => `${r.product_name}(${r.units_on_hand})`).join(', ')}`);
 
   
-  // Determine CA vs US region per product
+  // All products from Kamps are EU
   for (const r of results) {
-    const whLower = (r.warehouse || '').toLowerCase();
-    if (whLower.includes('us') || whLower.includes('united states') || whLower.includes('fontana') || whLower.includes('la') || whLower.includes('los angeles')) {
-      r.region = 'US';
-      r.channel = '3PL US';
-    } else {
-      r.region = 'Canada';
-      r.channel = '3PL CA';
-    }
+    r.region = 'Europe';
+    r.channel = '3PL EU';
     r.channel_type = '3PL';
+    // NOTE: Kamps may report in "colli" (master cartons) — agent converts to units
+    r.unit_type = 'unknown'; // Agent must verify if colli or units
   }
   
   return results;
@@ -361,8 +395,8 @@ async function scrapeInventory(page) {
 (async () => {
   let browser;
   try {
-    console.log('🚀 inventory-sync-forceget.js v1.2 starting...');
-    await dbLog('start', 'info', 'Script v1.2 starting');
+    console.log('🚀 inventory-sync-kamps.js v1.0 starting...');
+    await dbLog('start', 'info', 'Script v1.0 starting');
     browser = await chromium.launch({ headless: false });
     const page = await browser.newPage();
 
@@ -370,23 +404,24 @@ async function scrapeInventory(page) {
     const products = await scrapeInventory(page);
 
     const result = {
-      warehouse: 'forceget',
+      warehouse: 'kamps',
       run_id: RUN_ID,
       timestamp: new Date().toISOString(),
       products,
       total_units: products.reduce((s, r) => s + r.units_on_hand, 0),
       product_count: products.length,
+      note: 'Kamps may report colli (cartons) not units — verify and multiply by units_per_master if needed',
     };
 
     await updateTaskResult(result);
-    console.log(`\n✅ Found ${products.length} products, ${result.total_units} total units`);
-    for (const p of products) console.log(`   ${p.product_name} @ ${p.region}: ${p.units_on_hand}`);
-    await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} units`);
+    console.log(`\n✅ Found ${products.length} products, ${result.total_units} total`);
+    for (const p of products) console.log(`   ${p.product_name}: ${p.units_on_hand}`);
+    await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} total`);
     await dbShot(page, 'complete', 'Final state');
   } catch (err) {
     console.error('❌ Fatal:', err.message);
     await dbLog('fatal', 'error', `${err.message}\n${err.stack}`);
-    await updateTaskResult({ warehouse: 'forceget', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
+    await updateTaskResult({ warehouse: 'kamps', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
   } finally {
     if (browser) await browser.close();
     await new Promise(r => setTimeout(r, 2000));
