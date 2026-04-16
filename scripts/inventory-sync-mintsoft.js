@@ -1,394 +1,242 @@
-/**
- * inventory-sync-mintsoft.js  v1.0 — Scrape Mintsoft/WePrepFBA UK 3PL inventory
- *
- * Portal: https://om.mintsoft.co.uk
- * Login: tim@qualico.be / password (special chars — use page.fill)
- * Products: UK-based Puzzlup stock at WePrepFBA Ipswich
- *
- * Prerequisites: node playwright-task-executor.js on Tim's PC
- */
+// inventory-sync-mintsoft.js v1.1 — UK 3PL (WePrepFBA) inventory sync
+// CONFIRMED SELECTORS from browser inspection:
+//   - Username: input[name="username"]  (type="text", placeholder="UserName")
+//   - Password: input[name="password"]  (type="password", placeholder="Password")
+//   - Submit: button with "Sign In" text
+//   - Inventory: Product Overview table at /Product/, "Inventory" column = warehouse breakdown
+//   - Format: "WarehouseName\nCount\nWarehouseName\nCount"
+//   - Main warehouse: WP_Raeburn (our 3PL stock)
+//   - 11 products, 2 pages (set pageSize=100 to get all)
 
-'use strict';
+const { chromium } = require('playwright-core');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
-const { chromium } = require('playwright');
 
-const SITE_URL      = 'https://om.mintsoft.co.uk/UserAccount/LogOn';
-const SITE_EMAIL    = 'tim@qualico.be';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const SITE_URL = 'https://om.mintsoft.co.uk/UserAccount/LogOn?ReturnUrl=%2fProduct%2f&signInOptions=false';
+const SITE_EMAIL = 'tim@qualico.be';
 const SITE_PASSWORD = ':(=efV\\5CzI[-KJYtoHA';
-const WAREHOUSE_NAME = 'Mintsoft/WePrepFBA';
-
-
-function matchProductName(text) {
-  const t = (text || '').toUpperCase();
-  if (t.includes('1000') && (t.includes('GIFT') || t.includes('MAT'))) return 'MAT 1000 GIFT';
-  if (t.includes('5000') && (t.includes('GIFT') || t.includes('MAT'))) return 'MAT 5000 GIFT';
-  if (t.includes('3000') && (t.includes('GIFT') || t.includes('MAT')) && !t.includes('TRAY') && !t.includes('ECO')) return 'MAT 3000 GIFT';
-  if (t.includes('1500') && t.includes('LUX')) return 'MAT 1500 LUX';
-  if (t.includes('1500') && t.includes('ECO')) return 'MAT 1500 ECO';
-  if (t.includes('3000') && t.includes('ECO')) return 'MAT 3000 ECO';
-  if (t.includes('1500') && t.includes('WHITE') && t.includes('TRAY')) return 'TRAYS 1500 WHITE';
-  if (t.includes('1500') && t.includes('WHITE') && !t.includes('TRAY')) return 'MAT 1500 WHITE';
-  if (t.includes('1500') && (t.includes('GIFT') || t.includes('MAT')) && !t.includes('TRAY') && !t.includes('LUX') && !t.includes('ECO') && !t.includes('WHITE')) return 'MAT 1500 GIFT';
-  if (t.includes('TRAY') && t.includes('BLACK') && t.includes('1500')) return 'TRAYS 1500 BLACK';
-  if (t.includes('TRAY') && (t.includes('3000') || t.includes('DOUBLE'))) return 'TRAYS 3000 BLACK';
-  if (t.includes('TRAY') && t.includes('WHITE')) return 'TRAYS 1500 WHITE';
-  if (t.includes('BAG') && t.includes('LUX')) return 'BAG LUX 1500';
-  return null;
-}
-
+const TASK_ID = process.env.BROWSER_TASK_ID;
 
 const RUN_ID = `mintsoft_inv_${Date.now()}`;
-console.log(`🔍 Debug run ID: ${RUN_ID}`);
-console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'\n`);
 
-
-async function dbLog(step, status, message) {
-  const short = (message || '').toString().substring(0, 3000);
-  console.log(`  [DB:${status}] ${step}: ${short.substring(0, 200)}`);
+async function logDebug(step, status, message, screenshot = null) {
   try {
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
-      method: 'POST',
-      headers: {
-        'apikey': process.env.SUPABASE_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ run_id: RUN_ID, step, status, message: short }),
+    await supabase.from('Flieber_Debug_Log').insert({
+      run_id: RUN_ID, step, status, message: String(message).slice(0, 2000),
+      screenshot: screenshot ? screenshot.toString('base64') : null
     });
-  } catch (e) { /* never break the main flow */ }
+  } catch (e) { console.error('  [DB:error]', e.message); }
+  const icon = status === 'error' ? '❌' : status === 'success' ? '✅' : 'ℹ️';
+  console.log(`  [DB:${status}] ${step}: ${String(message).slice(0, 200)}`);
+  if (screenshot) console.log(`  📸 Screenshot → ${step}`);
 }
 
-async function dbShot(page, step, label) {
+async function run() {
+  console.log(`🔍 Debug run ID: ${RUN_ID}`);
+  console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'`);
+  console.log(`\n🚀 inventory-sync-mintsoft.js v1.1 starting...`);
+  await logDebug('start', 'info', 'Script v1.1 starting');
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+
   try {
-    const buf = await page.screenshot({ fullPage: false });
-    const b64 = buf.toString('base64').substring(0, 400000);
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
-      method: 'POST',
-      headers: {
-        'apikey': process.env.SUPABASE_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ run_id: RUN_ID, step, status: 'screenshot', message: label, screenshot: b64 }),
-    });
-    console.log(`  📸 Screenshot → ${step} (${label})`);
-  } catch (e) { /* never break the main flow */ }
-}
+    // === LOGIN ===
+    console.log('\n🔐 Logging in...');
+    await logDebug('login', 'info', 'Navigating to site...');
+    await page.goto(SITE_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    await logDebug('login', 'info', `Current URL: ${page.url()}`);
+    let ss = await page.screenshot(); await logDebug('login-page', 'screenshot', 'Initial page load', ss);
 
-async function updateTaskResult(resultData) {
-  const taskId = process.env.BROWSER_TASK_ID;
-  if (!taskId) { console.log('⚠️ No BROWSER_TASK_ID — skipping result update'); return; }
-  try {
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Browser_Tasks?id=eq.${taskId}`, {
-      method: 'PATCH',
-      headers: {
-        'apikey': process.env.SUPABASE_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ result: JSON.stringify(resultData) }),
-    });
-    console.log(`✅ Result written to Browser_Tasks id=${taskId}`);
-  } catch (e) { console.log(`⚠️ Failed to update task result: ${e.message}`); }
-}
-
-
-
-async function login(page) {
-  console.log('\n🔐 Logging in...');
-  await dbLog('login', 'info', 'Navigating to site...');
-  await page.goto('https://om.mintsoft.co.uk/UserAccount/LogOn', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(4000);
-  await dbShot(page, 'login-page', 'Initial page load');
-  await dbLog('login', 'info', `Current URL: ${page.url()}`);
-
-  // Check if already logged in
-  if (!page.url().includes('/LogOn') && !page.url().includes('/login')) {
-    await dbLog('login', 'success', 'Already logged in!');
-    return;
-  }
-
-  // Fill email — try multiple selectors
-  const emailSels = ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 
-                     'input[name="UserName"]', 'input[id*="mail" i]', 'input[id*="user" i]',
-                     'input[placeholder*="email" i]', 'input[placeholder*="user" i]'];
-  let emailFilled = false;
-  for (const sel of emailSels) {
+    // Fill username using page.fill (standard input, no React)
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await page.fill(sel, SITE_EMAIL);
-        await dbLog('login', 'info', `Email filled via ${sel}`);
-        emailFilled = true;
-        break;
+      await page.fill('input[name="username"]', SITE_EMAIL);
+      await logDebug('login', 'info', 'Username filled via input[name="username"]');
+    } catch (e) {
+      // Fallback: try placeholder-based selector
+      try {
+        await page.fill('input[placeholder="UserName"]', SITE_EMAIL);
+        await logDebug('login', 'info', 'Username filled via placeholder');
+      } catch (e2) {
+        await logDebug('login', 'error', `Could not fill username: ${e2.message}`);
       }
-    } catch {}
-  }
-  if (!emailFilled) {
-    await dbLog('login', 'error', 'Could not find email field!');
-    await dbShot(page, 'login-no-email', 'Email field not found');
-  }
+    }
 
-  // Fill password — page.fill() first (handles special chars well)
-  const pwSels = ['input[type="password"]', 'input[name="password"]', 'input[name="Password"]',
-                  'input[id*="pass" i]'];
-  let pwFilled = false;
-  for (const sel of pwSels) {
+    // Fill password using page.evaluate (special chars safe)
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        // Method 1: page.fill() — best for most forms
-        try {
-          await page.fill(sel, SITE_PASSWORD);
-          pwFilled = true;
-          await dbLog('login', 'info', `Password filled via page.fill(${sel})`);
-          break;
-        } catch (fillErr) {
-          await dbLog('login', 'warning', `page.fill failed: ${fillErr.message}`);
-          // Method 2: evaluate with native setter
-          try {
-            await page.evaluate((opts) => {
-              const el = document.querySelector(opts.sel);
-              if (el) {
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, opts.pw);
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }, {sel, pw: SITE_PASSWORD});
-            pwFilled = true;
-            await dbLog('login', 'info', 'Password filled via evaluate()');
-            break;
-          } catch (evalErr) {
-            await dbLog('login', 'warning', `evaluate() failed: ${evalErr.message}`);
-            // Method 3: click + type
-            try {
-              await page.click(sel);
-              await page.keyboard.type(SITE_PASSWORD, { delay: 30 });
-              pwFilled = true;
-              await dbLog('login', 'info', 'Password filled via keyboard.type()');
-              break;
-            } catch {}
-          }
+      await page.evaluate((pw) => {
+        const el = document.querySelector('input[name="password"]');
+        if (el) {
+          el.value = pw;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
         }
-      }
-    } catch {}
-  }
-  if (!pwFilled) {
-    await dbLog('login', 'error', 'Could not fill password!');
-    await dbShot(page, 'login-no-pw', 'Password not filled');
-  }
+      }, SITE_PASSWORD);
+      await logDebug('login', 'info', 'Password filled via page.evaluate');
+    } catch (e) {
+      await logDebug('login', 'error', `Could not fill password: ${e.message}`);
+    }
 
-  await dbShot(page, 'login-filled', 'Credentials filled');
+    ss = await page.screenshot(); await logDebug('login-filled', 'screenshot', 'Credentials filled', ss);
 
-  // Click submit
-  const btnSels = ['button[type="submit"]', 'input[type="submit"]',
-                   'button:has-text("Sign In")', 'button:has-text("Log In")',
-                   'button:has-text("Login")', 'button:has-text("Inloggen")',
-                   'input[value="Log On"]', 'input[value="Login"]'];
-  let clicked = false;
-  for (const sel of btnSels) {
+    // Submit
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await el.click();
-        clicked = true;
-        await dbLog('login', 'info', `Clicked ${sel}`);
-        break;
+      await page.click('button:has-text("Sign In")');
+    } catch (e) {
+      try { await page.click('input[type="submit"]'); } catch (e2) {
+        await page.keyboard.press('Enter');
+        await logDebug('login', 'info', 'Pressed Enter as fallback');
       }
-    } catch {}
-  }
-  if (!clicked) {
-    await page.keyboard.press('Enter');
-    await dbLog('login', 'info', 'Pressed Enter as fallback');
-  }
+    }
 
-  await page.waitForTimeout(6000);
-  await dbLog('login', 'success', `Post-login URL: ${page.url()}`);
-  await dbShot(page, 'login-done', 'After login');
-}
+    await page.waitForTimeout(5000);
+    await logDebug('login', page.url().includes('LogOn') ? 'error' : 'success', `Post-login URL: ${page.url()}`);
+    ss = await page.screenshot(); await logDebug('login-done', 'screenshot', 'After login', ss);
 
+    if (page.url().includes('LogOn')) {
+      await logDebug('login', 'error', 'Still on login page — authentication failed');
+      await writeResult([], browser); return;
+    }
 
-async function scrapeInventory(page) {
-  console.log('\n📦 Looking for inventory/stock page...');
-  await dbLog('inventory', 'info', 'Looking for inventory page...');
-  
-  // Mintsoft: try common inventory/products URLs
-  const inventoryUrls = [
-    'https://om.mintsoft.co.uk/Product',
-    'https://om.mintsoft.co.uk/Inventory',
-    'https://om.mintsoft.co.uk/Stock',
-    'https://om.mintsoft.co.uk/Product/Index',
-  ];
-  
-  let foundPage = false;
-  for (const url of inventoryUrls) {
-    try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(3000);
-      if (!page.url().includes('/LogOn')) {
-        await dbLog('inventory', 'info', `Found page at: ${url}`);
-        foundPage = true;
-        break;
-      }
-    } catch {}
-  }
-  
-  if (!foundPage) {
-    // Look for navigation links
-    await dbLog('inventory', 'warning', 'No direct URL worked, discovering navigation...');
-    await page.goto('https://om.mintsoft.co.uk', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    // === NAVIGATE TO PRODUCTS ===
+    console.log('\n📦 Loading products...');
+    // Try to set page size to 100 to get all products on one page
+    const productUrl = 'https://om.mintsoft.co.uk/Product/?';
+    if (!page.url().includes('/Product')) {
+      await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    }
+    await logDebug('products', 'info', `On page: ${page.url()}`);
+
+    // Wait for table to load
     await page.waitForTimeout(3000);
-  }
-  
-  await dbLog('inventory', 'info', `On page: ${page.url()}`);
-  await dbShot(page, 'inventory-page', 'Inventory/products page');
-  
-  
-  // ── DISCOVERY: Log page structure ──
-  const pageStructure = await page.evaluate(() => ({
-    title: document.title,
-    url: window.location.href,
-    h1: Array.from(document.querySelectorAll('h1,h2,h3')).map(e => e.textContent.trim()).slice(0, 15),
-    tables: document.querySelectorAll('table').length,
-    tabs: Array.from(document.querySelectorAll('[role="tab"], .tab, [class*="tab"]')).map(e => e.textContent.trim()).slice(0, 20),
-    selects: Array.from(document.querySelectorAll('select')).map(e => ({
-      name: e.name || e.id, options: Array.from(e.options).map(o => o.text).slice(0, 10)
-    })),
-    buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="button"]')).map(e => e.textContent.trim()).filter(t => t.length > 0 && t.length < 50).slice(0, 30),
-    links: Array.from(document.querySelectorAll('a[href]')).map(e => ({text: e.textContent.trim().substring(0,40), href: e.getAttribute('href')})).filter(l => l.text.length > 0).slice(0, 30),
-  }));
-  await dbLog('page-structure', 'info', JSON.stringify(pageStructure).substring(0, 3000));
-
-  // ── TABLE SCRAPE: Standard HTML table ──
-  let tableData = await page.evaluate(() => {
-    const rows = [];
-    for (const table of document.querySelectorAll('table')) {
-      const headers = Array.from(table.querySelectorAll('thead th, thead td')).map(h => h.textContent.trim());
-      for (const row of table.querySelectorAll('tbody tr')) {
-        const cells = Array.from(row.querySelectorAll('td')).map(c => c.textContent.trim());
-        if (cells.length >= 2) rows.push({ headers, cells });
+    
+    // Try to set display count to 100
+    try {
+      const pageSizeSelect = await page.$('select[name*="length"], .dataTables_length select');
+      if (pageSizeSelect) {
+        await pageSizeSelect.selectOption('100');
+        await page.waitForTimeout(3000);
+        await logDebug('products', 'info', 'Set page size to 100');
       }
+    } catch (e) {
+      await logDebug('products', 'info', 'Could not change page size, using default');
     }
-    return rows;
-  });
-  await dbLog('table-scan', 'info', `Found ${tableData.length} table rows`);
 
-  // Log first 5 rows for debugging
-  for (let i = 0; i < Math.min(5, tableData.length); i++) {
-    await dbLog(`row-${i}`, 'info', JSON.stringify(tableData[i]).substring(0, 500));
-  }
+    ss = await page.screenshot(); await logDebug('products-loaded', 'screenshot', 'Product page', ss);
 
-  // ── GRID FALLBACK: If no table rows ──
-  if (tableData.length === 0) {
-    tableData = await page.evaluate(() => {
-      const rows = [];
-      const items = document.querySelectorAll('[class*="row"], [class*="item"], [class*="product"], [role="row"], [role="gridcell"]');
-      for (const item of items) {
-        const text = item.textContent.trim();
-        if (text.length > 10 && text.length < 500) rows.push({ headers: [], cells: [text] });
-      }
-      return rows.slice(0, 50);
+    // === EXTRACT DATA ===
+    console.log('\n📊 Extracting inventory data...');
+    
+    // Get all table headers first
+    const headers = await page.evaluate(() => {
+      const ths = document.querySelectorAll('table thead th');
+      return Array.from(ths).map((th, i) => ({ index: i, text: th.innerText.trim() }));
     });
-    await dbLog('grid-scan', 'info', `Found ${tableData.length} grid items`);
-  }
+    await logDebug('headers', 'info', JSON.stringify(headers));
 
-  // ── TEXT FALLBACK: Dump page text ──
-  if (tableData.length === 0) {
-    const allText = await page.evaluate(() => document.body.innerText);
-    await dbLog('page-text-1', 'info', allText.substring(0, 3000));
-    await dbLog('page-text-2', 'info', allText.substring(3000, 6000));
-  }
+    // Extract all rows with their cell data
+    const tableData = await page.evaluate(() => {
+      const rows = document.querySelectorAll('table tbody tr');
+      return Array.from(rows).map(row => {
+        const cells = row.querySelectorAll('td');
+        return Array.from(cells).map(c => c.innerText.trim());
+      }).filter(r => r.length > 3); // filter out empty rows
+    });
+    await logDebug('table-data', 'info', `Found ${tableData.length} rows on page 1`);
 
-  
-  
-  // ── PARSE: Extract product names and quantities ──
-  const results = [];
-  if (tableData.length > 0) {
-    for (const row of tableData) {
-      const cells = row.cells;
-      const headers = (row.headers || []).map(h => h.toUpperCase());
+    // Check if there's a page 2
+    let page2Data = [];
+    try {
+      const nextPage = await page.$('a:has-text("2"), .paginate_button:has-text("2")');
+      if (nextPage) {
+        await nextPage.click();
+        await page.waitForTimeout(3000);
+        page2Data = await page.evaluate(() => {
+          const rows = document.querySelectorAll('table tbody tr');
+          return Array.from(rows).map(row => {
+            const cells = row.querySelectorAll('td');
+            return Array.from(cells).map(c => c.innerText.trim());
+          }).filter(r => r.length > 3);
+        });
+        await logDebug('table-data', 'info', `Found ${page2Data.length} rows on page 2`);
+      }
+    } catch (e) {
+      await logDebug('pagination', 'info', `No page 2 or error: ${e.message}`);
+    }
+
+    const allData = [...tableData, ...page2Data];
+
+    // Find the column indices
+    const skuIdx = headers.findIndex(h => h.text.toLowerCase() === 'sku');
+    const nameIdx = headers.findIndex(h => h.text.toLowerCase() === 'name');
+    const inventoryIdx = headers.findIndex(h => h.text.toLowerCase() === 'inventory');
+    
+    await logDebug('columns', 'info', `SKU col=${skuIdx}, Name col=${nameIdx}, Inventory col=${inventoryIdx}`);
+
+    // Parse inventory data
+    const products = [];
+    for (const row of allData) {
+      if (row.length <= Math.max(skuIdx, nameIdx, inventoryIdx)) continue;
       
-      let productText = '';
-      let qty = 0;
-      let warehouse = '';
+      const sku = skuIdx >= 0 ? row[skuIdx] : '';
+      const name = nameIdx >= 0 ? row[nameIdx] : '';
+      const inventoryRaw = inventoryIdx >= 0 ? row[inventoryIdx] : '';
       
-      const pCol = headers.findIndex(h => h.includes('PRODUCT') || h.includes('SKU') || h.includes('NAME') || h.includes('DESCRIPTION') || h.includes('ARTICLE') || h.includes('ARTIKEL'));
-      const qCol = headers.findIndex(h => h.includes('AVAILABLE') || h.includes('QTY') || h.includes('ON HAND') || h.includes('STOCK') || h.includes('QUANTITY') || h.includes('VOORRAAD') || h.includes('COLLI') || h.includes('UNITS'));
-      const wCol = headers.findIndex(h => h.includes('WAREHOUSE') || h.includes('LOCATION') || h.includes('MAGAZIJN'));
-      
-      productText = (pCol >= 0 && pCol < cells.length) ? cells[pCol] : cells[0] || '';
-      
-      if (qCol >= 0 && qCol < cells.length) {
-        qty = parseInt(cells[qCol].replace(/[^0-9-]/g, ''), 10) || 0;
-      } else {
-        for (let i = 1; i < cells.length; i++) {
-          const num = parseInt(cells[i].replace(/[^0-9-]/g, ''), 10);
-          if (!isNaN(num) && num >= 0) { qty = num; break; }
+      // Parse warehouse breakdown: "WarehouseName\nCount\nWarehouseName\nCount"
+      let totalStock = 0;
+      const warehouses = {};
+      if (inventoryRaw) {
+        const parts = inventoryRaw.split('\n');
+        for (let i = 0; i < parts.length - 1; i += 2) {
+          const whName = parts[i].trim();
+          const whCount = parseInt(parts[i + 1]) || 0;
+          warehouses[whName] = whCount;
+          totalStock += whCount;
         }
       }
-      
-      if (wCol >= 0 && wCol < cells.length) warehouse = cells[wCol];
-      
-      const stdName = matchProductName(productText);
-      if (stdName) {
-        results.push({
-          product_name: stdName,
-          units_on_hand: qty,
-          warehouse: warehouse || WAREHOUSE_NAME,
-          raw_name: productText,
-        });
-      }
-    }
-  }
-  
-  await dbLog('results', 'info', `Scraped ${results.length} products: ${results.map(r => `${r.product_name}(${r.units_on_hand})`).join(', ')}`);
 
-  
-  // All products from Mintsoft are UK
-  for (const r of results) {
-    r.region = 'UK';
-    r.channel = '3PL UK';
-    r.channel_type = '3PL';
+      products.push({
+        sku,
+        name, // This is the EAN barcode
+        total_stock: totalStock,
+        warehouses,
+        wp_raeburn: warehouses['WP_Raeburn'] || 0,
+        we_prep_fba: warehouses['We Prep FBA'] || 0
+      });
+    }
+
+    await logDebug('results', 'info', `Parsed ${products.length} products: ${JSON.stringify(products.map(p => ({sku: p.sku, total: p.total_stock, raeburn: p.wp_raeburn})))}`);
+
+    console.log(`\n✅ Found ${products.length} products, ${products.reduce((s, p) => s + p.total_stock, 0)} total units`);
+    await logDebug('complete', 'success', `Finished: ${products.length} products, ${products.reduce((s, p) => s + p.total_stock, 0)} units`);
+    ss = await page.screenshot(); await logDebug('complete', 'screenshot', 'Final state', ss);
+
+    await writeResult(products, browser);
+  } catch (err) {
+    await logDebug('fatal', 'error', `${err.message}\n${err.stack}`);
+    await writeResult([], browser);
   }
-  
-  return results;
 }
 
-(async () => {
-  let browser;
-  try {
-    console.log('🚀 inventory-sync-mintsoft.js v1.0 starting...');
-    await dbLog('start', 'info', 'Script v1.0 starting');
-    browser = await chromium.launch({ headless: false });
-    const page = await browser.newPage();
-
-    await login(page);
-    const products = await scrapeInventory(page);
-
-    const result = {
-      warehouse: 'mintsoft',
-      run_id: RUN_ID,
-      timestamp: new Date().toISOString(),
-      products,
-      total_units: products.reduce((s, r) => s + r.units_on_hand, 0),
-      product_count: products.length,
-    };
-
-    await updateTaskResult(result);
-    console.log(`\n✅ Found ${products.length} products, ${result.total_units} total units`);
-    for (const p of products) console.log(`   ${p.product_name}: ${p.units_on_hand}`);
-    await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} units`);
-    await dbShot(page, 'complete', 'Final state');
-  } catch (err) {
-    console.error('❌ Fatal:', err.message);
-    await dbLog('fatal', 'error', `${err.message}\n${err.stack}`);
-    await updateTaskResult({ warehouse: 'mintsoft', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
-  } finally {
-    if (browser) await browser.close();
-    await new Promise(r => setTimeout(r, 2000));
+async function writeResult(products, browser) {
+  if (TASK_ID) {
+    try {
+      await supabase.from('Browser_Tasks').update({
+        result: { products, run_id: RUN_ID, version: 'v1.1' },
+        status: 'done', completed_at: new Date().toISOString()
+      }).eq('id', TASK_ID);
+      console.log(`✅ Result written to Browser_Tasks id=${TASK_ID}`);
+    } catch (e) { console.error('Failed to write result:', e.message); }
   }
-})();
+  await browser.close();
+}
+
+run().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});

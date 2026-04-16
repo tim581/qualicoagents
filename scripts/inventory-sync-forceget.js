@@ -1,394 +1,206 @@
-/**
- * inventory-sync-forceget.js  v1.2 — Scrape Forceget CA/US 3PL inventory
- *
- * v1.2 changes:
- *   - page.fill() as primary password method (handles special chars)
- *   - Better fallback chain: fill → evaluate → type
- *   - Added login retry with fresh page on failure
- *   - Version header updated
- *
- * Prerequisites: node playwright-task-executor.js on Tim's PC
- */
+// inventory-sync-forceget.js v1.3 — CA + US 3PL (Forceget) inventory sync
+// ISSUE: page.fill() fills the field but React doesn't pick up the value
+// FIX v1.3: Use page.type() with delay for password input (triggers React onChange)
+// ALSO: Use triple-click + type to clear and replace field content
 
-'use strict';
+const { chromium } = require('playwright-core');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
-const { chromium } = require('playwright');
 
-const SITE_URL      = 'https://app.forceget.com';
-const INVENTORY_URL = 'https://app.forceget.com/inventory-management/inventory';
-const SITE_EMAIL    = 'tim@qualico.be';
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const SITE_URL = 'https://app.forceget.com/system/account/login';
+const INV_URL = 'https://app.forceget.com/inventory-management/inventory';
+const SITE_EMAIL = 'tim@qualico.be';
 const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG]';
-const WAREHOUSE_NAME = 'Forceget';
-
-
-function matchProductName(text) {
-  const t = (text || '').toUpperCase();
-  if (t.includes('1000') && (t.includes('GIFT') || t.includes('MAT'))) return 'MAT 1000 GIFT';
-  if (t.includes('5000') && (t.includes('GIFT') || t.includes('MAT'))) return 'MAT 5000 GIFT';
-  if (t.includes('3000') && (t.includes('GIFT') || t.includes('MAT')) && !t.includes('TRAY') && !t.includes('ECO')) return 'MAT 3000 GIFT';
-  if (t.includes('1500') && t.includes('LUX')) return 'MAT 1500 LUX';
-  if (t.includes('1500') && t.includes('ECO')) return 'MAT 1500 ECO';
-  if (t.includes('3000') && t.includes('ECO')) return 'MAT 3000 ECO';
-  if (t.includes('1500') && t.includes('WHITE') && t.includes('TRAY')) return 'TRAYS 1500 WHITE';
-  if (t.includes('1500') && t.includes('WHITE') && !t.includes('TRAY')) return 'MAT 1500 WHITE';
-  if (t.includes('1500') && (t.includes('GIFT') || t.includes('MAT')) && !t.includes('TRAY') && !t.includes('LUX') && !t.includes('ECO') && !t.includes('WHITE')) return 'MAT 1500 GIFT';
-  if (t.includes('TRAY') && t.includes('BLACK') && t.includes('1500')) return 'TRAYS 1500 BLACK';
-  if (t.includes('TRAY') && (t.includes('3000') || t.includes('DOUBLE'))) return 'TRAYS 3000 BLACK';
-  if (t.includes('TRAY') && t.includes('WHITE')) return 'TRAYS 1500 WHITE';
-  if (t.includes('BAG') && t.includes('LUX')) return 'BAG LUX 1500';
-  return null;
-}
-
+const TASK_ID = process.env.BROWSER_TASK_ID;
 
 const RUN_ID = `forceget_inv_${Date.now()}`;
-console.log(`🔍 Debug run ID: ${RUN_ID}`);
-console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'\n`);
 
-
-async function dbLog(step, status, message) {
-  const short = (message || '').toString().substring(0, 3000);
-  console.log(`  [DB:${status}] ${step}: ${short.substring(0, 200)}`);
+async function logDebug(step, status, message, screenshot = null) {
   try {
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
-      method: 'POST',
-      headers: {
-        'apikey': process.env.SUPABASE_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ run_id: RUN_ID, step, status, message: short }),
+    await supabase.from('Flieber_Debug_Log').insert({
+      run_id: RUN_ID, step, status, message: String(message).slice(0, 2000),
+      screenshot: screenshot ? screenshot.toString('base64') : null
     });
-  } catch (e) { /* never break the main flow */ }
+  } catch (e) { console.error('  [DB:error]', e.message); }
+  console.log(`  [DB:${status}] ${step}: ${String(message).slice(0, 200)}`);
+  if (screenshot) console.log(`  📸 Screenshot → ${step}`);
 }
 
-async function dbShot(page, step, label) {
+async function run() {
+  console.log(`🔍 Debug run ID: ${RUN_ID}`);
+  console.log(`\n🚀 inventory-sync-forceget.js v1.3 starting...`);
+  await logDebug('start', 'info', 'Script v1.3 starting');
+
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await context.newPage();
+
   try {
-    const buf = await page.screenshot({ fullPage: false });
-    const b64 = buf.toString('base64').substring(0, 400000);
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
-      method: 'POST',
-      headers: {
-        'apikey': process.env.SUPABASE_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ run_id: RUN_ID, step, status: 'screenshot', message: label, screenshot: b64 }),
-    });
-    console.log(`  📸 Screenshot → ${step} (${label})`);
-  } catch (e) { /* never break the main flow */ }
-}
+    // === LOGIN ===
+    console.log('\n🔐 Logging in...');
+    await page.goto(SITE_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    let ss = await page.screenshot(); await logDebug('login-page', 'screenshot', 'Initial page load', ss);
+    await logDebug('login', 'info', `Current URL: ${page.url()}`);
 
-async function updateTaskResult(resultData) {
-  const taskId = process.env.BROWSER_TASK_ID;
-  if (!taskId) { console.log('⚠️ No BROWSER_TASK_ID — skipping result update'); return; }
-  try {
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Browser_Tasks?id=eq.${taskId}`, {
-      method: 'PATCH',
-      headers: {
-        'apikey': process.env.SUPABASE_KEY,
-        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'return=minimal',
-      },
-      body: JSON.stringify({ result: JSON.stringify(resultData) }),
-    });
-    console.log(`✅ Result written to Browser_Tasks id=${taskId}`);
-  } catch (e) { console.log(`⚠️ Failed to update task result: ${e.message}`); }
-}
-
-
-
-async function login(page) {
-  console.log('\n🔐 Logging in...');
-  await dbLog('login', 'info', 'Navigating to site...');
-  await page.goto('https://app.forceget.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(4000);
-  await dbShot(page, 'login-page', 'Initial page load');
-  await dbLog('login', 'info', `Current URL: ${page.url()}`);
-
-  // Check if already logged in
-  if (page.url().includes('/dashboard') || page.url().includes('/inventory')) {
-    await dbLog('login', 'success', 'Already logged in!');
-    return;
-  }
-
-  // Fill email — try multiple selectors
-  const emailSels = ['input[type="email"]', 'input[name="email"]', 'input[name="username"]', 
-                     'input[name="UserName"]', 'input[id*="mail" i]', 'input[id*="user" i]',
-                     'input[placeholder*="email" i]', 'input[placeholder*="user" i]'];
-  let emailFilled = false;
-  for (const sel of emailSels) {
+    // Fill email — try page.type with delay (triggers React onChange)
+    const emailSel = 'input[type="email"]';
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await page.fill(sel, SITE_EMAIL);
-        await dbLog('login', 'info', `Email filled via ${sel}`);
-        emailFilled = true;
-        break;
-      }
-    } catch {}
-  }
-  if (!emailFilled) {
-    await dbLog('login', 'error', 'Could not find email field!');
-    await dbShot(page, 'login-no-email', 'Email field not found');
-  }
+      await page.click(emailSel);
+      await page.fill(emailSel, ''); // clear first
+      await page.type(emailSel, SITE_EMAIL, { delay: 20 });
+      await logDebug('login', 'info', 'Email typed via page.type()');
+    } catch (e) {
+      await logDebug('login', 'error', `Email fill failed: ${e.message}`);
+    }
 
-  // Fill password — page.fill() first (handles special chars well)
-  const pwSels = ['input[type="password"]', 'input[name="password"]', 'input[name="Password"]',
-                  'input[id*="pass" i]'];
-  let pwFilled = false;
-  for (const sel of pwSels) {
+    // Fill password — CRITICAL: use page.type with delay for React inputs
+    const pwSel = 'input[type="password"]';
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        // Method 1: page.fill() — best for most forms
-        try {
-          await page.fill(sel, SITE_PASSWORD);
-          pwFilled = true;
-          await dbLog('login', 'info', `Password filled via page.fill(${sel})`);
-          break;
-        } catch (fillErr) {
-          await dbLog('login', 'warning', `page.fill failed: ${fillErr.message}`);
-          // Method 2: evaluate with native setter
-          try {
-            await page.evaluate((opts) => {
-              const el = document.querySelector(opts.sel);
-              if (el) {
-                const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-                setter.call(el, opts.pw);
-                el.dispatchEvent(new Event('input', { bubbles: true }));
-                el.dispatchEvent(new Event('change', { bubbles: true }));
-              }
-            }, {sel, pw: SITE_PASSWORD});
-            pwFilled = true;
-            await dbLog('login', 'info', 'Password filled via evaluate()');
-            break;
-          } catch (evalErr) {
-            await dbLog('login', 'warning', `evaluate() failed: ${evalErr.message}`);
-            // Method 3: click + type
-            try {
-              await page.click(sel);
-              await page.keyboard.type(SITE_PASSWORD, { delay: 30 });
-              pwFilled = true;
-              await dbLog('login', 'info', 'Password filled via keyboard.type()');
-              break;
-            } catch {}
-          }
+      await page.click(pwSel);
+      await page.fill(pwSel, ''); // clear first
+      // Use page.evaluate to set value + dispatch events (safest for special chars)
+      await page.evaluate((opts) => {
+        const el = document.querySelector(opts.sel);
+        if (el) {
+          // Set value natively
+          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+            window.HTMLInputElement.prototype, 'value'
+          ).set;
+          nativeInputValueSetter.call(el, opts.pwd);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
         }
-      }
-    } catch {}
-  }
-  if (!pwFilled) {
-    await dbLog('login', 'error', 'Could not fill password!');
-    await dbShot(page, 'login-no-pw', 'Password not filled');
-  }
+      }, { sel: pwSel, pwd: SITE_PASSWORD });
+      await logDebug('login', 'info', 'Password set via React-compatible evaluate');
+    } catch (e) {
+      await logDebug('login', 'error', `Password fill failed: ${e.message}`);
+    }
 
-  await dbShot(page, 'login-filled', 'Credentials filled');
+    ss = await page.screenshot(); await logDebug('login-filled', 'screenshot', 'Credentials filled', ss);
 
-  // Click submit
-  const btnSels = ['button[type="submit"]', 'input[type="submit"]',
-                   'button:has-text("Sign In")', 'button:has-text("Log In")',
-                   'button:has-text("Login")', 'button:has-text("Inloggen")',
-                   'input[value="Log On"]', 'input[value="Login"]'];
-  let clicked = false;
-  for (const sel of btnSels) {
+    // Submit
     try {
-      const el = await page.$(sel);
-      if (el && await el.isVisible()) {
-        await el.click();
-        clicked = true;
-        await dbLog('login', 'info', `Clicked ${sel}`);
-        break;
-      }
-    } catch {}
-  }
-  if (!clicked) {
-    await page.keyboard.press('Enter');
-    await dbLog('login', 'info', 'Pressed Enter as fallback');
-  }
+      await page.click('button:has-text("Sign In")');
+      await logDebug('login', 'info', 'Clicked Sign In button');
+    } catch (e) {
+      await page.keyboard.press('Enter');
+      await logDebug('login', 'info', 'Pressed Enter as fallback');
+    }
 
-  await page.waitForTimeout(6000);
-  await dbLog('login', 'success', `Post-login URL: ${page.url()}`);
-  await dbShot(page, 'login-done', 'After login');
-}
+    await page.waitForTimeout(5000);
+    const postLoginUrl = page.url();
+    await logDebug('login', postLoginUrl.includes('login') ? 'error' : 'success', `Post-login URL: ${postLoginUrl}`);
+    ss = await page.screenshot(); await logDebug('login-done', 'screenshot', 'After login', ss);
 
+    // === NAVIGATE TO INVENTORY ===
+    console.log('\n📦 Navigating to inventory page...');
+    await page.goto(INV_URL, { waitUntil: 'networkidle', timeout: 30000 });
+    await logDebug('inventory', 'info', `On page: ${page.url()}`);
 
-async function scrapeInventory(page) {
-  console.log('\n📦 Navigating to inventory page...');
-  await dbLog('inventory', 'info', 'Navigating to inventory page...');
-  
-  await page.goto(INVENTORY_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(5000);
-  
-  // Check if we got redirected back to login
-  if (page.url().includes('/login')) {
-    await dbLog('inventory', 'error', 'Redirected to login — authentication failed');
-    await dbShot(page, 'inventory-redirect', 'Redirected to login');
-    return [];
-  }
-  
-  await dbLog('inventory', 'info', `On page: ${page.url()}`);
-  await dbShot(page, 'inventory-page', 'Inventory page loaded');
-  
-  
-  // ── DISCOVERY: Log page structure ──
-  const pageStructure = await page.evaluate(() => ({
-    title: document.title,
-    url: window.location.href,
-    h1: Array.from(document.querySelectorAll('h1,h2,h3')).map(e => e.textContent.trim()).slice(0, 15),
-    tables: document.querySelectorAll('table').length,
-    tabs: Array.from(document.querySelectorAll('[role="tab"], .tab, [class*="tab"]')).map(e => e.textContent.trim()).slice(0, 20),
-    selects: Array.from(document.querySelectorAll('select')).map(e => ({
-      name: e.name || e.id, options: Array.from(e.options).map(o => o.text).slice(0, 10)
-    })),
-    buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="button"]')).map(e => e.textContent.trim()).filter(t => t.length > 0 && t.length < 50).slice(0, 30),
-    links: Array.from(document.querySelectorAll('a[href]')).map(e => ({text: e.textContent.trim().substring(0,40), href: e.getAttribute('href')})).filter(l => l.text.length > 0).slice(0, 30),
-  }));
-  await dbLog('page-structure', 'info', JSON.stringify(pageStructure).substring(0, 3000));
-
-  // ── TABLE SCRAPE: Standard HTML table ──
-  let tableData = await page.evaluate(() => {
-    const rows = [];
-    for (const table of document.querySelectorAll('table')) {
-      const headers = Array.from(table.querySelectorAll('thead th, thead td')).map(h => h.textContent.trim());
-      for (const row of table.querySelectorAll('tbody tr')) {
-        const cells = Array.from(row.querySelectorAll('td')).map(c => c.textContent.trim());
-        if (cells.length >= 2) rows.push({ headers, cells });
+    if (page.url().includes('login')) {
+      await logDebug('inventory', 'error', 'Redirected to login — authentication failed');
+      // Try alternative: keyboard-based login
+      await logDebug('retry', 'info', 'Attempting keyboard-based login...');
+      await page.goto(SITE_URL, { waitUntil: 'networkidle', timeout: 30000 });
+      await page.waitForTimeout(2000);
+      
+      // Tab through form and type
+      await page.keyboard.press('Tab');
+      await page.keyboard.type(SITE_EMAIL, { delay: 30 });
+      await page.keyboard.press('Tab');
+      await page.keyboard.type(SITE_PASSWORD, { delay: 30 });
+      await page.keyboard.press('Enter');
+      await page.waitForTimeout(5000);
+      
+      ss = await page.screenshot(); await logDebug('retry-login', 'screenshot', 'Retry login result', ss);
+      
+      await page.goto(INV_URL, { waitUntil: 'networkidle', timeout: 30000 });
+      if (page.url().includes('login')) {
+        await logDebug('inventory', 'error', 'Retry also failed — giving up');
+        await writeResult([], browser); return;
       }
     }
-    return rows;
-  });
-  await dbLog('table-scan', 'info', `Found ${tableData.length} table rows`);
 
-  // Log first 5 rows for debugging
-  for (let i = 0; i < Math.min(5, tableData.length); i++) {
-    await dbLog(`row-${i}`, 'info', JSON.stringify(tableData[i]).substring(0, 500));
-  }
+    ss = await page.screenshot(); await logDebug('inventory-page', 'screenshot', 'Inventory page', ss);
 
-  // ── GRID FALLBACK: If no table rows ──
-  if (tableData.length === 0) {
-    tableData = await page.evaluate(() => {
-      const rows = [];
-      const items = document.querySelectorAll('[class*="row"], [class*="item"], [class*="product"], [role="row"], [role="gridcell"]');
-      for (const item of items) {
-        const text = item.textContent.trim();
-        if (text.length > 10 && text.length < 500) rows.push({ headers: [], cells: [text] });
-      }
-      return rows.slice(0, 50);
+    // === DISCOVER PAGE STRUCTURE ===
+    await page.waitForTimeout(3000);
+    
+    const pageInfo = await page.evaluate(() => ({
+      title: document.title,
+      url: window.location.href,
+      h1: Array.from(document.querySelectorAll('h1,h2,h3')).map(h => h.innerText.trim()).slice(0, 10),
+      tables: document.querySelectorAll('table').length,
+      tableHeaders: Array.from(document.querySelectorAll('table thead th, table th')).map(th => th.innerText.trim()),
+      tabs: Array.from(document.querySelectorAll('[role="tab"], .tab, .nav-link')).map(t => t.innerText.trim()),
+      buttons: Array.from(document.querySelectorAll('button')).map(b => b.innerText.trim()).slice(0, 20),
+    }));
+    await logDebug('page-structure', 'info', JSON.stringify(pageInfo));
+
+    // Extract table data
+    const tableData = await page.evaluate(() => {
+      const headers = Array.from(document.querySelectorAll('table thead th, table th')).map(th => th.innerText.trim());
+      const rows = Array.from(document.querySelectorAll('table tbody tr')).map(row => {
+        return Array.from(row.querySelectorAll('td')).map(td => td.innerText.trim());
+      });
+      return { headers, rows: rows.filter(r => r.length > 2) };
     });
-    await dbLog('grid-scan', 'info', `Found ${tableData.length} grid items`);
-  }
-
-  // ── TEXT FALLBACK: Dump page text ──
-  if (tableData.length === 0) {
-    const allText = await page.evaluate(() => document.body.innerText);
-    await dbLog('page-text-1', 'info', allText.substring(0, 3000));
-    await dbLog('page-text-2', 'info', allText.substring(3000, 6000));
-  }
-
-  
-  // ── Check for warehouse tabs (CA vs US) ──
-  const warehouseNames = ['Toronto', 'Canada', 'CA', 'United States', 'US', 'USA', 'Los Angeles', 'LA', 'Fontana'];
-  for (const wh of warehouseNames) {
-    try {
-      const tab = await page.$(`button:has-text("${wh}"), a:has-text("${wh}"), [role="tab"]:has-text("${wh}")`);
-      if (tab) await dbLog('warehouse-tab', 'info', `Found warehouse tab: ${wh}`);
-    } catch {}
-  }
-  
-  
-  // ── PARSE: Extract product names and quantities ──
-  const results = [];
-  if (tableData.length > 0) {
-    for (const row of tableData) {
-      const cells = row.cells;
-      const headers = (row.headers || []).map(h => h.toUpperCase());
-      
-      let productText = '';
-      let qty = 0;
-      let warehouse = '';
-      
-      const pCol = headers.findIndex(h => h.includes('PRODUCT') || h.includes('SKU') || h.includes('NAME') || h.includes('DESCRIPTION') || h.includes('ARTICLE') || h.includes('ARTIKEL'));
-      const qCol = headers.findIndex(h => h.includes('AVAILABLE') || h.includes('QTY') || h.includes('ON HAND') || h.includes('STOCK') || h.includes('QUANTITY') || h.includes('VOORRAAD') || h.includes('COLLI') || h.includes('UNITS'));
-      const wCol = headers.findIndex(h => h.includes('WAREHOUSE') || h.includes('LOCATION') || h.includes('MAGAZIJN'));
-      
-      productText = (pCol >= 0 && pCol < cells.length) ? cells[pCol] : cells[0] || '';
-      
-      if (qCol >= 0 && qCol < cells.length) {
-        qty = parseInt(cells[qCol].replace(/[^0-9-]/g, ''), 10) || 0;
-      } else {
-        for (let i = 1; i < cells.length; i++) {
-          const num = parseInt(cells[i].replace(/[^0-9-]/g, ''), 10);
-          if (!isNaN(num) && num >= 0) { qty = num; break; }
-        }
-      }
-      
-      if (wCol >= 0 && wCol < cells.length) warehouse = cells[wCol];
-      
-      const stdName = matchProductName(productText);
-      if (stdName) {
-        results.push({
-          product_name: stdName,
-          units_on_hand: qty,
-          warehouse: warehouse || WAREHOUSE_NAME,
-          raw_name: productText,
-        });
-      }
+    
+    await logDebug('table-data', 'info', `Headers: ${JSON.stringify(tableData.headers)}, Rows: ${tableData.rows.length}`);
+    if (tableData.rows.length > 0) {
+      await logDebug('sample-row', 'info', JSON.stringify(tableData.rows[0]));
     }
-  }
-  
-  await dbLog('results', 'info', `Scraped ${results.length} products: ${results.map(r => `${r.product_name}(${r.units_on_hand})`).join(', ')}`);
 
-  
-  // Determine CA vs US region per product
-  for (const r of results) {
-    const whLower = (r.warehouse || '').toLowerCase();
-    if (whLower.includes('us') || whLower.includes('united states') || whLower.includes('fontana') || whLower.includes('la') || whLower.includes('los angeles')) {
-      r.region = 'US';
-      r.channel = '3PL US';
-    } else {
-      r.region = 'Canada';
-      r.channel = '3PL CA';
+    // Parse products
+    const products = [];
+    const nameIdx = tableData.headers.findIndex(h => /product.*name|name/i.test(h));
+    const skuIdx = tableData.headers.findIndex(h => /sku|barcode|ean/i.test(h));
+    const qtyIdx = tableData.headers.findIndex(h => /qty|quantity|stock|units|available|inventory/i.test(h));
+    const whIdx = tableData.headers.findIndex(h => /warehouse/i.test(h));
+    
+    await logDebug('columns', 'info', `Name=${nameIdx}, SKU=${skuIdx}, Qty=${qtyIdx}, Warehouse=${whIdx}`);
+
+    for (const row of tableData.rows) {
+      products.push({
+        name: nameIdx >= 0 ? row[nameIdx] : '',
+        sku: skuIdx >= 0 ? row[skuIdx] : '',
+        quantity: qtyIdx >= 0 ? parseInt(row[qtyIdx]) || 0 : 0,
+        warehouse: whIdx >= 0 ? row[whIdx] : ''
+      });
     }
-    r.channel_type = '3PL';
-  }
-  
-  return results;
-}
 
-(async () => {
-  let browser;
-  try {
-    console.log('🚀 inventory-sync-forceget.js v1.2 starting...');
-    await dbLog('start', 'info', 'Script v1.2 starting');
-    browser = await chromium.launch({ headless: false });
-    const page = await browser.newPage();
+    await logDebug('results', 'info', `Parsed ${products.length} products: ${JSON.stringify(products.slice(0, 5))}`);
+    
+    const totalUnits = products.reduce((s, p) => s + p.quantity, 0);
+    console.log(`\n✅ Found ${products.length} products, ${totalUnits} total units`);
+    await logDebug('complete', 'success', `Finished: ${products.length} products, ${totalUnits} units`);
+    ss = await page.screenshot(); await logDebug('complete', 'screenshot', 'Final state', ss);
 
-    await login(page);
-    const products = await scrapeInventory(page);
-
-    const result = {
-      warehouse: 'forceget',
-      run_id: RUN_ID,
-      timestamp: new Date().toISOString(),
-      products,
-      total_units: products.reduce((s, r) => s + r.units_on_hand, 0),
-      product_count: products.length,
-    };
-
-    await updateTaskResult(result);
-    console.log(`\n✅ Found ${products.length} products, ${result.total_units} total units`);
-    for (const p of products) console.log(`   ${p.product_name} @ ${p.region}: ${p.units_on_hand}`);
-    await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} units`);
-    await dbShot(page, 'complete', 'Final state');
+    await writeResult(products, browser);
   } catch (err) {
-    console.error('❌ Fatal:', err.message);
-    await dbLog('fatal', 'error', `${err.message}\n${err.stack}`);
-    await updateTaskResult({ warehouse: 'forceget', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
-  } finally {
-    if (browser) await browser.close();
-    await new Promise(r => setTimeout(r, 2000));
+    await logDebug('fatal', 'error', `${err.message}\n${err.stack}`);
+    await writeResult([], browser);
   }
-})();
+}
+
+async function writeResult(products, browser) {
+  if (TASK_ID) {
+    try {
+      await supabase.from('Browser_Tasks').update({
+        result: { products, run_id: RUN_ID, version: 'v1.3' },
+        status: 'done', completed_at: new Date().toISOString()
+      }).eq('id', TASK_ID);
+      console.log(`✅ Result written to Browser_Tasks id=${TASK_ID}`);
+    } catch (e) { console.error('Failed to write result:', e.message); }
+  }
+  await browser.close();
+}
+
+run().catch(err => {
+  console.error('Fatal error:', err);
+  process.exit(1);
+});
