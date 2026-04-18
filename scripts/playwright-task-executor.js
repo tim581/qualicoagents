@@ -1,4 +1,4 @@
-// playwright-task-executor.js v2.4 — auto-downloads scripts from GitHub before each run
+// playwright-task-executor.js v2.5 — 3-layer script resolution (hardcoded → actions → registry)
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
@@ -91,6 +91,7 @@ async function executeAction(page, action, creds = {}) {
 const { execSync } = require('child_process');
 const path = require('path');
 
+// Layer 1: Hardcoded map (fast, no DB call)
 const SCRIPT_TASKS = {
   'forecast-sync':            'flieber-forecast-updater.js',
   'po-simulation':            'flieber-replenishment-simulator.js',
@@ -98,7 +99,7 @@ const SCRIPT_TASKS = {
   'forecast-verify':          'flieber-forecast-verifier.js',
   'inventory-sync-forceget':  'inventory-sync-forceget.js',
   'inventory-sync-kamps':     'inventory-sync-kamps.js',
-  'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
+  'inventory-sync-mintsoft':  'inventory-sync-mintsoft.js',
   'inventory-sync-bol':       'inventory-sync-bol.js',
   'price-scrape':             'price-monitor-scraper.js',
 };
@@ -136,8 +137,46 @@ function downloadFromGitHub(scriptName) {
   });
 }
 
-async function executeScriptTask(task) {
-  const scriptName = SCRIPT_TASKS[task.task_type];
+// ── 3-LAYER SCRIPT RESOLUTION (v2.5) ─────────────────────────────────────────
+// 1. SCRIPT_TASKS hardcoded map (fast)
+// 2. actions[] array — look for {"script": "filename.js"} entries (flexible)
+// 3. Browser_Task_Registry in Supabase (dynamic, no code change needed)
+async function resolveScript(task) {
+  // Layer 1: Hardcoded map
+  if (SCRIPT_TASKS[task.task_type]) {
+    console.log(`   📌 Script resolved from SCRIPT_TASKS: ${SCRIPT_TASKS[task.task_type]}`);
+    return SCRIPT_TASKS[task.task_type];
+  }
+
+  // Layer 2: Check actions array for script reference
+  if (Array.isArray(task.actions) && task.actions.length > 0) {
+    const scriptAction = task.actions.find(a => a.script);
+    if (scriptAction) {
+      console.log(`   ⚡ Script resolved from actions[]: ${scriptAction.script}`);
+      return scriptAction.script;
+    }
+  }
+
+  // Layer 3: Check Browser_Task_Registry in Supabase
+  try {
+    const { data: registry } = await supabase
+      .from('Browser_Task_Registry')
+      .select('script_name')
+      .eq('task_type', task.task_type)
+      .single();
+    if (registry?.script_name) {
+      console.log(`   🗄️ Script resolved from Browser_Task_Registry: ${registry.script_name}`);
+      return registry.script_name;
+    }
+  } catch (e) {
+    // Registry lookup failed — fall through to action-based
+    console.log(`   ℹ️ Registry lookup failed: ${e.message}`);
+  }
+
+  return null; // No script found → action-based execution
+}
+
+async function executeScriptTask(task, scriptName) {
   const scriptPath = path.join(__dirname, scriptName);
   
   // Auto-download latest version from GitHub before running
@@ -149,9 +188,9 @@ async function executeScriptTask(task) {
   
   console.log(`\n🔧 Running script: ${scriptName} for task type: ${task.task_type}`);
   
-  // For replenishment simulator, set RUN_MODE via env variable
+  // Set environment variables
   const env = { ...process.env };
-  env.BROWSER_TASK_ID = String(task.id);  // Pass task ID so scripts can update their own result
+  env.BROWSER_TASK_ID = String(task.id);
   if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
   if (task.task_type === 'to-simulation') env.RUN_MODE = 'to';
   
@@ -177,12 +216,22 @@ async function executeTask(task) {
   console.log(`   Type: ${task.task_type}`);
   console.log(`   URL: ${task.url || '(script-based)'}`);
 
-  // Route to standalone script if task_type is mapped
-  if (SCRIPT_TASKS[task.task_type]) {
-    return await executeScriptTask(task);
+  // ── v2.5: 3-layer script resolution ──
+  const scriptName = await resolveScript(task);
+  if (scriptName) {
+    return await executeScriptTask(task, scriptName);
   }
 
-  // Otherwise: generic action-based execution
+  // No script found → generic action-based execution
+  console.log(`   🌐 No script found — using action-based execution`);
+  
+  // Safety check: if actions contain script references but we couldn't resolve, warn
+  if (Array.isArray(task.actions) && task.actions.some(a => a.script && !a.type)) {
+    console.error(`   ⚠️ Actions contain script references but no 'type' field — these are NOT executable as actions!`);
+    console.error(`   💡 Make sure the script file exists on GitHub or register task_type in Browser_Task_Registry`);
+    return { success: false, error: `Task has script references in actions but script could not be resolved. Check GitHub or Browser_Task_Registry.` };
+  }
+
   const b = await initBrowser();
   const page = await b.newPage();
   
@@ -275,7 +324,7 @@ async function pollTasks() {
 }
 
 async function main() {
-  console.log('🎬 Browser Task Executor Started');
+  console.log('🎬 Browser Task Executor v2.5 — 3-layer script resolution');
   console.log(`📍 Checking Supabase: ${SUPABASE_URL}`);
 
   if (!SUPABASE_URL || !SUPABASE_KEY) {
