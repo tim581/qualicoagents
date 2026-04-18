@@ -1,206 +1,427 @@
-// inventory-sync-forceget.js v1.3 — CA + US 3PL (Forceget) inventory sync
-// ISSUE: page.fill() fills the field but React doesn't pick up the value
-// FIX v1.3: Use page.type() with delay for password input (triggers React onChange)
-// ALSO: Use triple-click + type to clear and replace field content
+/**
+ * inventory-sync-forceget.js v1.0
+ * 
+ * Playwright script for Forceget warehouse inventory sync.
+ * Runs via playwright-task-executor.js
+ * 
+ * Flow (from Scribe documentation):
+ * 1. Navigate to https://app.forceget.com/
+ * 2. Login with credentials
+ * 3. Click "Inventory at Forceget WH" in sidebar
+ * 4. Click "Live Inventory" 
+ * 5. Scrape inventory table (SKU, Warehouse, Product Name, Qty)
+ * 6. Map products to Puzzlup_Product_Info
+ * 7. Write to Inventory_Levels in Supabase
+ * 
+ * Channels: 3PL US, 3PL CA (Forceget has both US and CA warehouses)
+ * 
+ * credentials_key: forceget
+ * Expected credentials: { username: 'tim@qualico.be', password: '...' }
+ */
 
-const { chromium } = require('playwright-core');
-const { createClient } = require('@supabase/supabase-js');
-require('dotenv').config();
+const SUPABASE_URL = 'https://zlteahycfmpiaxdbnlvr.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpsdGVhaHljZm1waWF4ZGJubHZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEwMTY3ODIsImV4cCI6MjA1NjU5Mjc4Mn0.LSAZrrjFnMPMnR9Zx5H17T_Hhy-S7CLFOjRyqGG1CPs';
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// Product name mapping: Forceget names → Puzzlup product names and channels
+// Forceget uses both US and CA warehouses
+const PRODUCT_MAP = {
+  // Mats
+  'puzzlup 1000': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
+  'puzzlup mat 1000': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
+  'mat 1000': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
+  'puzzlup 1500 eco': { product_name: 'PUZZLUP MAT 1500 ECO', product_id: 2 },
+  'mat 1500 eco': { product_name: 'PUZZLUP MAT 1500 ECO', product_id: 2 },
+  'puzzlup 1500 gift': { product_name: 'PUZZLUP MAT 1500 GIFT', product_id: 4 },
+  'mat 1500 gift': { product_name: 'PUZZLUP MAT 1500 GIFT', product_id: 4 },
+  'puzzlup 1500 lux': { product_name: 'PUZZLUP MAT 1500 LUX', product_id: 5 },
+  'mat 1500 lux': { product_name: 'PUZZLUP MAT 1500 LUX', product_id: 5 },
+  'puzzlup 3000 eco': { product_name: 'PUZZLUP MAT 3000 ECO', product_id: 6 },
+  'mat 3000 eco': { product_name: 'PUZZLUP MAT 3000 ECO', product_id: 6 },
+  'puzzlup 3000 gift': { product_name: 'PUZZLUP MAT 3000 GIFT', product_id: 7 },
+  'mat 3000 gift': { product_name: 'PUZZLUP MAT 3000 GIFT', product_id: 7 },
+  'puzzlup 5000 gift': { product_name: 'PUZZLUP MAT 5000 GIFT', product_id: 8 },
+  'mat 5000 gift': { product_name: 'PUZZLUP MAT 5000 GIFT', product_id: 8 },
+  'puzzlup 1000 gift': { product_name: 'PUZZLUP MAT 1000 GIFT', product_id: 9 },
+  'mat 1000 gift': { product_name: 'PUZZLUP MAT 1000 GIFT', product_id: 9 },
+  // Trays
+  'puzzlup tray 1500': { product_name: 'PUZZLUP TRAYS 1500 BLACK', product_id: 10 },
+  'tray 1500': { product_name: 'PUZZLUP TRAYS 1500 BLACK', product_id: 10 },
+  'trays 1500 black': { product_name: 'PUZZLUP TRAYS 1500 BLACK', product_id: 10 },
+  'puzzlup tray 3000': { product_name: 'PUZZLUP TRAYS 3000 BLACK', product_id: 12 },
+  'tray 3000': { product_name: 'PUZZLUP TRAYS 3000 BLACK', product_id: 12 },
+  'trays 3000 black': { product_name: 'PUZZLUP TRAYS 3000 BLACK', product_id: 12 },
+};
 
-const SITE_URL = 'https://app.forceget.com/system/account/login';
-const INV_URL = 'https://app.forceget.com/inventory-management/inventory';
-const SITE_EMAIL = 'tim@qualico.be';
-const SITE_PASSWORD = 'Sdi3vV8xl!+[z(W{OnjG]';
-const TASK_ID = process.env.BROWSER_TASK_ID;
+// Warehouse → channel mapping
+const WAREHOUSE_CHANNEL = {
+  'us': '3PL US',
+  'usa': '3PL US',
+  'united states': '3PL US',
+  'ca': '3PL CA',
+  'can': '3PL CA',
+  'canada': '3PL CA',
+  'los angeles': '3PL US',
+  'la': '3PL US',
+  'vancouver': '3PL CA',
+  'toronto': '3PL CA',
+};
 
-const RUN_ID = `forceget_inv_${Date.now()}`;
-
-async function logDebug(step, status, message, screenshot = null) {
-  try {
-    await supabase.from('Flieber_Debug_Log').insert({
-      run_id: RUN_ID, step, status, message: String(message).slice(0, 2000),
-      screenshot: screenshot ? screenshot.toString('base64') : null
-    });
-  } catch (e) { console.error('  [DB:error]', e.message); }
-  console.log(`  [DB:${status}] ${step}: ${String(message).slice(0, 200)}`);
-  if (screenshot) console.log(`  📸 Screenshot → ${step}`);
+function matchProduct(rawName) {
+  const lower = rawName.toLowerCase().trim();
+  // Try exact match first
+  if (PRODUCT_MAP[lower]) return PRODUCT_MAP[lower];
+  // Try partial match
+  for (const [key, val] of Object.entries(PRODUCT_MAP)) {
+    if (lower.includes(key) || key.includes(lower)) return val;
+  }
+  return null;
 }
 
-async function run() {
-  console.log(`🔍 Debug run ID: ${RUN_ID}`);
-  console.log(`\n🚀 inventory-sync-forceget.js v1.3 starting...`);
-  await logDebug('start', 'info', 'Script v1.3 starting');
+function matchWarehouse(rawWarehouse) {
+  const lower = rawWarehouse.toLowerCase().trim();
+  for (const [key, val] of Object.entries(WAREHOUSE_CHANNEL)) {
+    if (lower.includes(key)) return val;
+  }
+  // Default: if contains 'us' or 'america' → US, else CA
+  if (lower.includes('us') || lower.includes('america')) return '3PL US';
+  if (lower.includes('ca') || lower.includes('canada')) return '3PL CA';
+  return null;
+}
 
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
-  const page = await context.newPage();
-
+module.exports = async function run({ page, credentials, log }) {
+  const results = { products: [], errors: [], channel: 'forceget' };
+  
   try {
-    // === LOGIN ===
-    console.log('\n🔐 Logging in...');
-    await page.goto(SITE_URL, { waitUntil: 'networkidle', timeout: 30000 });
-    let ss = await page.screenshot(); await logDebug('login-page', 'screenshot', 'Initial page load', ss);
-    await logDebug('login', 'info', `Current URL: ${page.url()}`);
-
-    // Fill email — try page.type with delay (triggers React onChange)
-    const emailSel = 'input[type="email"]';
-    try {
-      await page.click(emailSel);
-      await page.fill(emailSel, ''); // clear first
-      await page.type(emailSel, SITE_EMAIL, { delay: 20 });
-      await logDebug('login', 'info', 'Email typed via page.type()');
-    } catch (e) {
-      await logDebug('login', 'error', `Email fill failed: ${e.message}`);
-    }
-
-    // Fill password — CRITICAL: use page.type with delay for React inputs
-    const pwSel = 'input[type="password"]';
-    try {
-      await page.click(pwSel);
-      await page.fill(pwSel, ''); // clear first
-      // Use page.evaluate to set value + dispatch events (safest for special chars)
-      await page.evaluate((opts) => {
-        const el = document.querySelector(opts.sel);
-        if (el) {
-          // Set value natively
-          const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
-            window.HTMLInputElement.prototype, 'value'
-          ).set;
-          nativeInputValueSetter.call(el, opts.pwd);
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-        }
-      }, { sel: pwSel, pwd: SITE_PASSWORD });
-      await logDebug('login', 'info', 'Password set via React-compatible evaluate');
-    } catch (e) {
-      await logDebug('login', 'error', `Password fill failed: ${e.message}`);
-    }
-
-    ss = await page.screenshot(); await logDebug('login-filled', 'screenshot', 'Credentials filled', ss);
-
-    // Submit
-    try {
-      await page.click('button:has-text("Sign In")');
-      await logDebug('login', 'info', 'Clicked Sign In button');
-    } catch (e) {
-      await page.keyboard.press('Enter');
-      await logDebug('login', 'info', 'Pressed Enter as fallback');
-    }
-
-    await page.waitForTimeout(5000);
-    const postLoginUrl = page.url();
-    await logDebug('login', postLoginUrl.includes('login') ? 'error' : 'success', `Post-login URL: ${postLoginUrl}`);
-    ss = await page.screenshot(); await logDebug('login-done', 'screenshot', 'After login', ss);
-
-    // === NAVIGATE TO INVENTORY ===
-    console.log('\n📦 Navigating to inventory page...');
-    await page.goto(INV_URL, { waitUntil: 'networkidle', timeout: 30000 });
-    await logDebug('inventory', 'info', `On page: ${page.url()}`);
-
-    if (page.url().includes('login')) {
-      await logDebug('inventory', 'error', 'Redirected to login — authentication failed');
-      // Try alternative: keyboard-based login
-      await logDebug('retry', 'info', 'Attempting keyboard-based login...');
-      await page.goto(SITE_URL, { waitUntil: 'networkidle', timeout: 30000 });
-      await page.waitForTimeout(2000);
-      
-      // Tab through form and type
-      await page.keyboard.press('Tab');
-      await page.keyboard.type(SITE_EMAIL, { delay: 30 });
-      await page.keyboard.press('Tab');
-      await page.keyboard.type(SITE_PASSWORD, { delay: 30 });
-      await page.keyboard.press('Enter');
-      await page.waitForTimeout(5000);
-      
-      ss = await page.screenshot(); await logDebug('retry-login', 'screenshot', 'Retry login result', ss);
-      
-      await page.goto(INV_URL, { waitUntil: 'networkidle', timeout: 30000 });
-      if (page.url().includes('login')) {
-        await logDebug('inventory', 'error', 'Retry also failed — giving up');
-        await writeResult([], browser); return;
-      }
-    }
-
-    ss = await page.screenshot(); await logDebug('inventory-page', 'screenshot', 'Inventory page', ss);
-
-    // === DISCOVER PAGE STRUCTURE ===
+    // Step 1: Navigate to Forceget
+    await log('navigate', 'Going to Forceget app...');
+    await page.goto('https://app.forceget.com/', { waitUntil: 'networkidle', timeout: 30000 });
     await page.waitForTimeout(3000);
     
-    const pageInfo = await page.evaluate(() => ({
-      title: document.title,
-      url: window.location.href,
-      h1: Array.from(document.querySelectorAll('h1,h2,h3')).map(h => h.innerText.trim()).slice(0, 10),
-      tables: document.querySelectorAll('table').length,
-      tableHeaders: Array.from(document.querySelectorAll('table thead th, table th')).map(th => th.innerText.trim()),
-      tabs: Array.from(document.querySelectorAll('[role="tab"], .tab, .nav-link')).map(t => t.innerText.trim()),
-      buttons: Array.from(document.querySelectorAll('button')).map(b => b.innerText.trim()).slice(0, 20),
-    }));
-    await logDebug('page-structure', 'info', JSON.stringify(pageInfo));
-
-    // Extract table data
+    // Step 2: Login if needed
+    const currentUrl = page.url();
+    await log('check_login', `Current URL: ${currentUrl}`);
+    
+    // Check if we need to login
+    const loginForm = await page.$('input[type="email"], input[name="email"], input[type="text"][placeholder*="email" i]');
+    if (loginForm) {
+      await log('login', 'Login form detected, entering credentials...');
+      
+      // Try to find email field
+      const emailField = await page.$('input[type="email"], input[name="email"], input[type="text"][placeholder*="email" i], input[type="text"][placeholder*="user" i]');
+      if (emailField) {
+        await emailField.click({ clickCount: 3 });
+        await emailField.type(credentials.username || 'tim@qualico.be', { delay: 50 });
+      }
+      
+      // Find password field
+      const passField = await page.$('input[type="password"]');
+      if (passField) {
+        await passField.click({ clickCount: 3 });
+        await passField.type(credentials.password, { delay: 50 });
+      }
+      
+      // Click login button
+      const loginBtn = await page.$('button[type="submit"], button:has-text("Login"), button:has-text("Sign in"), button:has-text("Log in")');
+      if (loginBtn) {
+        await loginBtn.click();
+        await page.waitForTimeout(5000);
+        await page.waitForLoadState('networkidle').catch(() => {});
+      }
+      
+      await log('login_done', 'Login submitted, waiting for dashboard...');
+      await page.waitForTimeout(3000);
+    }
+    
+    // Step 3: Navigate to Inventory section
+    await log('nav_inventory', 'Looking for Inventory at Forceget WH in sidebar...');
+    
+    // Try multiple selectors for sidebar navigation
+    const sidebarSelectors = [
+      'text="Inventory at Forceget WH"',
+      'text="Inventory"',
+      'a:has-text("Inventory")',
+      'span:has-text("Inventory")',
+      '[class*="sidebar"] >> text="Inventory"',
+      'nav >> text="Inventory"',
+    ];
+    
+    let clicked = false;
+    for (const sel of sidebarSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          await el.click();
+          clicked = true;
+          await log('sidebar_click', `Clicked: ${sel}`);
+          break;
+        }
+      } catch (e) { /* try next */ }
+    }
+    
+    if (!clicked) {
+      // Try by scanning all links/buttons
+      const links = await page.$$('a, button, span, div[role="button"]');
+      for (const link of links) {
+        const text = await link.textContent().catch(() => '');
+        if (text && text.toLowerCase().includes('inventory')) {
+          await link.click();
+          clicked = true;
+          await log('sidebar_click_scan', `Clicked element with text: ${text.trim()}`);
+          break;
+        }
+      }
+    }
+    
+    await page.waitForTimeout(3000);
+    
+    // Step 4: Click "Live Inventory"
+    await log('nav_live', 'Looking for Live Inventory button/tab...');
+    
+    const liveSelectors = [
+      'text="Live Inventory"',
+      'a:has-text("Live Inventory")',
+      'button:has-text("Live Inventory")',
+      'span:has-text("Live Inventory")',
+      'tab:has-text("Live")',
+    ];
+    
+    clicked = false;
+    for (const sel of liveSelectors) {
+      try {
+        const el = await page.$(sel);
+        if (el) {
+          await el.click();
+          clicked = true;
+          await log('live_click', `Clicked: ${sel}`);
+          break;
+        }
+      } catch (e) { /* try next */ }
+    }
+    
+    await page.waitForTimeout(5000);
+    await page.waitForLoadState('networkidle').catch(() => {});
+    
+    // Step 5: Scrape inventory table
+    await log('scrape', 'Scraping inventory table...');
+    
+    // Try to find the table
     const tableData = await page.evaluate(() => {
-      const headers = Array.from(document.querySelectorAll('table thead th, table th')).map(th => th.innerText.trim());
-      const rows = Array.from(document.querySelectorAll('table tbody tr')).map(row => {
-        return Array.from(row.querySelectorAll('td')).map(td => td.innerText.trim());
-      });
-      return { headers, rows: rows.filter(r => r.length > 2) };
+      const rows = [];
+      
+      // Method 1: Standard HTML table
+      const tables = document.querySelectorAll('table');
+      for (const table of tables) {
+        const trs = table.querySelectorAll('tbody tr, tr');
+        for (const tr of trs) {
+          const cells = tr.querySelectorAll('td');
+          if (cells.length >= 3) {
+            rows.push({
+              cells: Array.from(cells).map(c => c.textContent.trim()),
+              cellCount: cells.length
+            });
+          }
+        }
+      }
+      
+      // Method 2: Grid/div-based table (React apps often use this)
+      if (rows.length === 0) {
+        const gridRows = document.querySelectorAll('[role="row"], [class*="row"], [class*="Row"]');
+        for (const row of gridRows) {
+          const cells = row.querySelectorAll('[role="cell"], [role="gridcell"], [class*="cell"], [class*="Cell"]');
+          if (cells.length >= 3) {
+            rows.push({
+              cells: Array.from(cells).map(c => c.textContent.trim()),
+              cellCount: cells.length
+            });
+          }
+        }
+      }
+      
+      // Also get headers
+      const headers = [];
+      const ths = document.querySelectorAll('th, [role="columnheader"]');
+      for (const th of ths) {
+        headers.push(th.textContent.trim());
+      }
+      
+      return { rows, headers, tableCount: tables.length };
     });
     
-    await logDebug('table-data', 'info', `Headers: ${JSON.stringify(tableData.headers)}, Rows: ${tableData.rows.length}`);
-    if (tableData.rows.length > 0) {
-      await logDebug('sample-row', 'info', JSON.stringify(tableData.rows[0]));
-    }
-
-    // Parse products
-    const products = [];
-    const nameIdx = tableData.headers.findIndex(h => /product.*name|name/i.test(h));
-    const skuIdx = tableData.headers.findIndex(h => /sku|barcode|ean/i.test(h));
-    const qtyIdx = tableData.headers.findIndex(h => /qty|quantity|stock|units|available|inventory/i.test(h));
-    const whIdx = tableData.headers.findIndex(h => /warehouse/i.test(h));
+    await log('table_data', JSON.stringify({
+      rowCount: tableData.rows.length,
+      headers: tableData.headers,
+      tableCount: tableData.tableCount,
+      sampleRow: tableData.rows[0] || 'none'
+    }));
     
-    await logDebug('columns', 'info', `Name=${nameIdx}, SKU=${skuIdx}, Qty=${qtyIdx}, Warehouse=${whIdx}`);
-
+    // Parse inventory data
+    // Expected columns: SKU, Warehouse, Product Name, Qty (based on Scribe PDF)
+    const inventoryItems = [];
+    
     for (const row of tableData.rows) {
-      products.push({
-        name: nameIdx >= 0 ? row[nameIdx] : '',
-        sku: skuIdx >= 0 ? row[skuIdx] : '',
-        quantity: qtyIdx >= 0 ? parseInt(row[qtyIdx]) || 0 : 0,
-        warehouse: whIdx >= 0 ? row[whIdx] : ''
-      });
+      const cells = row.cells;
+      if (cells.length < 3) continue;
+      
+      // Try to identify which column is what
+      // Look for a numeric quantity value
+      let sku = '', warehouse = '', productName = '', qty = 0;
+      
+      // Find quantity (numeric column)
+      let qtyIdx = -1;
+      for (let i = cells.length - 1; i >= 0; i--) {
+        const num = parseInt(cells[i].replace(/,/g, ''));
+        if (!isNaN(num) && num >= 0) {
+          qty = num;
+          qtyIdx = i;
+          break;
+        }
+      }
+      
+      if (qtyIdx === -1) continue; // Skip non-data rows
+      
+      // Assign remaining columns based on position
+      // Typical: SKU | Warehouse | Product Name | Qty
+      if (cells.length >= 4) {
+        sku = cells[0];
+        warehouse = cells[1];
+        productName = cells[2];
+      } else if (cells.length === 3) {
+        sku = cells[0];
+        productName = cells[1];
+        // No warehouse column — try to detect from SKU or product name
+        warehouse = 'unknown';
+      }
+      
+      // Try to match product
+      const productMatch = matchProduct(productName) || matchProduct(sku);
+      const channel = matchWarehouse(warehouse);
+      
+      if (productMatch && qty > 0) {
+        inventoryItems.push({
+          product_name: productMatch.product_name,
+          product_id: productMatch.product_id,
+          channel: channel || '3PL US', // Default to US if can't determine
+          qty: qty,
+          raw_sku: sku,
+          raw_warehouse: warehouse,
+          raw_name: productName
+        });
+      } else {
+        results.errors.push({
+          message: `Unmatched: SKU=${sku}, Name=${productName}, WH=${warehouse}, Qty=${qty}`,
+          raw: cells
+        });
+      }
     }
-
-    await logDebug('results', 'info', `Parsed ${products.length} products: ${JSON.stringify(products.slice(0, 5))}`);
     
-    const totalUnits = products.reduce((s, p) => s + p.quantity, 0);
-    console.log(`\n✅ Found ${products.length} products, ${totalUnits} total units`);
-    await logDebug('complete', 'success', `Finished: ${products.length} products, ${totalUnits} units`);
-    ss = await page.screenshot(); await logDebug('complete', 'screenshot', 'Final state', ss);
-
-    await writeResult(products, browser);
-  } catch (err) {
-    await logDebug('fatal', 'error', `${err.message}\n${err.stack}`);
-    await writeResult([], browser);
-  }
-}
-
-async function writeResult(products, browser) {
-  if (TASK_ID) {
+    await log('parsed', JSON.stringify({
+      matched: inventoryItems.length,
+      unmatched: results.errors.length,
+      items: inventoryItems
+    }));
+    
+    results.products = inventoryItems;
+    
+    // Step 6: Write to Supabase Inventory_Levels
+    if (inventoryItems.length > 0) {
+      await log('write_supabase', `Writing ${inventoryItems.length} items to Inventory_Levels...`);
+      
+      const now = new Date().toISOString();
+      
+      for (const item of inventoryItems) {
+        try {
+          // Upsert: try update first, then insert
+          const updateRes = await fetch(
+            `${SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(item.product_name)}&channel=eq.${encodeURIComponent(item.channel)}`,
+            {
+              method: 'PATCH',
+              headers: {
+                'apikey': SUPABASE_KEY,
+                'Authorization': `Bearer ${SUPABASE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal'
+              },
+              body: JSON.stringify({
+                units_on_hand: item.qty,
+                last_synced_at: now,
+                sync_source: 'forceget_playwright'
+              })
+            }
+          );
+          
+          // If no rows updated, insert
+          if (updateRes.status === 200) {
+            // Check if any row was actually updated by doing a count
+            const checkRes = await fetch(
+              `${SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(item.product_name)}&channel=eq.${encodeURIComponent(item.channel)}&select=id`,
+              {
+                headers: {
+                  'apikey': SUPABASE_KEY,
+                  'Authorization': `Bearer ${SUPABASE_KEY}`,
+                }
+              }
+            );
+            const existing = await checkRes.json();
+            
+            if (!existing || existing.length === 0) {
+              // Insert new row
+              await fetch(
+                `${SUPABASE_URL}/rest/v1/Inventory_Levels`,
+                {
+                  method: 'POST',
+                  headers: {
+                    'apikey': SUPABASE_KEY,
+                    'Authorization': `Bearer ${SUPABASE_KEY}`,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'return=minimal'
+                  },
+                  body: JSON.stringify({
+                    product_name: item.product_name,
+                    product_id: item.product_id,
+                    channel: item.channel,
+                    channel_type: '3PL',
+                    units_on_hand: item.qty,
+                    last_synced_at: now,
+                    sync_source: 'forceget_playwright'
+                  })
+                }
+              );
+              await log('inserted', `${item.product_name} (${item.channel}): ${item.qty}`);
+            } else {
+              await log('updated', `${item.product_name} (${item.channel}): ${item.qty}`);
+            }
+          }
+        } catch (e) {
+          results.errors.push({ product: item.product_name, error: e.message });
+          await log('write_error', `Failed: ${item.product_name} - ${e.message}`);
+        }
+      }
+      
+      await log('write_done', `Wrote ${inventoryItems.length} items to Inventory_Levels`);
+    }
+    
+    // Take final screenshot for verification
+    await page.screenshot({ path: '/tmp/forceget-inventory.png', fullPage: true });
+    await log('screenshot', 'Final screenshot saved');
+    
+    results.success = true;
+    results.summary = {
+      total_products: inventoryItems.length,
+      total_units: inventoryItems.reduce((sum, i) => sum + i.qty, 0),
+      channels: [...new Set(inventoryItems.map(i => i.channel))],
+      synced_at: new Date().toISOString()
+    };
+    
+  } catch (error) {
+    results.success = false;
+    results.error = error.message;
+    await log('error', `Script failed: ${error.message}`);
+    
+    // Screenshot on error
     try {
-      await supabase.from('Browser_Tasks').update({
-        result: { products, run_id: RUN_ID, version: 'v1.3' },
-        status: 'done', completed_at: new Date().toISOString()
-      }).eq('id', TASK_ID);
-      console.log(`✅ Result written to Browser_Tasks id=${TASK_ID}`);
-    } catch (e) { console.error('Failed to write result:', e.message); }
+      await page.screenshot({ path: '/tmp/forceget-error.png', fullPage: true });
+    } catch (e) { /* ignore */ }
   }
-  await browser.close();
-}
-
-run().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+  
+  return results;
+};

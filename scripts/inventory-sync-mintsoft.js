@@ -1,4 +1,7 @@
-// inventory-sync-mintsoft.js v1.1 — UK 3PL (WePrepFBA) inventory sync
+// inventory-sync-mintsoft.js v1.2 — UK 3PL (WePrepFBA) inventory sync
+// CHANGELOG v1.2: Auto-writes to Inventory_Levels table (no more manual post-processing)
+// CHANGELOG v1.1: Initial working version with pagination support
+//
 // CONFIRMED SELECTORS from browser inspection:
 //   - Username: input[name="username"]  (type="text", placeholder="UserName")
 //   - Password: input[name="password"]  (type="password", placeholder="Password")
@@ -23,6 +26,21 @@ const TASK_ID = process.env.BROWSER_TASK_ID;
 
 const RUN_ID = `mintsoft_inv_${Date.now()}`;
 
+// === SKU MAPPING: Mintsoft product names → Puzzlup product names ===
+// Mintsoft uses its own naming. We map to the standard Inventory_Levels product names.
+const SKU_MAP = {
+  'PUZZLUP 1000 GIFT': { product_name: 'MAT 1000 GIFT',    product_id: 16 },
+  'PUZZLUP 1500 GIFT': { product_name: 'MAT 1500 GIFT',    product_id: 12 },
+  'PUZZLUP 1500 LUX':  { product_name: 'MAT 1500 LUX',     product_id: 10 },
+  'PUZZLUP 3000 GIFT': { product_name: 'MAT 3000 GIFT',     product_id: 2  },
+  'PUZZLUP 5000 GIFT': { product_name: 'MAT 5000 GIFT',     product_id: 11 },
+  'TRAYS 1500 BLACK':  { product_name: 'TRAYS 1500 BLACK',  product_id: 14 },
+  'TRAYS 1500 WHITE':  { product_name: 'TRAYS 1500 WHITE',  product_id: 3  },
+  'TRAYS 3000 BLACK':  { product_name: 'TRAYS 3000 BLACK',  product_id: 15 },
+  // UK_1500_MAT = FBA-bound stock at Buckle warehouse (not 3PL), skip for now
+  // Puzzl_Tray_UK = placeholder SKU with 0 stock, skip
+};
+
 async function logDebug(step, status, message, screenshot = null) {
   try {
     await supabase.from('Flieber_Debug_Log').insert({
@@ -38,8 +56,8 @@ async function logDebug(step, status, message, screenshot = null) {
 async function run() {
   console.log(`🔍 Debug run ID: ${RUN_ID}`);
   console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'`);
-  console.log(`\n🚀 inventory-sync-mintsoft.js v1.1 starting...`);
-  await logDebug('start', 'info', 'Script v1.1 starting');
+  console.log(`\n🚀 inventory-sync-mintsoft.js v1.2 starting...`);
+  await logDebug('start', 'info', 'Script v1.2 starting');
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
@@ -53,12 +71,11 @@ async function run() {
     await logDebug('login', 'info', `Current URL: ${page.url()}`);
     let ss = await page.screenshot(); await logDebug('login-page', 'screenshot', 'Initial page load', ss);
 
-    // Fill username using page.fill (standard input, no React)
+    // Fill username
     try {
       await page.fill('input[name="username"]', SITE_EMAIL);
       await logDebug('login', 'info', 'Username filled via input[name="username"]');
     } catch (e) {
-      // Fallback: try placeholder-based selector
       try {
         await page.fill('input[placeholder="UserName"]', SITE_EMAIL);
         await logDebug('login', 'info', 'Username filled via placeholder');
@@ -105,17 +122,14 @@ async function run() {
 
     // === NAVIGATE TO PRODUCTS ===
     console.log('\n📦 Loading products...');
-    // Try to set page size to 100 to get all products on one page
     const productUrl = 'https://om.mintsoft.co.uk/Product/?';
     if (!page.url().includes('/Product')) {
       await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 30000 });
     }
     await logDebug('products', 'info', `On page: ${page.url()}`);
-
-    // Wait for table to load
     await page.waitForTimeout(3000);
     
-    // Try to set display count to 100
+    // Try to set display count to 100 to avoid pagination
     try {
       const pageSizeSelect = await page.$('select[name*="length"], .dataTables_length select');
       if (pageSizeSelect) {
@@ -132,60 +146,67 @@ async function run() {
     // === EXTRACT DATA ===
     console.log('\n📊 Extracting inventory data...');
     
-    // Get all table headers first
     const headers = await page.evaluate(() => {
       const ths = document.querySelectorAll('table thead th');
       return Array.from(ths).map((th, i) => ({ index: i, text: th.innerText.trim() }));
     });
     await logDebug('headers', 'info', JSON.stringify(headers));
 
-    // Extract all rows with their cell data
+    // Extract all rows
     const tableData = await page.evaluate(() => {
       const rows = document.querySelectorAll('table tbody tr');
       return Array.from(rows).map(row => {
         const cells = row.querySelectorAll('td');
         return Array.from(cells).map(c => c.innerText.trim());
-      }).filter(r => r.length > 3); // filter out empty rows
+      }).filter(r => r.length > 3);
     });
     await logDebug('table-data', 'info', `Found ${tableData.length} rows on page 1`);
 
-    // Check if there's a page 2
-    let page2Data = [];
-    try {
-      const nextPage = await page.$('a:has-text("2"), .paginate_button:has-text("2")');
-      if (nextPage) {
-        await nextPage.click();
+    // Check if there's more pages
+    let allExtraData = [];
+    let pageNum = 2;
+    while (true) {
+      try {
+        const nextBtn = await page.$(`a:has-text("${pageNum}"), .paginate_button:has-text("${pageNum}")`);
+        if (!nextBtn) break;
+        await nextBtn.click();
         await page.waitForTimeout(3000);
-        page2Data = await page.evaluate(() => {
+        const pageData = await page.evaluate(() => {
           const rows = document.querySelectorAll('table tbody tr');
           return Array.from(rows).map(row => {
             const cells = row.querySelectorAll('td');
             return Array.from(cells).map(c => c.innerText.trim());
           }).filter(r => r.length > 3);
         });
-        await logDebug('table-data', 'info', `Found ${page2Data.length} rows on page 2`);
+        await logDebug('table-data', 'info', `Found ${pageData.length} rows on page ${pageNum}`);
+        allExtraData = [...allExtraData, ...pageData];
+        pageNum++;
+      } catch (e) {
+        await logDebug('pagination', 'info', `No page ${pageNum} or error: ${e.message}`);
+        break;
       }
-    } catch (e) {
-      await logDebug('pagination', 'info', `No page 2 or error: ${e.message}`);
     }
 
-    const allData = [...tableData, ...page2Data];
+    const allData = [...tableData, ...allExtraData];
 
-    // Find the column indices
+    // Find column indices
     const skuIdx = headers.findIndex(h => h.text.toLowerCase() === 'sku');
     const nameIdx = headers.findIndex(h => h.text.toLowerCase() === 'name');
     const inventoryIdx = headers.findIndex(h => h.text.toLowerCase() === 'inventory');
     
     await logDebug('columns', 'info', `SKU col=${skuIdx}, Name col=${nameIdx}, Inventory col=${inventoryIdx}`);
 
-    // Parse inventory data
-    const products = [];
+    // Parse inventory data — deduplicate by SKU
+    const productMap = new Map();
     for (const row of allData) {
       if (row.length <= Math.max(skuIdx, nameIdx, inventoryIdx)) continue;
       
       const sku = skuIdx >= 0 ? row[skuIdx] : '';
       const name = nameIdx >= 0 ? row[nameIdx] : '';
       const inventoryRaw = inventoryIdx >= 0 ? row[inventoryIdx] : '';
+      
+      // Skip if already seen (pagination duplicates)
+      if (productMap.has(sku)) continue;
       
       // Parse warehouse breakdown: "WarehouseName\nCount\nWarehouseName\nCount"
       let totalStock = 0;
@@ -200,9 +221,9 @@ async function run() {
         }
       }
 
-      products.push({
+      productMap.set(sku, {
         sku,
-        name, // This is the EAN barcode
+        name,
         total_stock: totalStock,
         warehouses,
         wp_raeburn: warehouses['WP_Raeburn'] || 0,
@@ -210,25 +231,66 @@ async function run() {
       });
     }
 
-    await logDebug('results', 'info', `Parsed ${products.length} products: ${JSON.stringify(products.map(p => ({sku: p.sku, total: p.total_stock, raeburn: p.wp_raeburn})))}`);
+    const products = Array.from(productMap.values());
+    await logDebug('results', 'info', `Parsed ${products.length} unique products: ${JSON.stringify(products.map(p => ({sku: p.sku, total: p.total_stock, raeburn: p.wp_raeburn})))}`);
 
-    console.log(`\n✅ Found ${products.length} products, ${products.reduce((s, p) => s + p.total_stock, 0)} total units`);
-    await logDebug('complete', 'success', `Finished: ${products.length} products, ${products.reduce((s, p) => s + p.total_stock, 0)} units`);
+    // === WRITE TO INVENTORY_LEVELS ===
+    console.log('\n💾 Writing to Inventory_Levels...');
+    let written = 0;
+    const now = new Date().toISOString();
+
+    for (const product of products) {
+      const mapping = SKU_MAP[product.sku];
+      if (!mapping) {
+        await logDebug('inventory-write', 'info', `Skipping unmapped SKU: ${product.sku} (${product.wp_raeburn} units)`);
+        continue;
+      }
+
+      // Only write WP_Raeburn stock (our 3PL inventory)
+      const units = product.wp_raeburn;
+      
+      const { error } = await supabase.from('Inventory_Levels').upsert({
+        product_id: mapping.product_id,
+        product_name: mapping.product_name,
+        channel: '3PL UK',
+        channel_type: '3PL',
+        units_on_hand: units,
+        last_synced_at: now
+      }, { onConflict: 'product_id,channel' });
+
+      if (error) {
+        await logDebug('inventory-write', 'error', `Failed to write ${mapping.product_name}: ${error.message}`);
+      } else {
+        written++;
+        console.log(`  ✅ ${mapping.product_name}: ${units} units`);
+      }
+    }
+
+    const totalUnits = products.reduce((s, p) => s + p.wp_raeburn, 0);
+    await logDebug('inventory-write', 'success', `Wrote ${written} products to Inventory_Levels (${totalUnits} total units)`);
+    console.log(`\n✅ Found ${products.length} products, wrote ${written} to Inventory_Levels (${totalUnits} total units)`);
+    await logDebug('complete', 'success', `Finished: ${products.length} products, ${written} written, ${totalUnits} units`);
     ss = await page.screenshot(); await logDebug('complete', 'screenshot', 'Final state', ss);
 
-    await writeResult(products, browser);
+    await writeResult(products, browser, written);
   } catch (err) {
     await logDebug('fatal', 'error', `${err.message}\n${err.stack}`);
-    await writeResult([], browser);
+    await writeResult([], browser, 0);
   }
 }
 
-async function writeResult(products, browser) {
+async function writeResult(products, browser, writtenCount = 0) {
   if (TASK_ID) {
     try {
       await supabase.from('Browser_Tasks').update({
-        result: { products, run_id: RUN_ID, version: 'v1.1' },
-        status: 'done', completed_at: new Date().toISOString()
+        result: { 
+          products: products.map(p => ({ sku: p.sku, wp_raeburn: p.wp_raeburn, total: p.total_stock })),
+          inventory_levels_written: writtenCount,
+          run_id: RUN_ID, 
+          version: 'v1.2' 
+        },
+        status: 'done', 
+        completed_at: new Date().toISOString()
       }).eq('id', TASK_ID);
       console.log(`✅ Result written to Browser_Tasks id=${TASK_ID}`);
     } catch (e) { console.error('Failed to write result:', e.message); }
