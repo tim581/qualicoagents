@@ -1,4 +1,4 @@
-// Sellerboard P&L Export v8.5
+// Sellerboard P&L Export v8.6
 // Flow from PDF: navigate to P&L → marketplace dropdown → scrape
 // NEVER use market[] URL param — always use on-page dropdown
 
@@ -152,118 +152,151 @@ async function selectMarketplace(page, marketDropdownText) {
   console.log(`      🌍 Selecteer marketplace: ${marketDropdownText}...`);
   
   try {
-    // CRITICAL: This is a MULTI-SELECT CHECKBOX dropdown (like Flieber!)
-    // "All marketplaces" = all checked. To select one: uncheck all others.
-    // The dropdown sits in the filter bar on the P&L page itself.
+    // CRITICAL: Multi-select checkbox dropdown ON the P&L page.
+    // Strategy: open dropdown → use COORDINATES to click checkboxes → Escape to close
+    // NEVER use text selectors for clicking (they match sidebar items!)
     
-    // Step 1: Find and click the marketplace dropdown trigger in the filter bar
-    const dropdownTexts = ['All marketplaces', 'Alle Marktplätze', 'Alle marktplaatsen',
-      'Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl',
-      'Amazon.com', 'Amazon.ca', 'Amazon.com.mx'];
-    
-    let dropdownClicked = false;
-    
-    for (const text of dropdownTexts) {
-      try {
-        const el = page.locator(`text="${text}"`).first();
-        const box = await el.boundingBox({ timeout: 1500 });
-        if (box && box.y < 250) {
-          await el.click({ timeout: 2000 });
-          dropdownClicked = true;
-          console.log(`      ✅ Dropdown geopend via: "${text}" (y=${Math.round(box.y)})`);
-          break;
+    // Step 1: Find the marketplace dropdown trigger in the FILTER BAR (top area, y < 200)
+    // Use evaluate to find the exact element and its coordinates
+    const trigger = await page.evaluate(() => {
+      const allElements = document.querySelectorAll('button, div, span, a');
+      const marketKeywords = ['all marketplace', 'alle markt', 'amazon.', 'marketplace'];
+      
+      for (const el of allElements) {
+        const text = el.innerText?.trim()?.toLowerCase() || '';
+        const rect = el.getBoundingClientRect();
+        
+        // Must be in the top filter area (y < 200) and visible
+        if (rect.width === 0 || rect.height === 0 || rect.top > 200) continue;
+        // Must be in the main content area (not sidebar, x > 200)
+        if (rect.left < 180) continue;
+        
+        if (marketKeywords.some(kw => text.includes(kw))) {
+          return {
+            text: text.substring(0, 40),
+            x: Math.round(rect.left + rect.width / 2),
+            y: Math.round(rect.top + rect.height / 2)
+          };
         }
-      } catch (e) { /* try next */ }
-    }
+      }
+      return null;
+    });
     
-    if (!dropdownClicked) {
-      console.log(`      ❌ Marketplace dropdown niet gevonden`);
+    if (!trigger) {
+      console.log(`      ❌ Marketplace dropdown niet gevonden in filter bar`);
       await takeDebugScreenshot(page, `marketplace-dropdown-miss`);
       return false;
     }
     
+    console.log(`      🎯 Dropdown trigger: "${trigger.text}" at (${trigger.x}, ${trigger.y})`);
+    await page.mouse.click(trigger.x, trigger.y);
     await page.waitForTimeout(1500);
     await takeDebugScreenshot(page, `marketplace-dropdown-open`);
     
-    // Step 2: Read all checkbox options and their checked state
+    // Step 2: Find all options in the POPUP overlay with their coordinates
+    // Look for a popup/dropdown overlay that appeared AFTER the click
     const options = await page.evaluate(() => {
       const results = [];
-      // Look for checkbox-like elements in the open dropdown
-      // Sellerboard uses checkboxes with SVG checkmarks or similar
-      const items = document.querySelectorAll('label, li, div[role="option"], div[role="menuitem"]');
       
-      for (const item of items) {
-        const text = item.innerText?.trim();
-        if (!text || !text.toLowerCase().includes('amazon')) continue;
+      // Strategy: find elements that contain "Amazon" text and are in a popup/overlay
+      // Popups typically have high z-index, position:absolute/fixed, or are in a portal
+      const allElements = document.querySelectorAll('*');
+      
+      for (const el of allElements) {
+        const text = el.innerText?.trim();
+        if (!text) continue;
         
-        const rect = item.getBoundingClientRect();
+        // Only look at leaf-level or near-leaf elements with Amazon text
+        const directText = Array.from(el.childNodes)
+          .filter(n => n.nodeType === 3)
+          .map(n => n.textContent.trim())
+          .join('');
+        const hasAmazonDirect = directText.toLowerCase().includes('amazon');
+        const textLower = text.toLowerCase();
+        
+        if (!hasAmazonDirect && !textLower.startsWith('amazon')) continue;
+        if (el.children.length > 3) continue; // Skip container divs
+        
+        const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) continue;
+        // Must NOT be in sidebar (x > 180)
+        if (rect.left < 180) continue;
         
-        // Check if it has a checked checkbox (input, SVG checkmark, or class)
-        const checkbox = item.querySelector('input[type="checkbox"]');
-        const svgCheck = item.querySelector('svg, [class*="check"], [class*="Check"]');
-        const isChecked = checkbox ? checkbox.checked : 
-          (item.classList?.toString()?.includes('selected') || 
-           item.classList?.toString()?.includes('active') ||
-           item.querySelector('[data-checked]') !== null ||
-           svgCheck !== null);
+        // Check for checkbox/checked state
+        const checkbox = el.querySelector('input[type="checkbox"]');
+        const parentLabel = el.closest('label');
+        const parentCheckbox = parentLabel?.querySelector('input[type="checkbox"]');
+        const cb = checkbox || parentCheckbox;
+        
+        // Also check for visual indicators (SVG checkmark, data attributes, classes)
+        const hasCheckSvg = el.querySelector('svg') !== null || el.closest('label')?.querySelector('svg') !== null;
+        const classList = (el.className?.toString?.() || '') + ' ' + (el.closest('label')?.className?.toString?.() || '');
+        const hasActiveClass = classList.includes('selected') || classList.includes('active') || classList.includes('checked');
+        
+        const isChecked = cb ? cb.checked : (hasActiveClass || false);
+        
+        // Get the clickable center (click the checkbox area, usually left side)
+        const clickTarget = parentLabel || el;
+        const clickRect = clickTarget.getBoundingClientRect();
         
         results.push({
-          text: text.substring(0, 30),
+          text: text.substring(0, 30).split('\n')[0].trim(),
           checked: isChecked,
-          top: Math.round(rect.top),
-          left: Math.round(rect.left)
+          x: Math.round(clickRect.left + 15), // Click left side where checkbox is
+          y: Math.round(clickRect.top + clickRect.height / 2),
+          width: Math.round(clickRect.width)
         });
       }
-      return results;
+      
+      // Deduplicate by similar y-position (within 5px)
+      const deduped = [];
+      for (const opt of results) {
+        const exists = deduped.some(d => Math.abs(d.y - opt.y) < 5);
+        if (!exists) deduped.push(opt);
+      }
+      
+      return deduped;
     });
     
-    console.log(`      Opties gevonden: ${JSON.stringify(options)}`);
+    console.log(`      Opties (${options.length}): ${JSON.stringify(options)}`);
     
-    // Step 3: For each option, toggle to get the right state
-    // Target: ONLY marketDropdownText should be checked
+    if (options.length === 0) {
+      console.log(`      ❌ Geen marketplace opties gevonden in dropdown`);
+      await page.keyboard.press('Escape');
+      return false;
+    }
+    
+    // Step 3: Click by COORDINATES — first uncheck all, then check only target
     const targetLower = marketDropdownText.toLowerCase();
     
-    // First pass: uncheck all non-target markets that are checked
+    // First: uncheck all non-target that are checked
     for (const opt of options) {
       const isTarget = opt.text.toLowerCase().includes(targetLower) || 
-                       targetLower.includes(opt.text.toLowerCase());
+                       targetLower.includes(opt.text.toLowerCase().replace(/\s/g, ''));
       
       if (!isTarget && opt.checked) {
-        // Need to UNCHECK this one — click it
-        try {
-          const optEl = page.locator(`text="${opt.text}"`).first();
-          await optEl.click({ timeout: 2000 });
-          console.log(`      ❎ Unchecked: "${opt.text}"`);
-          await page.waitForTimeout(500);
-        } catch (e) {
-          console.log(`      ⚠️ Kon niet unchecken: "${opt.text}": ${e.message}`);
-        }
+        await page.mouse.click(opt.x, opt.y);
+        console.log(`      ❎ Unchecked: "${opt.text}" at (${opt.x}, ${opt.y})`);
+        await page.waitForTimeout(400);
       }
     }
     
-    // Second pass: ensure target IS checked
+    // Then: ensure target IS checked
     for (const opt of options) {
       const isTarget = opt.text.toLowerCase().includes(targetLower) || 
-                       targetLower.includes(opt.text.toLowerCase());
+                       targetLower.includes(opt.text.toLowerCase().replace(/\s/g, ''));
       
       if (isTarget && !opt.checked) {
-        // Need to CHECK this one — click it
-        try {
-          const optEl = page.locator(`text="${opt.text}"`).first();
-          await optEl.click({ timeout: 2000 });
-          console.log(`      ☑️ Checked: "${opt.text}"`);
-          await page.waitForTimeout(500);
-        } catch (e) {
-          console.log(`      ⚠️ Kon niet checken: "${opt.text}": ${e.message}`);
-        }
-      } else if (isTarget && opt.checked) {
+        await page.mouse.click(opt.x, opt.y);
+        console.log(`      ☑️ Checked: "${opt.text}" at (${opt.x}, ${opt.y})`);
+        await page.waitForTimeout(400);
+      } else if (isTarget) {
         console.log(`      ✅ "${opt.text}" was al geselecteerd`);
       }
     }
     
-    // Step 4: Close dropdown by clicking outside
-    await page.mouse.click(10, 400);
+    // Step 4: Close dropdown with ESCAPE (NOT by clicking — sidebar click = navigation!)
+    await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
     
     await takeDebugScreenshot(page, `marketplace-selected-${marketDropdownText}`);
@@ -561,7 +594,7 @@ async function main() {
     }
   }
   
-  console.log(`📊 Sellerboard P&L Export v8.5`);
+  console.log(`📊 Sellerboard P&L Export v8.6`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   Supabase: ${SUPABASE_KEY ? '✅' : '❌ Geen key'}`);
   console.log('');
