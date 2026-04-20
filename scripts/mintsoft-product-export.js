@@ -1,13 +1,26 @@
 /**
- * mintsoft-product-export.js v2.1
+ * mintsoft-product-export.js v3.0
  * 
  * Exports product + inventory data from Mintsoft (WePrepFBA UK).
- * module.exports pattern — receives { page, context, supabase, dbShot } from executor.
+ * Key fix: aggressive debug logging, URL tracking, proper error handling.
  */
 
 module.exports = async ({ page, context, supabase, dbShot }) => {
   const MINTSOFT_URL = 'https://om.mintsoft.co.uk';
   const fs = require('fs');
+  
+  const log = (msg) => console.log(`[Mintsoft] ${msg}`);
+  const shot = async (step, msg) => {
+    try {
+      const url = page.url();
+      log(`📸 ${step}: ${msg} [URL: ${url}]`);
+      if (dbShot) await dbShot(page, step, `${msg} | URL: ${url}`);
+    } catch (e) {
+      log(`dbShot failed at ${step}: ${e.message}`);
+    }
+  };
+
+  log('=== Mintsoft Product Export v3.0 ===');
   
   // ── Load saved cookies ──
   const storageStatePath = './mintsoft-storage-state.json';
@@ -16,185 +29,258 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
       const state = JSON.parse(fs.readFileSync(storageStatePath, 'utf8'));
       if (state.cookies && state.cookies.length > 0) {
         await context.addCookies(state.cookies);
-        console.log(`Loaded ${state.cookies.length} saved cookies`);
+        log(`Loaded ${state.cookies.length} saved cookies`);
       }
     } catch (e) {
-      console.log('Failed to load cookies:', e.message);
+      log('Failed to load cookies: ' + e.message);
     }
   }
 
   // ── Navigate to Product page ──
-  console.log('1/4 Opening Mintsoft Product Overview...');
-  await page.goto(`${MINTSOFT_URL}/Product`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  await page.waitForTimeout(4000);
+  log('1/5 Opening Mintsoft Product Overview...');
+  try {
+    await page.goto(`${MINTSOFT_URL}/Product`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (e) {
+    log('Navigation failed, trying without waitUntil: ' + e.message);
+    await page.goto(`${MINTSOFT_URL}/Product`, { timeout: 30000 });
+  }
+  await page.waitForTimeout(5000);
   
-  if (dbShot) await dbShot(page, 'after-navigate', 'Mintsoft: initial page');
-  
+  await shot('01-initial', 'Initial page');
+
   // ── Check login ──
-  const url = page.url();
-  if (url.includes('LogOn') || url.includes('login') || url.includes('Login')) {
-    console.log('Session expired — attempting auto-login...');
+  const currentUrl = page.url();
+  log(`Current URL: ${currentUrl}`);
+  
+  if (currentUrl.includes('LogOn') || currentUrl.includes('login') || currentUrl.includes('Login') || currentUrl.includes('Account/LogOn')) {
+    log('Session expired — logging in...');
     
     let username, password;
     if (supabase) {
       try {
-        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'mintsoft_login').single();
+        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'mintsoft').single();
         if (data) { username = data.username; password = data.password; }
-      } catch (e) { console.log('Credentials lookup failed:', e.message); }
+        log(`Credentials loaded: ${username ? 'yes' : 'no'}`);
+      } catch (e) { log('Credentials lookup failed: ' + e.message); }
     }
     
     if (!username || !password) {
-      return { error: 'Session expired and no credentials available. Run mintsoft-save-cookies.js first.' };
+      return { error: 'Session expired and no credentials available' };
     }
     
     try {
-      await page.waitForSelector('input[type="text"], input[type="email"], #UserName, input[name="UserName"]', { timeout: 10000 });
+      // Dump all input fields
+      const inputs = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('input, select, button[type="submit"]')).map(i => ({
+          tag: i.tagName, type: i.type, name: i.name, id: i.id, 
+          placeholder: i.placeholder, value: i.value
+        }));
+      });
+      log('Form fields: ' + JSON.stringify(inputs));
       
-      const userField = await page.$('#UserName, input[name="UserName"], input[type="email"], input[type="text"]');
-      if (userField) { await userField.fill(username); }
-      
-      const passField = await page.$('#Password, input[name="Password"], input[type="password"]');
-      if (passField) { await passField.fill(password); }
-      
-      if (dbShot) await dbShot(page, 'login-filled', 'Mintsoft: credentials filled');
-      
-      const loginBtn = await page.$('button[type="submit"], input[type="submit"], .btn-primary, #loginButton');
-      if (loginBtn) {
-        await loginBtn.click();
-        await page.waitForTimeout(5000);
+      // Fill username — try multiple selectors
+      const userSelectors = ['#UserName', 'input[name="UserName"]', 'input[type="email"]', 'input[type="text"]'];
+      for (const sel of userSelectors) {
+        const field = await page.$(sel);
+        if (field) {
+          await field.fill(username);
+          log(`Username filled with: ${sel}`);
+          break;
+        }
       }
       
-      if (dbShot) await dbShot(page, 'after-login', 'Mintsoft: after login');
+      // Fill password
+      const passSelectors = ['#Password', 'input[name="Password"]', 'input[type="password"]'];
+      for (const sel of passSelectors) {
+        const field = await page.$(sel);
+        if (field) {
+          await field.fill(password);
+          log(`Password filled with: ${sel}`);
+          break;
+        }
+      }
+      
+      await shot('02-login-filled', 'Credentials filled');
+      
+      // Click login
+      const loginSelectors = ['input[type="submit"]', 'button[type="submit"]', '.btn-primary', '#loginButton', 'button:has-text("Log")'];
+      for (const sel of loginSelectors) {
+        const btn = await page.$(sel);
+        if (btn) {
+          await btn.click();
+          log(`Login clicked: ${sel}`);
+          break;
+        }
+      }
+      
+      await page.waitForTimeout(6000);
+      await shot('03-after-login', 'After login');
       
       // Save cookies
       const cookies = await context.cookies();
       fs.writeFileSync(storageStatePath, JSON.stringify({ cookies }));
-      console.log('Saved cookies for next run');
       
-      // Navigate to product page
+      // Navigate to product page after login
+      log('Navigating to Product page after login...');
       await page.goto(`${MINTSOFT_URL}/Product`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(4000);
+      await page.waitForTimeout(5000);
+      
     } catch (loginErr) {
-      if (dbShot) await dbShot(page, 'login-error', `Login failed: ${loginErr.message}`);
-      return { error: `Login failed: ${loginErr.message}` };
+      await shot('login-error', 'Login failed: ' + loginErr.message);
+      return { error: 'Login failed: ' + loginErr.message };
     }
   }
   
-  console.log('   Logged in!');
-  if (dbShot) await dbShot(page, 'product-page', 'Mintsoft: product page loaded');
+  log('On product page!');
+  await shot('04-product-page', 'Product page loaded');
 
-  // ── Handle cookie popup ──
+  // ── Cookie popup ──
   try {
-    const acceptBtn = await page.$('text=Accept all, button:has-text("Accept")');
-    if (acceptBtn) { await acceptBtn.click({ timeout: 2000 }); console.log('   Cookie popup accepted'); }
+    const cookieBtn = await page.$('button:has-text("Accept"), a:has-text("Accept")');
+    if (cookieBtn) { await cookieBtn.click(); log('Cookie popup dismissed'); }
   } catch (e) { /* no popup */ }
 
-  // ── Try to show more records ──
-  console.log('2/4 Expanding page size...');
+  // ── Dump page content ──
+  log('2/5 Analyzing page...');
+  const pageInfo = await page.evaluate(() => {
+    const text = document.body.innerText.substring(0, 2000);
+    const tables = document.querySelectorAll('table');
+    const selects = document.querySelectorAll('select');
+    return {
+      bodyPreview: text,
+      tableCount: tables.length,
+      selectCount: selects.length,
+      title: document.title
+    };
+  });
+  log(`Page title: ${pageInfo.title}`);
+  log(`Tables: ${pageInfo.tableCount}, Selects: ${pageInfo.selectCount}`);
+  log(`Body preview: ${pageInfo.bodyPreview.substring(0, 500)}`);
+
+  // ── Expand page size ──
+  log('3/5 Expanding page size...');
   try {
-    const changed = await page.evaluate(() => {
+    const expanded = await page.evaluate(() => {
       const selects = document.querySelectorAll('select');
       for (const sel of selects) {
         const opts = Array.from(sel.options);
-        if (opts.some(o => o.value === '10' || o.value === '25')) {
-          // Find highest option
+        const hasPageSize = opts.some(o => ['10', '25', '50', '100'].includes(o.value));
+        if (hasPageSize) {
           const highest = opts.reduce((max, o) => {
             const v = parseInt(o.value);
-            return v > max ? v : max;
+            return (!isNaN(v) && v > max) ? v : max;
           }, 0);
-          for (const o of opts) {
-            if (parseInt(o.value) === highest) {
-              sel.value = o.value;
-              sel.dispatchEvent(new Event('change', { bubbles: true }));
-              return `Set page size to ${o.value}`;
-            }
+          if (highest > 0) {
+            sel.value = String(highest);
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            return `Set to ${highest}`;
           }
         }
       }
       return null;
     });
-    if (changed) {
-      console.log(`   ${changed}`);
-      await page.waitForTimeout(3000);
+    if (expanded) {
+      log(`Page size: ${expanded}`);
+      await page.waitForTimeout(4000);
     }
-  } catch (e) { console.log('   No page size control found'); }
+  } catch (e) { log('No page size control: ' + e.message); }
 
-  // ── Check total records ──
+  // ── Get total records ──
   const bodyText = await page.textContent('body');
-  const match = bodyText.match(/Displaying (\d+) - (\d+) of (\d+)/i);
+  const match = bodyText.match(/(?:Displaying|Showing)\s+(\d+)\s*[-–]\s*(\d+)\s+of\s+(\d+)/i);
   const totalRecords = match ? parseInt(match[3]) : 0;
-  console.log(`   Total records: ${totalRecords}`);
+  log(`Total records: ${totalRecords}`);
 
   // ── Get headers ──
-  console.log('3/4 Reading data...');
+  log('4/5 Reading data...');
   const headers = await page.evaluate(() => {
     const ths = document.querySelectorAll('table thead th');
-    return Array.from(ths).map(th => th.innerText.trim());
+    return Array.from(ths).map(th => th.innerText.trim()).filter(h => h);
   });
-  console.log('   Headers:', headers.join(' | '));
+  log('Headers: ' + headers.join(' | '));
 
-  // ── Paginate and collect all rows ──
+  if (headers.length === 0) {
+    log('WARNING: No table headers found!');
+    const htmlSnippet = await page.evaluate(() => document.body.innerHTML.substring(0, 5000));
+    log('HTML preview: ' + htmlSnippet.substring(0, 1000));
+    return {
+      error: 'No table headers found',
+      page_url: page.url(),
+      body_preview: pageInfo.bodyPreview.substring(0, 2000)
+    };
+  }
+
+  // ── Paginate and collect ──
   let allRows = [];
   let pageNum = 1;
+  const maxPages = 20;
   
-  while (true) {
-    console.log(`   Page ${pageNum}...`);
+  while (pageNum <= maxPages) {
+    log(`Page ${pageNum}...`);
     
     const rows = await page.evaluate((hdrs) => {
       const data = [];
-      const trs = document.querySelectorAll('table tbody tr');
-      trs.forEach(tr => {
+      document.querySelectorAll('table tbody tr').forEach(tr => {
         const cells = tr.querySelectorAll('td');
+        if (cells.length < 2) return;
         const row = {};
         cells.forEach((cell, i) => {
           const key = hdrs[i] || `col_${i}`;
           row[key] = cell.innerText.trim();
         });
-        if (Object.keys(row).length > 0 && Object.values(row).some(v => v !== '')) data.push(row);
+        if (Object.values(row).some(v => v !== '')) data.push(row);
       });
       return data;
     }, headers);
     
     allRows = allRows.concat(rows);
-    console.log(`   ${rows.length} rows (total: ${allRows.length})`);
+    log(`${rows.length} rows on page ${pageNum} (total: ${allRows.length})`);
     
-    if (allRows.length >= totalRecords || totalRecords === 0) break;
+    if (rows.length === 0 || (totalRecords > 0 && allRows.length >= totalRecords)) break;
     
-    // Navigate to next page
+    // Next page
     pageNum++;
-    const clicked = await page.evaluate((nextPage) => {
-      const links = document.querySelectorAll('a');
+    const clicked = await page.evaluate((np) => {
+      // Try pagination links
+      const links = document.querySelectorAll('.pagination a, .pager a, a[data-page]');
       for (const a of links) {
-        if (a.textContent.trim() === String(nextPage)) {
-          const parent = a.closest('ul, nav, .pagination, .paging, li');
-          if (parent) { a.click(); return true; }
+        if (a.textContent.trim() === String(np) || a.getAttribute('data-page') === String(np)) {
+          a.click();
+          return true;
         }
+      }
+      // Try "Next" button
+      const nextBtns = document.querySelectorAll('a:has-text("Next"), a:has-text("»"), .pagination .next a');
+      for (const btn of nextBtns) {
+        btn.click();
+        return true;
       }
       return false;
     }, pageNum);
     
     if (!clicked) {
-      console.log(`   Could not find page ${pageNum} — stopping`);
+      log(`No page ${pageNum} button found — stopping`);
       break;
     }
     
     await page.waitForTimeout(3000);
   }
   
-  if (dbShot) await dbShot(page, 'scraped', `Mintsoft: ${allRows.length} products scraped`);
+  await shot('05-scraped', `${allRows.length} products scraped across ${pageNum} pages`);
 
-  console.log(`\n4/4 TOTAL: ${allRows.length} products`);
+  log(`\n=== TOTAL: ${allRows.length} products ===`);
   allRows.forEach((row, i) => {
-    const sku = row['SKU'] || '';
-    const name = row['Name'] || '';
-    const inv = row['Inventory'] || '';
-    console.log(`  ${i+1}. ${sku} — ${name} — ${inv}`);
+    const sku = row['SKU'] || row['Sku'] || '';
+    const name = row['Name'] || row['Product Name'] || '';
+    const inv = row['Inventory'] || row['Stock'] || row['Qty'] || '';
+    log(`  ${i+1}. ${sku} — ${name} — Inv: ${inv}`);
   });
 
   return {
     success: true,
     scraped_at: new Date().toISOString(),
     source: 'mintsoft',
+    page_url: page.url(),
     headers,
     items: allRows,
     total_rows: allRows.length

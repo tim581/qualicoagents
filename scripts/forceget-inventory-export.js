@@ -1,15 +1,22 @@
 /**
- * forceget-inventory-export.js v3.1
+ * forceget-inventory-export.js v3.0
  * 
- * Exports inventory from Forceget Toronto (Angular SPA).
- * FIX: Angular client-side routing — use multiple URL patterns + text-based nav.
- * module.exports pattern — receives { page, context, supabase, dbShot } from executor.
+ * Exports inventory from Forceget Toronto (Angular app).
+ * Key fix: proper Angular SPA navigation via menu clicks, not URL navigation.
+ * Aggressive debugging with screenshots at every step.
  */
 
 module.exports = async ({ page, context, supabase, dbShot }) => {
   const FORCEGET_URL = 'https://app.forceget.com';
   const fs = require('fs');
   
+  const log = (msg) => console.log(`[Forceget] ${msg}`);
+  const shot = async (step, msg) => {
+    const url = page.url();
+    log(`📸 ${step}: ${msg} [URL: ${url}]`);
+    if (dbShot) await dbShot(page, step, `${msg} | URL: ${url}`);
+  };
+
   // ── Load saved cookies ──
   const storageStatePath = './forceget-storage-state.json';
   if (fs.existsSync(storageStatePath)) {
@@ -17,203 +24,234 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
       const state = JSON.parse(fs.readFileSync(storageStatePath, 'utf8'));
       if (state.cookies && state.cookies.length > 0) {
         await context.addCookies(state.cookies);
-        console.log(`Loaded ${state.cookies.length} saved cookies`);
+        log(`Loaded ${state.cookies.length} saved cookies`);
       }
     } catch (e) {
-      console.log('Failed to load cookies:', e.message);
+      log('Failed to load cookies: ' + e.message);
     }
   }
 
   // ── Navigate ──
-  console.log('1/6 Opening Forceget...');
+  log('1/6 Opening Forceget...');
   await page.goto(FORCEGET_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
   await page.waitForTimeout(5000);
-  
-  if (dbShot) await dbShot(page, 'after-navigate', `Forceget: ${page.url()}`);
-  
+  await shot('01-initial', 'Initial page loaded');
+
   // ── Check login ──
   const url = page.url();
-  if (url.includes('login') || url.includes('Login')) {
-    console.log('   Cookies expired — attempting auto-login...');
+  if (url.includes('login') || url.includes('Login') || url.includes('sign-in')) {
+    log('Need to login...');
     
     let username, password;
     if (supabase) {
       try {
-        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'forceget_login').single();
+        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'forceget').single();
         if (data) { username = data.username; password = data.password; }
-      } catch (e) { console.log('Credentials lookup failed:', e.message); }
+      } catch (e) { log('Credentials lookup failed: ' + e.message); }
     }
     
     if (!username || !password) {
-      return { error: 'Cookies expired and no credentials. Run forceget-save-cookies.js first.' };
+      return { error: 'No credentials available' };
     }
     
     try {
-      await page.waitForSelector('input[type="text"], input[type="email"], input[formcontrolname]', { timeout: 10000 });
-      const emailField = await page.$('input[type="email"], input[formcontrolname="email"], input[placeholder*="email" i], input[type="text"]');
-      if (emailField) {
-        await emailField.click();
-        await emailField.fill('');
-        await emailField.type(username, { delay: 50 });
-        await emailField.dispatchEvent('input');
+      // Wait for any input field
+      await page.waitForSelector('input', { timeout: 10000 });
+      
+      // Get all input fields and log them
+      const inputs = await page.evaluate(() => {
+        return Array.from(document.querySelectorAll('input')).map(i => ({
+          type: i.type, name: i.name, id: i.id, placeholder: i.placeholder,
+          formcontrolname: i.getAttribute('formcontrolname')
+        }));
+      });
+      log('Input fields found: ' + JSON.stringify(inputs));
+      
+      // Fill email — try multiple selectors
+      const emailSelectors = [
+        'input[formcontrolname="email"]',
+        'input[type="email"]',
+        'input[name="email"]',
+        'input[placeholder*="email" i]',
+        'input[placeholder*="Email" i]',
+        'input[type="text"]:first-of-type'
+      ];
+      
+      let emailFilled = false;
+      for (const sel of emailSelectors) {
+        const field = await page.$(sel);
+        if (field) {
+          await field.click();
+          await field.fill('');
+          await field.type(username, { delay: 30 });
+          await field.dispatchEvent('input');
+          await field.dispatchEvent('change');
+          log(`Email filled with selector: ${sel}`);
+          emailFilled = true;
+          break;
+        }
       }
+      if (!emailFilled) log('WARNING: Could not find email field!');
+      
+      // Fill password
       const passField = await page.$('input[type="password"]');
       if (passField) {
         await passField.click();
         await passField.fill('');
-        await passField.type(password, { delay: 50 });
+        await passField.type(password, { delay: 30 });
         await passField.dispatchEvent('input');
+        await passField.dispatchEvent('change');
+        log('Password filled');
       }
-      const loginBtn = await page.$('button[type="submit"], button:has-text("Log in"), button:has-text("Login")');
-      if (loginBtn) {
-        await loginBtn.click();
-        await page.waitForTimeout(5000);
-      }
-      const cookies = await context.cookies();
-      fs.writeFileSync(storageStatePath, JSON.stringify({ cookies }));
-      console.log('   Saved cookies');
-    } catch (loginErr) {
-      if (dbShot) await dbShot(page, 'login-error', `Login failed: ${loginErr.message}`);
-      return { error: `Login failed: ${loginErr.message}` };
-    }
-  }
-  
-  console.log('   ✅ Logged in! Current URL:', page.url());
-
-  // ── Step 2: Discover page structure ──
-  console.log('2/6 Discovering page structure...');
-  
-  // Log all visible links and menu items for debugging
-  const pageInfo = await page.evaluate(() => {
-    const links = [];
-    document.querySelectorAll('a, [routerlink], .nav-link, .menu-item, li a, .sidebar a, nav a').forEach(el => {
-      const text = el.innerText.trim();
-      const href = el.getAttribute('href') || '';
-      const routerLink = el.getAttribute('routerlink') || '';
-      if (text || href || routerLink) {
-        links.push({ text: text.substring(0, 80), href, routerLink, tag: el.tagName });
-      }
-    });
-    return {
-      url: window.location.href,
-      title: document.title,
-      links: links.slice(0, 50),
-      bodyPreview: document.body.innerText.substring(0, 1500)
-    };
-  });
-  
-  console.log(`   Page title: ${pageInfo.title}`);
-  console.log(`   Found ${pageInfo.links.length} links`);
-  pageInfo.links.forEach((l, i) => {
-    if (l.text.toLowerCase().includes('inventory') || l.text.toLowerCase().includes('warehouse') || l.routerLink.includes('inventory')) {
-      console.log(`   🎯 Link ${i}: "${l.text}" href=${l.href} routerLink=${l.routerLink}`);
-    }
-  });
-  
-  if (dbShot) await dbShot(page, 'page-structure', `Links: ${JSON.stringify(pageInfo.links.slice(0, 20))}`);
-
-  // ── Step 3: Navigate to Inventory ──
-  console.log('3/6 Navigating to Inventory...');
-  
-  let navigated = false;
-  
-  // Strategy 1: Click text that contains "Inventory at Forceget"
-  if (!navigated) {
-    try {
-      const el = page.getByText(/Inventory at Forceget/i).first();
-      if (await el.count() > 0) {
-        console.log('   Strategy 1: Clicking "Inventory at Forceget"...');
-        await el.click();
-        await page.waitForTimeout(4000);
-        navigated = true;
-        console.log('   ✅ Clicked! URL:', page.url());
-      }
-    } catch (e) { console.log('   Strategy 1 failed:', e.message); }
-  }
-  
-  // Strategy 2: Click any link/element containing "Inventory"
-  if (!navigated) {
-    try {
-      const el = page.getByText(/Inventory/i).first();
-      if (await el.count() > 0) {
-        console.log('   Strategy 2: Clicking first "Inventory" text...');
-        await el.click();
-        await page.waitForTimeout(4000);
-        navigated = true;
-        console.log('   ✅ Clicked! URL:', page.url());
-      }
-    } catch (e) { console.log('   Strategy 2 failed:', e.message); }
-  }
-  
-  // Strategy 3: Try common Angular URL patterns
-  if (!navigated) {
-    const urlPatterns = [
-      '/system/inventory',
-      '/inventory',
-      '/warehouse/inventory',
-      '/dashboard/inventory',
-      '/app/inventory',
-      '/forceget-warehouse/inventory'
-    ];
-    for (const pattern of urlPatterns) {
-      try {
-        console.log(`   Strategy 3: Trying ${FORCEGET_URL}${pattern}...`);
-        await page.goto(`${FORCEGET_URL}${pattern}`, { waitUntil: 'domcontentloaded', timeout: 10000 });
-        await page.waitForTimeout(3000);
-        const newUrl = page.url();
-        if (!newUrl.includes('login') && !newUrl.includes('404') && newUrl !== url) {
-          navigated = true;
-          console.log(`   ✅ Route works! URL: ${newUrl}`);
+      
+      await shot('02-login-filled', 'Credentials filled');
+      
+      // Click login button
+      const btnSelectors = [
+        'button[type="submit"]',
+        'button:has-text("Log in")',
+        'button:has-text("Login")',
+        'button:has-text("Sign in")',
+        'button:has-text("SIGN IN")'
+      ];
+      
+      for (const sel of btnSelectors) {
+        const btn = await page.$(sel);
+        if (btn) {
+          await btn.click();
+          log(`Clicked login button: ${sel}`);
           break;
         }
-      } catch (e) { /* try next */ }
+      }
+      
+      await page.waitForTimeout(6000);
+      await shot('03-after-login', 'After login');
+      
+      // Save cookies
+      const cookies = await context.cookies();
+      fs.writeFileSync(storageStatePath, JSON.stringify({ cookies }));
+    } catch (loginErr) {
+      await shot('login-error', 'Login failed: ' + loginErr.message);
+      return { error: 'Login failed: ' + loginErr.message };
     }
   }
   
-  // Strategy 4: Use Angular router directly
-  if (!navigated) {
+  log('Logged in!');
+  
+  // ── Dump page structure to find navigation ──
+  log('2/6 Analyzing page structure...');
+  const navInfo = await page.evaluate(() => {
+    // Find all links
+    const links = Array.from(document.querySelectorAll('a')).map(a => ({
+      text: a.textContent.trim().substring(0, 60),
+      href: a.href,
+      routerLink: a.getAttribute('routerlink') || a.getAttribute('routerLink'),
+      class: a.className.substring(0, 60)
+    })).filter(a => a.text);
+    
+    // Find sidebar/nav menus
+    const navs = Array.from(document.querySelectorAll('nav, .sidebar, .nav, [role="navigation"], .menu')).map(n => ({
+      tag: n.tagName, class: n.className.substring(0, 60),
+      text: n.textContent.trim().substring(0, 200)
+    }));
+    
+    return { links: links.slice(0, 50), navs: navs.slice(0, 10) };
+  });
+  
+  log('Links found: ' + navInfo.links.length);
+  navInfo.links.forEach(l => log(`  Link: "${l.text}" → ${l.href} [router: ${l.routerLink}]`));
+  
+  // ── Navigate to Inventory section ──
+  log('3/6 Looking for Inventory menu...');
+  
+  // Strategy 1: Click link with "Inventory" text
+  let navigated = false;
+  const inventorySelectors = [
+    'a:has-text("Inventory at Forceget")',
+    'a:has-text("Inventory At Forceget")',
+    'a[routerlink*="inventory"]',
+    'a[routerLink*="inventory"]',
+    'a[href*="inventory"]',
+    'a:has-text("Inventory")',
+    'a:has-text("Stock")',
+    'a:has-text("Warehouse")',
+  ];
+  
+  for (const sel of inventorySelectors) {
     try {
-      console.log('   Strategy 4: Injecting Angular router navigation...');
-      await page.evaluate(() => {
-        // Try to find Angular router
-        const el = document.querySelector('[routerlink*="inventory"]');
-        if (el) { el.click(); return; }
-        // Try ng.getComponent approach
-        const nav = document.querySelector('app-root, router-outlet');
-        if (nav && window.ng) {
-          const router = window.ng.getInjector(nav).get(window.ng.Router || 'Router');
-          if (router) router.navigate(['/inventory']);
-        }
-      });
-      await page.waitForTimeout(4000);
-      navigated = page.url() !== url;
-      if (navigated) console.log('   ✅ Angular router worked! URL:', page.url());
-    } catch (e) { console.log('   Strategy 4 failed:', e.message); }
+      const link = await page.$(sel);
+      if (link) {
+        const linkText = await link.textContent();
+        log(`Found inventory link: "${linkText.trim()}" with selector ${sel}`);
+        await link.click();
+        await page.waitForTimeout(4000);
+        navigated = true;
+        await shot('04-inventory-clicked', `Clicked: ${linkText.trim()}`);
+        break;
+      }
+    } catch (e) {
+      log(`Selector ${sel} failed: ${e.message}`);
+    }
   }
   
-  if (dbShot) await dbShot(page, 'after-inventory-nav', `Forceget: navigated=${navigated}, URL=${page.url()}`);
+  if (!navigated) {
+    log('No inventory link found — trying URL navigation...');
+    // Strategy 2: Try common Angular routes
+    const routes = [
+      '/inventory',
+      '/inventory-at-forceget', 
+      '/warehouse/inventory',
+      '/stock',
+      '/#/inventory',
+    ];
+    for (const route of routes) {
+      try {
+        await page.goto(FORCEGET_URL + route, { waitUntil: 'domcontentloaded', timeout: 15000 });
+        await page.waitForTimeout(3000);
+        const pageText = await page.textContent('body');
+        if (pageText.includes('SKU') || pageText.includes('Stock') || pageText.includes('On Hand')) {
+          log(`Route ${route} looks like inventory page!`);
+          navigated = true;
+          break;
+        }
+      } catch (e) { /* next route */ }
+    }
+    await shot('04-nav-attempts', 'After navigation attempts');
+  }
 
-  // ── Step 4: Click Live Inventory ──
-  console.log('4/6 Looking for Live Inventory...');
-  
+  // ── Look for Live Inventory sub-tab ──
+  log('4/6 Looking for Live Inventory tab...');
   try {
-    const liveInv = page.getByText(/Live Inventory/i).first();
-    if (await liveInv.count() > 0) {
-      console.log('   Clicking "Live Inventory"...');
-      await liveInv.click();
-      await page.waitForTimeout(4000);
-      console.log('   ✅ URL:', page.url());
-    } else {
-      console.log('   "Live Inventory" text not found — checking if already on right page');
+    const liveSelectors = [
+      'a:has-text("Live Inventory")',
+      'button:has-text("Live Inventory")',
+      'a:has-text("Live")',
+      '[routerlink*="live"]',
+      'a[href*="live"]',
+    ];
+    for (const sel of liveSelectors) {
+      const el = await page.$(sel);
+      if (el) {
+        const text = await el.textContent();
+        log(`Found Live Inventory: "${text.trim()}" with ${sel}`);
+        await el.click();
+        await page.waitForTimeout(4000);
+        await shot('05-live-inventory', 'Clicked Live Inventory');
+        break;
+      }
     }
   } catch (e) {
-    console.log('   Live Inventory click failed:', e.message);
+    log('Live Inventory click failed: ' + e.message);
   }
-  
-  if (dbShot) await dbShot(page, 'live-inventory-page', `Forceget: ${page.url()}`);
 
-  // ── Step 5: Wait for table ──
-  console.log('5/6 Waiting for data table...');
+  // ── Wait for table data ──
+  log('5/6 Waiting for data table...');
+  
+  // First, dump current page text to understand structure
+  const pagePreview = await page.evaluate(() => {
+    return document.body.innerText.substring(0, 3000);
+  });
+  log('Page text preview:\n' + pagePreview.substring(0, 1000));
   
   let retries = 0;
   let rowCount = 0;
@@ -222,29 +260,27 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
   while (retries < maxRetries && rowCount === 0) {
     await page.waitForTimeout(3000);
     
+    // Try multiple table selectors
     rowCount = await page.evaluate(() => {
-      // Try multiple table selectors (Angular apps use various patterns)
-      const selectors = [
-        'table tbody tr',
-        '.ag-row',
-        'tr.ng-star-inserted',
-        '[role="row"]',
-        'mat-row',
-        '.mat-row',
-        '.p-datatable-tbody tr',
-        'cdk-row',
-        '.table-row',
-        'tbody tr'
-      ];
-      for (const sel of selectors) {
-        const rows = document.querySelectorAll(sel);
-        if (rows.length > 0) return rows.length;
-      }
-      return 0;
+      // Standard table
+      let rows = document.querySelectorAll('table tbody tr');
+      if (rows.length > 0) return rows.length;
+      
+      // AG Grid
+      rows = document.querySelectorAll('.ag-row, .ag-center-cols-container [role="row"]');
+      if (rows.length > 0) return rows.length;
+      
+      // Angular material table
+      rows = document.querySelectorAll('mat-row, [role="row"]:not([role="columnheader"])');
+      if (rows.length > 0) return rows.length;
+      
+      // Any table-like rows
+      rows = document.querySelectorAll('tr:not(:first-child), .row-data, [class*="row"]:not([class*="header"])');
+      return rows.length;
     });
     
     retries++;
-    console.log(`   Attempt ${retries}/${maxRetries}: ${rowCount} rows found`);
+    log(`Attempt ${retries}/${maxRetries}: ${rowCount} rows`);
     
     if (rowCount === 0 && retries < maxRetries) {
       await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -253,60 +289,48 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
     }
   }
   
-  // ── Extra debug: dump page content if no rows ──
+  await shot('06-table-data', `${rowCount} rows found after ${retries} attempts`);
+  
   if (rowCount === 0) {
-    const debugInfo = await page.evaluate(() => {
-      return {
-        url: window.location.href,
-        title: document.title,
-        tables: document.querySelectorAll('table').length,
-        allTrs: document.querySelectorAll('tr').length,
-        bodyText: document.body.innerText.substring(0, 3000)
-      };
-    });
-    console.log('   ⚠️ No rows found. Debug info:');
-    console.log(`   URL: ${debugInfo.url}`);
-    console.log(`   Tables: ${debugInfo.tables}, TRs: ${debugInfo.allTrs}`);
-    console.log(`   Body preview: ${debugInfo.bodyText.substring(0, 500)}`);
-    
-    if (dbShot) await dbShot(page, 'no-data-debug', `Tables: ${debugInfo.tables}, TRs: ${debugInfo.allTrs}. Text: ${debugInfo.bodyText.substring(0, 500)}`);
-    
+    const bodyText = await page.evaluate(() => document.body.innerText.substring(0, 3000));
     return { 
-      error: 'No data rows found after waiting',
-      page_url: debugInfo.url,
-      tables_found: debugInfo.tables,
-      trs_found: debugInfo.allTrs,
-      body_preview: debugInfo.bodyText.substring(0, 1000)
+      error: 'No data rows found',
+      page_url: page.url(),
+      body_preview: bodyText.substring(0, 2000)
     };
   }
 
-  if (dbShot) await dbShot(page, 'table-loaded', `Forceget: ${rowCount} rows after ${retries} attempts`);
-
-  // ── Step 6: Scrape table ──
-  console.log('6/6 Scraping data...');
+  // ── Scrape table ──
+  log('6/6 Scraping inventory data...');
   
   const tableData = await page.evaluate(() => {
+    // Get headers first
     const headers = [];
-    // Try multiple header patterns
-    const headerEls = document.querySelectorAll('table thead th, th, .ag-header-cell, mat-header-cell, .p-column-title');
-    headerEls.forEach(th => {
+    document.querySelectorAll('table thead th, th').forEach(th => {
       const text = th.innerText.trim();
       if (text && !headers.includes(text)) headers.push(text);
     });
     
+    // If no standard headers, try AG Grid
+    if (headers.length === 0) {
+      document.querySelectorAll('.ag-header-cell-text, [role="columnheader"]').forEach(h => {
+        const text = h.innerText.trim();
+        if (text) headers.push(text);
+      });
+    }
+    
+    // Get rows
     const rows = [];
-    const trEls = document.querySelectorAll('table tbody tr, tr.ng-star-inserted, .ag-row, mat-row');
-    trEls.forEach(tr => {
-      const cells = tr.querySelectorAll('td, .ag-cell, mat-cell');
+    const trs = document.querySelectorAll('table tbody tr');
+    
+    trs.forEach(tr => {
+      const cells = tr.querySelectorAll('td');
       if (cells.length < 2) return;
       
       const row = {};
-      let colIdx = 0;
-      cells.forEach(cell => {
-        if (cell.querySelector('input[type=checkbox]')) return;
-        const key = headers[colIdx] || `col_${colIdx}`;
+      cells.forEach((cell, i) => {
+        const key = headers[i] || `col_${i}`;
         row[key] = cell.innerText.trim();
-        colIdx++;
       });
       
       if (Object.keys(row).length > 0 && Object.values(row).some(v => v !== '')) {
@@ -317,19 +341,18 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
     return { headers, rows };
   });
 
-  console.log(`\n✅ Scraped ${tableData.rows.length} products`);
+  log(`Scraped ${tableData.rows.length} items`);
   tableData.rows.forEach((row, i) => {
-    const sku = row['Sku'] || row['SKU'] || row['sku'] || '';
-    const name = row['Product Name'] || row['Name'] || row['name'] || '';
-    const onHand = row['Stock On Hand Unit'] || row['On Hand'] || row['Stock On Hand'] || '';
-    const available = row['Available'] || '';
-    console.log(`  ${i+1}. ${sku} — ${name} — OnHand: ${onHand} — Available: ${available}`);
+    const sku = row['SKU'] || row['Sku'] || row['sku'] || row['col_0'] || '';
+    const onHand = row['Stock On Hand Unit'] || row['Stock On Hand'] || row['On Hand'] || row['col_1'] || '';
+    log(`  ${i+1}. ${sku} — OnHand: ${onHand}`);
   });
 
   return {
     success: true,
     scraped_at: new Date().toISOString(),
     source: 'forceget',
+    page_url: page.url(),
     headers: tableData.headers,
     items: tableData.rows,
     total_rows: tableData.rows.length
