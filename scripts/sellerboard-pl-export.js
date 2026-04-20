@@ -1,5 +1,6 @@
-// Sellerboard P&L Export v5.0
-// Exports BOTH main P&L AND per-ASIN P&L.
+// Sellerboard P&L Export v6.0
+// FIX: per-ASIN view now properly scraped (longer wait, scroll, better table detection)
+// FIX: HTML cleanup — uses innerText, splits multi-line cells, strips noise
 // FULL data → Supabase `Sellerboard_Exports` table (agents query this)
 // FULL data → CSV files (local backup)
 // COMPACT summary → JSON (for Browser_Tasks.result)
@@ -77,11 +78,21 @@ async function writeToSupabase(market, viewType, headers, rows, periodStart, per
   }
 }
 
+// Clean cell text — take primary value, strip noise
+function cleanCell(text) {
+  if (!text) return '';
+  // innerText may have newlines from nested divs — take first meaningful line
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length === 0) return '';
+  // Return first line (primary value) — skip change indicators on subsequent lines
+  return lines[0];
+}
+
 (async () => {
   const arg = process.env.MARKET_SCOPE || process.argv[2];
   const markets = getMarkets(arg);
 
-  console.log(`📊 Sellerboard P&L Export v5.0`);
+  console.log(`📊 Sellerboard P&L Export v6.0`);
   console.log(`   Markten: ${markets.join(', ')}`);
   console.log(`   Views: Main P&L + Per ASIN`);
   console.log(`   Output: Supabase (full) + CSV (local) + JSON (summary)`);
@@ -161,8 +172,8 @@ async function writeToSupabase(market, viewType, headers, rows, periodStart, per
     summaryResults[marketplace] = {};
 
     const views = [
-      { name: 'main_pl', label: 'Main P&L', groupBy: '' },
-      { name: 'per_asin', label: 'Per ASIN', groupBy: '&groupBy=asin' },
+      { name: 'main_pl', label: 'Main P&L', groupBy: '', waitTime: 8000 },
+      { name: 'per_asin', label: 'Per ASIN', groupBy: '&groupBy=asin', waitTime: 15000 },
     ];
 
     for (const view of views) {
@@ -171,48 +182,155 @@ async function writeToSupabase(market, viewType, headers, rows, periodStart, per
       const url = `https://app.sellerboard.com/en/dashboard/?viewType=table&market%5B%5D=${encodeURIComponent(marketplace)}${view.groupBy}&tablePeriod%5Bstart%5D=${startTs}&tablePeriod%5Bend%5D=${endTs}&tablePeriod%5Bforecast%5D=false&tableSorting%5Bfield%5D=margin&tableSorting%5Bdirection%5D=desc`;
 
       await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      await page.waitForTimeout(8000);
+      await page.waitForTimeout(view.waitTime);
 
-      // ---- Scrape table ----
-      const tableData = await page.evaluate(() => {
-        const result = { headers: [], rows: [] };
+      // For per-ASIN: scroll down to trigger lazy loading
+      if (view.name === 'per_asin') {
+        console.log('      Scrolling to load all ASINs...');
+        for (let i = 0; i < 5; i++) {
+          await page.evaluate(() => window.scrollBy(0, 800));
+          await page.waitForTimeout(1000);
+        }
+        // Scroll back to top
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.waitForTimeout(2000);
+      }
 
-        let mainTable = null;
-        let maxCells = 0;
-        document.querySelectorAll('table').forEach(t => {
-          const n = t.querySelectorAll('td, th').length;
-          if (n > maxCells) { maxCells = n; mainTable = t; }
+      // ---- Diagnostic: list all tables ----
+      const tableDiag = await page.evaluate(() => {
+        const tables = document.querySelectorAll('table');
+        return Array.from(tables).map((t, i) => {
+          const rows = t.querySelectorAll('tr');
+          const firstRowText = rows.length > 0 ? rows[0].innerText.substring(0, 120) : '(empty)';
+          const secondRowText = rows.length > 1 ? rows[1].innerText.substring(0, 120) : '(empty)';
+          return {
+            idx: i,
+            rows: rows.length,
+            cells: t.querySelectorAll('td, th').length,
+            firstRow: firstRowText.replace(/\n/g, ' | '),
+            secondRow: secondRowText.replace(/\n/g, ' | '),
+          };
         });
+      });
 
-        if (mainTable) {
-          const trs = mainTable.querySelectorAll('tr');
-          let headerFound = false;
+      console.log(`      📊 Tables found: ${tableDiag.length}`);
+      tableDiag.forEach(t => {
+        console.log(`         Table ${t.idx}: ${t.rows} rows, ${t.cells} cells`);
+        console.log(`           Row 0: ${t.firstRow.substring(0, 100)}`);
+        console.log(`           Row 1: ${t.secondRow.substring(0, 100)}`);
+      });
 
-          trs.forEach(tr => {
-            const cells = Array.from(tr.querySelectorAll('td, th')).map(c => c.textContent.trim());
-            if (cells.length < 2) return;
+      // ---- Scrape table with clean extraction ----
+      const tableData = await page.evaluate((isPerAsin) => {
+        const result = { headers: [], rows: [], debug: '' };
 
-            if (!headerFound) {
-              const looksLikeHeader = cells.some(c =>
-                /jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|total|\d{1,2}[\s-].*\d{4}/i.test(c)
-              );
-              if (looksLikeHeader) {
-                result.headers = cells.filter(c => c);
-                headerFound = true;
-                return;
+        const tables = document.querySelectorAll('table');
+        if (tables.length === 0) {
+          result.debug = 'No tables found';
+          return result;
+        }
+
+        // Strategy: for per-ASIN, look for a table where rows have ASIN/product data
+        // For main P&L, pick the largest table
+        let targetTable = null;
+
+        if (isPerAsin) {
+          // Per-ASIN table: rows should be products, not P&L metrics
+          // Look for table where first column cells look like product names/ASINs
+          for (const t of tables) {
+            const trs = t.querySelectorAll('tr');
+            if (trs.length < 3) continue;
+            
+            // Check if rows look like products (not P&L metrics like "Sales", "Units", "PPC")
+            const plMetrics = ['sales', 'units', 'refund', 'promo', 'ppc', 'cogs', 'profit', 'margin', 'roi', 'fba', 'cost', 'other', 'vat', 'tax'];
+            let looksLikeProducts = 0;
+            let looksLikePL = 0;
+            
+            for (let i = 1; i < Math.min(trs.length, 10); i++) {
+              const firstCell = (trs[i].querySelector('td, th')?.innerText || '').trim().toLowerCase();
+              if (plMetrics.some(m => firstCell.includes(m))) {
+                looksLikePL++;
+              } else if (firstCell.length > 3) {
+                looksLikeProducts++;
               }
             }
-
-            if (cells[0] && headerFound) {
-              result.rows.push(cells);
+            
+            result.debug += `Table: ${trs.length} rows, products=${looksLikeProducts}, pl=${looksLikePL}; `;
+            
+            if (looksLikeProducts > looksLikePL && trs.length > 3) {
+              targetTable = t;
+              break;
             }
+          }
+        }
+
+        // Fallback: pick largest table
+        if (!targetTable) {
+          let maxCells = 0;
+          for (const t of tables) {
+            const n = t.querySelectorAll('td, th').length;
+            if (n > maxCells) { maxCells = n; targetTable = t; }
+          }
+          result.debug += `Fallback to largest table (${maxCells} cells); `;
+        }
+
+        if (!targetTable) {
+          result.debug += 'No target table found';
+          return result;
+        }
+
+        const trs = targetTable.querySelectorAll('tr');
+        let headerFound = false;
+
+        for (const tr of trs) {
+          const cells = Array.from(tr.querySelectorAll('td, th')).map(c => {
+            // Clean extraction: use innerText, take first line only
+            const text = c.innerText || '';
+            const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+            return lines.length > 0 ? lines[0] : '';
           });
+          
+          if (cells.length < 2) continue;
+          
+          // Filter empty cells
+          const nonEmpty = cells.filter(c => c);
+          if (nonEmpty.length < 2) continue;
+
+          if (!headerFound) {
+            // Header detection: has month names, dates, or "Total"
+            const looksLikeHeader = cells.some(c =>
+              /jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|total|\d{1,2}[\s-].*\d{4}/i.test(c)
+            );
+            // For per-ASIN: header might be "Product", "ASIN", "SKU", etc.
+            const looksLikeProductHeader = cells.some(c =>
+              /product|asin|sku|item|name/i.test(c)
+            );
+            
+            if (looksLikeHeader || looksLikeProductHeader) {
+              result.headers = cells;
+              headerFound = true;
+              continue;
+            }
+          }
+
+          if (headerFound && nonEmpty.length > 0) {
+            result.rows.push(cells);
+          }
         }
 
         return result;
-      });
+      }, view.name === 'per_asin');
 
       console.log(`      Rijen: ${tableData.rows.length}, Kolommen: ${tableData.headers.length}`);
+      if (tableData.debug) {
+        console.log(`      Debug: ${tableData.debug}`);
+      }
+      if (tableData.headers.length > 0) {
+        console.log(`      Headers: ${tableData.headers.slice(0, 5).join(', ')}...`);
+      }
+      if (tableData.rows.length > 0) {
+        console.log(`      First row: ${tableData.rows[0].slice(0, 3).join(', ')}...`);
+      }
 
       // ---- Write FULL data to Supabase ----
       if (tableData.headers.length > 0 && tableData.rows.length > 0) {
@@ -234,6 +352,7 @@ async function writeToSupabase(market, viewType, headers, rows, periodStart, per
         row_count: tableData.rows.length,
         col_count: tableData.headers.length,
         headers: tableData.headers,
+        first_rows: tableData.rows.slice(0, 3).map(r => r.slice(0, 3)),
         supabase: tableData.rows.length > 0 ? 'written' : 'no_data',
       };
     }
@@ -241,7 +360,7 @@ async function writeToSupabase(market, viewType, headers, rows, periodStart, per
 
   // ---- Save compact summary JSON ----
   const output = {
-    version: '5.0',
+    version: '6.0',
     exported_at: new Date().toISOString(),
     period: { start: periodStart, end: periodEnd },
     scope: arg || 'eu',
