@@ -1,4 +1,4 @@
-// playwright-task-executor.js v2.5 — 3-layer script resolution (hardcoded → actions → registry)
+// playwright-task-executor.js v3.0 — 3-layer script resolution + module.exports support
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
@@ -188,26 +188,118 @@ async function executeScriptTask(task, scriptName) {
   
   console.log(`\n🔧 Running script: ${scriptName} for task type: ${task.task_type}`);
   
-  // Set environment variables
-  const env = { ...process.env };
-  env.BROWSER_TASK_ID = String(task.id);
-  if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
-  if (task.task_type === 'to-simulation') env.RUN_MODE = 'to';
+  // Detect script type: module.exports (needs browser injection) vs standalone (runs with node)
+  const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
+  const isModuleExports = /module\.exports\s*=/.test(scriptContent);
   
-  try {
-    const output = execSync(`node "${scriptPath}"`, {
-      env,
-      cwd: __dirname,
-      timeout: 14400000, // 4 hours max
-      stdio: 'pipe',
-      encoding: 'utf-8',
+  if (isModuleExports) {
+    // ── MODULE.EXPORTS PATTERN ──────────────────────────────
+    // Script exports an async function: ({ page, context, supabase, dbShot }) => result
+    // We create a browser context, call the function, and capture the return value
+    console.log(`   📦 Detected module.exports pattern — injecting browser context`);
+    
+    const b = await initBrowser();
+    const context = await b.newContext({
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
+      viewport: { width: 1920, height: 1080 }
     });
-    console.log(output);
-    return { success: true, data: { output: output.substring(0, 2000) } };
-  } catch (error) {
-    const stderr = error.stderr ? error.stderr.substring(0, 2000) : error.message;
-    console.error(`❌ Script failed: ${stderr}`);
-    return { success: false, error: stderr };
+    const page = await context.newPage();
+    
+    // dbShot helper — saves screenshot to Flieber_Debug_Log
+    const runId = `${task.task_type}_${Date.now()}`;
+    const dbShot = async (p, step, message) => {
+      try {
+        const buf = await p.screenshot({ fullPage: false });
+        const b64 = buf.toString('base64');
+        await supabase.from('Flieber_Debug_Log').insert({
+          run_id: runId, step, message,
+          screenshot: `data:image/png;base64,${b64}`
+        });
+        console.log(`   📸 ${step}: ${message}`);
+      } catch (e) {
+        console.log(`   ⚠️ dbShot failed: ${e.message}`);
+      }
+    };
+    
+    try {
+      // Clear require cache to get fresh version
+      delete require.cache[require.resolve(scriptPath)];
+      const scriptFn = require(scriptPath);
+      
+      if (typeof scriptFn !== 'function') {
+        throw new Error('module.exports is not a function');
+      }
+      
+      const result = await scriptFn({ page, context, supabase, dbShot });
+      console.log(`✅ Module script returned:`, JSON.stringify(result).substring(0, 500));
+      
+      await page.close();
+      await context.close();
+      
+      return { success: true, data: result || {} };
+    } catch (error) {
+      console.error(`❌ Module script failed: ${error.message}`);
+      if (dbShot) await dbShot(page, 'error', error.message).catch(() => {});
+      await page.close().catch(() => {});
+      await context.close().catch(() => {});
+      return { success: false, error: error.message };
+    }
+  } else {
+    // ── STANDALONE PATTERN ───────────────────────────────────
+    // Script runs independently with node, captures stdout
+    console.log(`   🖥️ Standalone script — running with node`);
+    
+    const env = { ...process.env };
+    env.BROWSER_TASK_ID = String(task.id);
+    if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
+    if (task.task_type === 'to-simulation') env.RUN_MODE = 'to';
+    
+    try {
+      const output = execSync(`node "${scriptPath}"`, {
+        env,
+        cwd: __dirname,
+        timeout: 14400000, // 4 hours max
+        stdio: 'pipe',
+        encoding: 'utf-8',
+      });
+      console.log(output);
+      
+      // Check if script wrote a JSON file we can read
+      const jsonOutputPath = scriptPath.replace('.js', '-data.json')
+        .replace('stock-export', 'stock-data')
+        .replace('product-export', 'product-data')
+        .replace('inventory-export', 'inventory-data');
+      
+      let jsonData = null;
+      // Try common output file patterns
+      const possibleFiles = [
+        path.join(__dirname, scriptName.replace('.js', '-data.json')),
+        path.join(__dirname, 'forceget-inventory-data.json'),
+        path.join(__dirname, 'mintsoft-product-data.json'),
+        path.join(__dirname, 'corax-stock-data.json'),
+      ];
+      
+      for (const f of possibleFiles) {
+        if (fs.existsSync(f)) {
+          try {
+            jsonData = JSON.parse(fs.readFileSync(f, 'utf-8'));
+            console.log(`📄 Found JSON output: ${f} (${Array.isArray(jsonData) ? jsonData.length : 'object'} items)`);
+            break;
+          } catch (e) {
+            console.log(`⚠️ Could not parse ${f}: ${e.message}`);
+          }
+        }
+      }
+      
+      if (jsonData) {
+        return { success: true, data: { items: jsonData, output: output.substring(0, 1000) } };
+      }
+      return { success: true, data: { output: output.substring(0, 2000) } };
+    } catch (error) {
+      const stderr = error.stderr ? error.stderr.substring(0, 2000) : error.message;
+      console.error(`❌ Script failed: ${stderr}`);
+      return { success: false, error: stderr };
+    }
   }
 }
 
@@ -324,7 +416,7 @@ async function pollTasks() {
 }
 
 async function main() {
-  console.log('🎬 Browser Task Executor v2.5 — 3-layer script resolution');
+  console.log('🎬 Browser Task Executor v3.0 — 3-layer script resolution');
   console.log(`📍 Checking Supabase: ${SUPABASE_URL}`);
 
   if (!SUPABASE_URL || !SUPABASE_KEY) {
