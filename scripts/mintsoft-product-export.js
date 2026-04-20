@@ -27,7 +27,7 @@ const path = require('path');
     }
     console.log('   Ingelogd!');
 
-    // Handle cookie popup if it appears
+    // Handle cookie popup
     console.log('2/5 Cookie popup checken...');
     try {
       const acceptBtn = await page.locator('text=Accept all').first();
@@ -38,17 +38,39 @@ const path = require('path');
       console.log('   Geen cookie popup');
     }
 
-    // Click Products > Overview
+    // Navigate to Products > Overview
     console.log('3/5 Navigeren naar Products > Overview...');
     await page.click('text=Products');
     await page.waitForTimeout(1500);
     await page.click('text=Overview');
     await page.waitForTimeout(3000);
 
-    // Scrape ALL pages
-    console.log('4/5 Data uitlezen...');
+    // Try to show max records per page
+    console.log('4/5 Probeer alle records te tonen...');
+    try {
+      // Mintsoft typically has a page-size dropdown (10, 25, 50, 100)
+      const pageSizeSelect = await page.$('select[name*="length"], select[name*="pageSize"], .dataTables_length select, select.form-control');
+      if (pageSizeSelect) {
+        // Get all options and pick the largest
+        const options = await pageSizeSelect.evaluate(el => {
+          return Array.from(el.options).map(o => ({ value: o.value, text: o.text }));
+        });
+        console.log('   Paginatie opties:', options.map(o => o.text).join(', '));
+        const maxOption = options[options.length - 1];
+        await pageSizeSelect.selectOption(maxOption.value);
+        console.log(`   Geselecteerd: ${maxOption.text} records per pagina`);
+        await page.waitForTimeout(3000);
+      } else {
+        console.log('   Geen page-size dropdown gevonden');
+      }
+    } catch (e) {
+      console.log('   Page-size wijzigen mislukt:', e.message);
+    }
 
-    // First get headers
+    // Scrape data
+    console.log('5/5 Data uitlezen...');
+
+    // Get headers
     const headers = await page.evaluate(() => {
       const table = document.querySelector('table');
       if (!table) return [];
@@ -81,23 +103,56 @@ const path = require('path');
       }, headers);
 
       allRows = allRows.concat(rows);
-      console.log(`   ${rows.length} rijen gevonden`);
+      console.log(`   ${rows.length} rijen gevonden (totaal: ${allRows.length})`);
 
-      // Check for next page
-      const nextBtn = await page.$('.pagination .next:not(.disabled) a, a[rel="next"]:not(.disabled)');
-      if (!nextBtn) {
-        // Try numbered pagination
-        const nextPage = await page.$(`a[href*="page=${pageNum + 1}"], a[href*="Page=${pageNum + 1}"]`);
-        if (!nextPage) break;
-        await nextPage.click();
-      } else {
-        await nextBtn.click();
+      if (rows.length === 0) break;
+
+      // Look for next page button — try multiple selectors
+      let clicked = false;
+
+      // Try: numbered pagination links (2, 3, 4...)
+      const nextPageNum = pageNum + 1;
+      const selectors = [
+        `.paginate_button:not(.disabled):not(.active) a:text("${nextPageNum}")`,
+        `a.paginate_button:text("${nextPageNum}")`,
+        `.pagination li:not(.disabled):not(.active) a:text("${nextPageNum}")`,
+        `a[data-dt-idx="${nextPageNum}"]`,
+        '.paginate_button.next:not(.disabled)',
+        '.pagination-next:not(.disabled) a',
+        'a.next:not(.disabled)',
+        'li.next:not(.disabled) a',
+        'a[rel="next"]'
+      ];
+
+      for (const sel of selectors) {
+        try {
+          const btn = await page.$(sel);
+          if (btn) {
+            const isDisabled = await btn.evaluate(el => {
+              return el.classList.contains('disabled') || 
+                     el.parentElement?.classList.contains('disabled') ||
+                     el.getAttribute('aria-disabled') === 'true';
+            });
+            if (!isDisabled) {
+              await btn.click();
+              clicked = true;
+              console.log(`   Next page via: ${sel}`);
+              break;
+            }
+          }
+        } catch (e) { /* try next selector */ }
       }
+
+      if (!clicked) {
+        console.log('   Geen volgende pagina gevonden — klaar');
+        break;
+      }
+
       await page.waitForTimeout(2000);
       pageNum++;
     }
 
-    console.log(`\n5/5 TOTAAL: ${allRows.length} producten over ${pageNum} pagina(s)`);
+    console.log(`\nTOTAAL: ${allRows.length} producten over ${pageNum} pagina(s)`);
 
     // Save as JSON
     const outputPath = path.join(__dirname, 'mintsoft-product-data.json');
