@@ -5,8 +5,8 @@ const { chromium } = require('playwright');
   const context = await browser.newContext({ storageState: 'bol-storage-state.json' });
   const page = await context.newPage();
 
-  console.log('Loading Bol.com with saved cookies...');
-  await page.goto('https://www.bol.com/nl/rnwy/account/overzicht', { waitUntil: 'domcontentloaded' });
+  console.log('Loading Bol.com Partner with saved cookies...');
+  await page.goto('https://partner.bol.com/sdd/home/', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(5000);
 
   const url = page.url();
@@ -15,7 +15,7 @@ const { chromium } = require('playwright');
   if (url.includes('login')) {
     console.log('COOKIES VERLOPEN — run bol-save-cookies.js opnieuw');
   } else {
-    console.log('COOKIES WERKEN!');
+    console.log('COOKIES WERKEN! Partner portal geladen.');
   }
 
   await page.waitForTimeout(10000);
