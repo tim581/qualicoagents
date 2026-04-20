@@ -28,7 +28,6 @@ const path = require('path');
     console.log('   Ingelogd!');
 
     // Handle cookie popup
-    console.log('2/4 Cookie popup checken...');
     try {
       const acceptBtn = page.locator('text=Accept all').first();
       await acceptBtn.click({ timeout: 3000 });
@@ -38,11 +37,51 @@ const path = require('path');
       console.log('   Geen cookie popup');
     }
 
+    // Try to show all records by changing the page size dropdown
+    console.log('2/4 Probeer alle records te tonen...');
+    try {
+      // Look for a select element near the pagination
+      const changed = await page.evaluate(() => {
+        // Method 1: find select with option 10 selected
+        const selects = document.querySelectorAll('select');
+        for (const sel of selects) {
+          for (const opt of sel.options) {
+            if (opt.value === '10' && opt.selected) {
+              // Try to set to 100 or highest available
+              for (const o of sel.options) {
+                if (parseInt(o.value) >= 50) {
+                  sel.value = o.value;
+                  sel.dispatchEvent(new Event('change', { bubbles: true }));
+                  return `Changed to ${o.value}`;
+                }
+              }
+              // Just pick the last option
+              const last = sel.options[sel.options.length - 1];
+              sel.value = last.value;
+              sel.dispatchEvent(new Event('change', { bubbles: true }));
+              return `Changed to ${last.value}`;
+            }
+          }
+        }
+        return null;
+      });
+      
+      if (changed) {
+        console.log(`   ${changed}`);
+        await page.waitForTimeout(3000);
+      } else {
+        console.log('   Geen page-size dropdown gevonden, gebruik paginatie');
+      }
+    } catch (e) {
+      console.log('   Dropdown niet gevonden:', e.message);
+    }
+
     // Check record count
-    const recordInfo = await page.textContent('body');
-    const match = recordInfo.match(/Displaying \d+ - \d+ of (\d+) records/);
-    const totalRecords = match ? parseInt(match[1]) : 'onbekend';
-    console.log(`   Totaal records: ${totalRecords}`);
+    const bodyText = await page.textContent('body');
+    const match = bodyText.match(/Displaying \d+ - (\d+) of (\d+) records/);
+    const showing = match ? parseInt(match[1]) : 0;
+    const totalRecords = match ? parseInt(match[2]) : 0;
+    console.log(`   Toont ${showing} van ${totalRecords} records`);
 
     // Get headers
     console.log('3/4 Data uitlezen...');
@@ -56,6 +95,7 @@ const path = require('path');
 
     let allRows = [];
     let pageNum = 1;
+    const totalPages = Math.ceil(totalRecords / (showing || 10));
 
     while (true) {
       console.log(`   Pagina ${pageNum} uitlezen...`);
@@ -72,7 +112,7 @@ const path = require('path');
             const key = hdrs[i] || `col_${i}`;
             row[key] = cell.innerText.trim();
           });
-          if (Object.keys(row).length > 0) data.push(row);
+          if (Object.keys(row).length > 0 && Object.values(row).some(v => v !== '')) data.push(row);
         });
         return data;
       }, headers);
@@ -80,65 +120,47 @@ const path = require('path');
       allRows = allRows.concat(rows);
       console.log(`   ${rows.length} rijen (totaal: ${allRows.length})`);
 
-      if (rows.length === 0) break;
+      // If we got all records already, stop
+      if (allRows.length >= totalRecords) {
+        console.log('   Alle records verzameld!');
+        break;
+      }
 
-      // Click the ">" next page button
-      // Mintsoft pagination: << < 1 [2] > >>
-      const nextBtn = await page.evaluate(() => {
+      // Try clicking next page number directly
+      pageNum++;
+      const clicked = await page.evaluate((nextPage) => {
+        // Find pagination links — look for the page number
         const links = document.querySelectorAll('a');
         for (const a of links) {
-          if (a.textContent.trim() === '›' || a.textContent.trim() === '>') {
-            const li = a.closest('li');
-            if (li && li.classList.contains('disabled')) return 'disabled';
-            return 'found';
-          }
-        }
-        // Also check for "Next" text
-        for (const a of links) {
-          if (a.textContent.trim().toLowerCase() === 'next') {
-            const li = a.closest('li');
-            if (li && li.classList.contains('disabled')) return 'disabled';
-            return 'found';
-          }
-        }
-        return 'not_found';
-      });
-
-      if (nextBtn === 'disabled' || nextBtn === 'not_found') {
-        console.log('   Laatste pagina bereikt');
-        break;
-      }
-
-      // Click the > button
-      try {
-        await page.evaluate(() => {
-          const links = document.querySelectorAll('a');
-          for (const a of links) {
-            if (a.textContent.trim() === '›' || a.textContent.trim() === '>') {
-              const li = a.closest('li');
-              if (!li || !li.classList.contains('disabled')) {
-                a.click();
-                return;
-              }
-            }
-          }
-          // Fallback: click "Next"
-          for (const a of links) {
-            if (a.textContent.trim().toLowerCase() === 'next') {
+          if (a.textContent.trim() === String(nextPage)) {
+            // Make sure it's in pagination area (has nearby page numbers)
+            const parent = a.closest('ul, nav, .pagination, .paging');
+            if (parent || a.closest('li')) {
               a.click();
-              return;
+              return true;
             }
           }
-        });
-        await page.waitForTimeout(3000);
-        pageNum++;
-      } catch (e) {
-        console.log('   Paginatie klik mislukt:', e.message);
+        }
+        // Fallback: click any link with the page number
+        for (const a of links) {
+          if (a.textContent.trim() === String(nextPage) && a.href && a.href.includes('page')) {
+            a.click();
+            return true;
+          }
+        }
+        return false;
+      }, pageNum);
+
+      if (!clicked) {
+        console.log(`   Kon pagina ${pageNum} niet vinden — stoppen`);
         break;
       }
+
+      console.log(`   Navigeren naar pagina ${pageNum}...`);
+      await page.waitForTimeout(3000);
     }
 
-    console.log(`\n4/4 TOTAAL: ${allRows.length} producten over ${pageNum} pagina(s)`);
+    console.log(`\n4/4 TOTAAL: ${allRows.length} producten`);
 
     // Save as JSON
     const outputPath = path.join(__dirname, 'mintsoft-product-data.json');
@@ -147,8 +169,10 @@ const path = require('path');
 
     // Print summary
     allRows.forEach((row, i) => {
-      const vals = Object.values(row).slice(0, 5).join(' | ');
-      console.log(`  ${i + 1}. ${vals}`);
+      const sku = row['SKU'] || '';
+      const name = row['Name'] || '';
+      const inv = row['Inventory'] || '';
+      console.log(`  ${i + 1}. ${sku} — ${name} — ${inv}`);
     });
 
     console.log('\nDONE!');
