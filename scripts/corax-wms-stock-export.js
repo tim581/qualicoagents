@@ -1,6 +1,6 @@
 const { chromium } = require('playwright');
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
 (async () => {
   const browser = await chromium.launch({
@@ -16,12 +16,10 @@ const fs = require('fs');
   const page = await context.newPage();
 
   try {
-    // Navigate to dashboard
-    console.log('1/5 Opening Corax WMS...');
+    console.log('1/4 Opening Corax WMS...');
     await page.goto('https://kampspijnacker.coraxwms.nl/#/Dashboard', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
 
-    // Check if logged in
     const url = page.url();
     if (url.includes('login') || url.includes('Login')) {
       console.log('COOKIES VERLOPEN — run corax-wms-save-cookies.js opnieuw');
@@ -30,33 +28,103 @@ const fs = require('fs');
     }
     console.log('   Ingelogd!');
 
-    // Step 1: Click "Voorraad"
-    console.log('2/5 Klik Voorraad...');
+    // Step 1: Click Voorraad
+    console.log('2/4 Klik Voorraad...');
     await page.click('text=Voorraad');
     await page.waitForTimeout(1500);
 
-    // Step 2: Click "Stocks per artikel"
-    console.log('3/5 Klik Stocks per artikel...');
+    // Step 2: Click Stocks per artikel
+    console.log('3/4 Klik Stocks per artikel...');
     await page.click('text=Stocks per artikel');
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(4000);
 
-    // Step 3: Click "Exporteren" — this opens confirmation dialog
-    console.log('4/5 Klik Exporteren...');
+    // Step 3: Scrape ALL data from the table (all pages)
+    console.log('4/4 Data uitlezen van pagina...');
+    
+    let allRows = [];
+    let pageNum = 1;
+    
+    while (true) {
+      console.log(`   Pagina ${pageNum} uitlezen...`);
+      
+      const rows = await page.evaluate(() => {
+        const table = document.querySelector('table');
+        if (!table) return [];
+        const data = [];
+        const trs = table.querySelectorAll('tbody tr');
+        trs.forEach(tr => {
+          const cells = tr.querySelectorAll('td');
+          const row = {};
+          cells.forEach((cell, i) => {
+            row[`col_${i}`] = cell.innerText.trim();
+          });
+          if (Object.keys(row).length > 0) data.push(row);
+        });
+        return data;
+      });
+
+      // Also get headers on first page
+      if (pageNum === 1) {
+        const headers = await page.evaluate(() => {
+          const table = document.querySelector('table');
+          if (!table) return [];
+          const ths = table.querySelectorAll('thead th');
+          return Array.from(ths).map(th => th.innerText.trim());
+        });
+        console.log('   Headers:', headers.join(' | '));
+      }
+
+      allRows = allRows.concat(rows);
+      console.log(`   ${rows.length} rijen gevonden`);
+
+      // Check for next page button
+      const nextBtn = await page.$('text=\u203A');
+      if (!nextBtn) {
+        // Try alternative next page selectors
+        const nextBtn2 = await page.$('.pagination-next:not(.disabled)');
+        if (!nextBtn2) break;
+        await nextBtn2.click();
+      } else {
+        const isDisabled = await nextBtn.evaluate(el => el.closest('li')?.classList.contains('disabled') || el.disabled);
+        if (isDisabled) break;
+        await nextBtn.click();
+      }
+      await page.waitForTimeout(2000);
+      pageNum++;
+    }
+
+    console.log(`\nTOTAAL: ${allRows.length} artikelen over ${pageNum} pagina(s)`);
+    
+    // Save scraped data as JSON
+    const outputPath = path.join(__dirname, 'corax-stock-data.json');
+    fs.writeFileSync(outputPath, JSON.stringify(allRows, null, 2));
+    console.log(`Data opgeslagen: ${outputPath}`);
+
+    // Print summary
+    allRows.forEach((row, i) => {
+      const vals = Object.values(row).join(' | ');
+      console.log(`  ${i + 1}. ${vals}`);
+    });
+
+    // Also try the XLS export
+    console.log('\nBonus: XLS export proberen...');
     await page.click('text=Exporteren');
-    await page.waitForTimeout(1500);
+    await page.waitForTimeout(2000);
+    
+    const downloadPromise = page.waitForEvent('download', { timeout: 15000 });
+    await page.click('text=JA');
+    
+    try {
+      const download = await downloadPromise;
+      const fileName = download.suggestedFilename() || 'corax-stock-export.xls';
+      const savePath = path.join(__dirname, fileName);
+      await download.saveAs(savePath);
+      console.log(`XLS opgeslagen: ${savePath}`);
+    } catch (e) {
+      console.log('XLS download niet gelukt (geen probleem, data is al gescraped)');
+    }
 
-    // Step 4: Click "JA" in confirmation and wait for download
-    console.log('5/5 Bevestig export (Ja)...');
-    const [download] = await Promise.all([
-      page.waitForEvent('download', { timeout: 30000 }),
-      page.click('text=JA')
-    ]);
-
-    // Save the downloaded file
-    const fileName = download.suggestedFilename() || 'corax-stock-export.xlsx';
-    const savePath = path.join(__dirname, fileName);
-    await download.saveAs(savePath);
-    console.log(`DONE — Bestand opgeslagen: ${savePath}`);
+    console.log('\nDONE!');
 
   } catch (err) {
     console.error('FOUT:', err.message);
