@@ -6,14 +6,16 @@ const fs = require('fs');
   const context = await browser.newContext();
   const page = await context.newPage();
 
-  await page.goto('https://partner.bol.com/');
+  await page.goto('about:blank');
 
   console.log('');
-  console.log('👋 Log handmatig in op Bol.com Partner in het browser venster.');
-  console.log('⏳ Ik wacht tot je klaar bent...');
+  console.log('\u{1f44b} Browser is open!');
   console.log('');
-  console.log('✅ Als je het Partner dashboard ziet:');
-  console.log('   Druk hier op ENTER om cookies op te slaan.');
+  console.log('Stappen:');
+  console.log('1. Ga naar partner.bol.com (of de login URL) in de adresbalk');
+  console.log('2. Log in met je Partner account');
+  console.log('3. Wacht tot je het Partner dashboard ziet');
+  console.log('4. Druk hier op ENTER om cookies op te slaan');
   console.log('');
 
   await new Promise(resolve => {
@@ -26,8 +28,8 @@ const fs = require('fs');
   fs.writeFileSync('bol-partner-cookies.json', JSON.stringify(cookies, null, 2));
   fs.writeFileSync('bol-partner-storage-state.json', JSON.stringify(storage, null, 2));
 
-  console.log(`✅ ${cookies.length} cookies opgeslagen in bol-partner-cookies.json`);
-  console.log('✅ Storage state opgeslagen in bol-partner-storage-state.json');
+  console.log(`\u2705 ${cookies.length} cookies opgeslagen in bol-partner-cookies.json`);
+  console.log('\u2705 Storage state opgeslagen in bol-partner-storage-state.json');
 
   await browser.close();
 })();
