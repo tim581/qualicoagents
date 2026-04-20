@@ -1,6 +1,6 @@
-// Sellerboard P&L Export v8.3
-// Flow from PDF + Tim's correction: P&L tab FIRST → then marketplace dropdown
-// Never use URL params for marketplace — they get lost on navigation
+// Sellerboard P&L Export v8.4
+// Flow from PDF: navigate to P&L → marketplace dropdown → scrape
+// NEVER use market[] URL param — always use on-page dropdown
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -13,11 +13,11 @@ const STORAGE_STATE = path.join(__dirname, 'sellerboard-storage-state.json');
 
 // Account mapping — from PDF step 3-4
 const ACCOUNTS = {
-  eu: { name: 'Tim@qualico.be' },
-  us: { name: 'AMZ USA' }
+  eu: { name: 'Tim@qualico.be', label: 'EU' },
+  us: { name: 'AMZ USA', label: 'US/CA' }
 };
 
-// Market → which account + how it appears in the marketplace dropdown
+// Market → which account it belongs to + exact dropdown text
 const MARKET_CONFIG = {
   'Amazon.de':     { account: 'eu', dropdownText: 'Amazon.de' },
   'Amazon.co.uk':  { account: 'eu', dropdownText: 'Amazon.co.uk' },
@@ -26,7 +26,7 @@ const MARKET_CONFIG = {
   'Amazon.es':     { account: 'eu', dropdownText: 'Amazon.es' },
   'Amazon.nl':     { account: 'eu', dropdownText: 'Amazon.nl' },
   'Amazon.com':    { account: 'us', dropdownText: 'Amazon.com' },
-  'Amazon.ca':     { account: 'us', dropdownText: 'Amazon.ca' }  // May be "Amazon.com/Amazon.ca" — script tries both
+  'Amazon.ca':     { account: 'us', dropdownText: 'Amazon.ca' }
 };
 
 const EU_MARKETS = ['Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
@@ -42,72 +42,89 @@ const P_AND_L_METRICS = [
 ];
 
 // --- HELPERS ---
-async function takeScreenshot(page, label) {
-  try {
-    const dir = path.join(__dirname, 'debug-screenshots');
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `sb-${label}-${Date.now()}.png`);
-    await page.screenshot({ path: file, fullPage: false });
-    console.log(`      📸 ${path.basename(file)}`);
-  } catch (e) { /* ignore */ }
+function buildDashboardUrl(groupBy = null) {
+  // NO market param — marketplace is selected via on-page dropdown
+  const now = new Date();
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const start = new Date(now.getFullYear() - 1, now.getMonth(), 1);
+  
+  const params = new URLSearchParams();
+  params.set('viewType', 'table');
+  params.set('tablePeriod[start]', Math.floor(start.getTime() / 1000).toString());
+  params.set('tablePeriod[end]', Math.floor(end.getTime() / 1000).toString());
+  params.set('tablePeriod[forecast]', 'false');
+  params.set('tableSorting[field]', 'margin');
+  params.set('tableSorting[direction]', 'desc');
+  
+  if (groupBy) params.set('groupBy', groupBy);
+  
+  return `https://app.sellerboard.com/en/dashboard/?${params.toString()}`;
 }
 
 async function switchAccount(page, targetAccount) {
-  console.log(`   🔄 Switchen naar ${ACCOUNTS[targetAccount].name}...`);
+  console.log(`   🔄 Switchen naar ${targetAccount} account...`);
   
-  // PDF Step 3: Click on account name/avatar in top-right
-  // From screenshot: "AMZ USA ∨" is at the very top-right
   try {
-    // First try clicking the account text directly
+    // Step 1: Click the avatar/account button in the top-right
     let clicked = false;
     
-    for (const searchText of ['Tim@qualico.be', 'tim@qualico.be', 'AMZ USA']) {
+    // Look for account text in top navigation
+    for (const selector of [
+      'text=Tim@qualico.be', 'text=tim@qualico.be', 
+      'text=AMZ USA', 'text=AMZ usa'
+    ]) {
       try {
-        const el = page.locator(`text="${searchText}"`).first();
+        const el = page.locator(selector).first();
         const box = await el.boundingBox({ timeout: 2000 });
-        if (box && box.y < 80) {  // Must be in header area
+        if (box && box.y < 80) {
           await el.click({ timeout: 3000 });
           clicked = true;
-          console.log(`      ✅ Opened dropdown via: "${searchText}"`);
+          console.log(`      ✅ Klikte op: ${selector}`);
           break;
         }
       } catch (e) { /* try next */ }
     }
     
-    // Fallback: click top-right avatar area
+    // Fallback: click position in top-right where avatar is
     if (!clicked) {
       const viewport = page.viewportSize();
-      await page.mouse.click(viewport.width - 60, 30);
-      console.log(`      ✅ Opened dropdown via position click`);
+      const x = viewport.width - 60;
+      const y = 35;
+      await page.mouse.click(x, y);
+      clicked = true;
+      console.log(`      ✅ Klikte op positie (${x}, ${y})`);
     }
     
     await page.waitForTimeout(2000);
-    await takeScreenshot(page, `dropdown-${targetAccount}`);
+    await takeDebugScreenshot(page, `account-dropdown-${targetAccount}`);
     
-    // PDF Step 4: Click target account
+    // Step 2: Click target account in dropdown
     const targetName = ACCOUNTS[targetAccount].name;
     let switched = false;
     
-    // Try exact text match first
-    try {
-      await page.locator(`text="${targetName}"`).first().click({ timeout: 3000 });
-      switched = true;
-      console.log(`      ✅ Geswitcht naar: ${targetName}`);
-    } catch (e) {
-      // Try case-insensitive via evaluate
-      const found = await page.evaluate((name) => {
+    // Try exact text match
+    for (const text of [targetName, targetName.toLowerCase(), targetName.toUpperCase()]) {
+      try {
+        await page.locator(`text="${text}"`).first().click({ timeout: 3000 });
+        switched = true;
+        console.log(`      ✅ Geswitcht naar: ${text}`);
+        break;
+      } catch (e) { /* try next */ }
+    }
+    
+    // Fallback: evaluate to find and click
+    if (!switched) {
+      const found = await page.evaluate((target) => {
         const items = document.querySelectorAll('li, div[role="menuitem"], div[role="option"], a, button, span');
-        const lower = name.toLowerCase();
         for (const item of items) {
-          const t = item.innerText?.trim().toLowerCase();
-          if (t && t.includes(lower)) {
+          const t = item.innerText?.trim();
+          if (t && t.toLowerCase().includes(target.toLowerCase())) {
             item.click();
             return t;
           }
         }
         return null;
       }, targetName);
-      
       if (found) {
         switched = true;
         console.log(`      ✅ Geswitcht via evaluate: ${found}`);
@@ -115,240 +132,214 @@ async function switchAccount(page, targetAccount) {
     }
     
     if (!switched) {
-      console.log(`      ❌ Account "${targetName}" niet gevonden in dropdown`);
-      await takeScreenshot(page, `switch-failed-${targetAccount}`);
+      console.log(`      ❌ Account switch gefaald`);
+      await takeDebugScreenshot(page, `account-switch-failed-${targetAccount}`);
       return false;
     }
     
-    await page.waitForTimeout(5000);  // Account switch takes time
-    await takeScreenshot(page, `after-switch-${targetAccount}`);
+    await page.waitForTimeout(5000);
+    console.log(`      ✅ Account switch compleet`);
     return true;
     
   } catch (err) {
     console.log(`      ❌ Account switch error: ${err.message}`);
+    await takeDebugScreenshot(page, `account-switch-error-${targetAccount}`);
     return false;
   }
 }
 
-async function clickPandLTab(page) {
-  console.log(`   📊 Klik P&L tab...`);
+async function selectMarketplace(page, marketDropdownText) {
+  console.log(`      🌍 Selecteer marketplace: ${marketDropdownText}...`);
   
-  // From screenshot: P&L is in the top nav bar: Dashboard | Tiles | Chart | P&L | Map | Trends
   try {
-    // Try clicking P&L text/link in nav
-    for (const selector of [
-      'text="P&L"',
-      'a:has-text("P&L")',
-      'button:has-text("P&L")',
-      '[href*="P&L"]',
-      '[href*="p&l"]',
-      '[href*="p-l"]'
-    ]) {
-      try {
-        const el = page.locator(selector).first();
-        const box = await el.boundingBox({ timeout: 2000 });
-        if (box && box.y < 60) {  // Must be in nav bar
-          await el.click({ timeout: 3000 });
-          console.log(`      ✅ P&L tab geklikd via: ${selector}`);
-          await page.waitForTimeout(3000);
-          return true;
+    // PDF steps 6-8: The marketplace dropdown is on the P&L page itself
+    // It shows "All marketplaces" by default, or the currently selected market
+    // Look for the marketplace dropdown button/selector in the filter bar
+    
+    // Strategy 1: Look for "All marketplaces" or any market name text in the filter area
+    const dropdownTexts = ['All marketplaces', 'Alle Marktplätze', 'Alle marktplaatsen',
+      'Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl',
+      'Amazon.com', 'Amazon.ca', 'amazon.com/amazon.ca'];
+    
+    let dropdownClicked = false;
+    
+    // First: find and click the marketplace dropdown trigger
+    // It's typically a button or div showing current marketplace selection
+    const dropdownInfo = await page.evaluate((texts) => {
+      // Look for elements containing marketplace-related text
+      const candidates = [];
+      const allEls = document.querySelectorAll('button, div, span, select, [class*="select"], [class*="dropdown"], [class*="market"]');
+      
+      for (const el of allEls) {
+        const text = el.innerText?.trim().toLowerCase() || '';
+        const isMarketElement = texts.some(t => text.includes(t.toLowerCase()));
+        
+        if (isMarketElement) {
+          const rect = el.getBoundingClientRect();
+          // Should be in the top part of the page (filter bar area), not in the data table
+          if (rect.top < 250 && rect.height < 80 && rect.width > 50) {
+            candidates.push({
+              text: el.innerText?.trim().substring(0, 50),
+              tag: el.tagName,
+              top: Math.round(rect.top),
+              left: Math.round(rect.left),
+              width: Math.round(rect.width),
+              classes: el.className?.substring?.(0, 80) || ''
+            });
+          }
         }
-      } catch (e) { /* try next */ }
-    }
+      }
+      
+      return candidates;
+    }, dropdownTexts);
     
-    // Fallback: navigate to P&L URL
-    console.log(`      ⚠️ P&L tab niet gevonden via klik — navigeer via URL`);
-    await page.goto('https://app.sellerboard.com/en/dashboard/?viewType=table', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(5000);
-    return true;
+    console.log(`      Dropdown kandidaten: ${JSON.stringify(dropdownInfo).substring(0, 300)}`);
     
-  } catch (err) {
-    console.log(`      ❌ P&L tab error: ${err.message}`);
-    return false;
-  }
-}
-
-async function selectMarketplace(page, market) {
-  const config = MARKET_CONFIG[market];
-  console.log(`   🌍 Selecteer marketplace: ${market}...`);
-  
-  // From screenshot: "All marketplaces ∨" dropdown in the filter bar
-  // PDF Step 7: Double-click "All marketplaces" opens checkbox dropdown
-  
-  try {
-    // Click the marketplace dropdown trigger
-    let dropdownOpened = false;
-    
-    for (const selector of [
-      'text="All marketplaces"',
-      'text=/all marketplace/i',
-      'text=/Amazon\\./i',  // If a specific market is already selected
-      '[class*="marketplace"]',
-    ]) {
+    // Try clicking on marketplace-related elements in the filter bar
+    for (const text of dropdownTexts) {
       try {
-        const el = page.locator(selector).first();
-        const box = await el.boundingBox({ timeout: 2000 });
-        // Must be in the filter bar area (between nav and table)
-        if (box && box.y > 50 && box.y < 150) {
-          await el.click({ timeout: 3000 });
-          dropdownOpened = true;
-          console.log(`      ✅ Marketplace dropdown geopend via: ${selector}`);
+        const el = page.locator(`text="${text}"`).first();
+        const box = await el.boundingBox({ timeout: 1500 });
+        // Only click if it's in the top filter area (not in the data table)
+        if (box && box.y < 250) {
+          await el.click({ timeout: 2000 });
+          dropdownClicked = true;
+          console.log(`      ✅ Dropdown geopend via: "${text}" (y=${Math.round(box.y)})`);
           break;
         }
       } catch (e) { /* try next */ }
     }
     
-    if (!dropdownOpened) {
-      // Try finding the marketplace filter by position — it's in the center-right of filter bar
-      console.log(`      Probeer marketplace dropdown via evaluate...`);
-      const found = await page.evaluate(() => {
-        const elements = document.querySelectorAll('span, div, button, a');
-        for (const el of elements) {
-          const text = el.innerText?.trim().toLowerCase() || '';
-          const rect = el.getBoundingClientRect();
-          if ((text.includes('marketplace') || text.includes('amazon.')) && 
-              rect.y > 50 && rect.y < 150 && rect.width > 50) {
-            el.click();
-            return text;
+    if (!dropdownClicked) {
+      // Fallback: look for select element or dropdown-like element with marketplace classes
+      try {
+        const clicked = await page.evaluate(() => {
+          const selects = document.querySelectorAll('select, [class*="marketplace"], [class*="market-select"], [data-testid*="market"]');
+          for (const sel of selects) {
+            const rect = sel.getBoundingClientRect();
+            if (rect.top < 250 && rect.top > 0) {
+              sel.click();
+              return true;
+            }
           }
+          return false;
+        });
+        if (clicked) {
+          dropdownClicked = true;
+          console.log(`      ✅ Dropdown geopend via class selector`);
         }
-        return null;
-      });
-      if (found) {
-        dropdownOpened = true;
-        console.log(`      ✅ Dropdown geopend via evaluate: "${found}"`);
-      }
+      } catch (e) { /* */ }
     }
     
-    if (!dropdownOpened) {
+    if (!dropdownClicked) {
       console.log(`      ❌ Marketplace dropdown niet gevonden`);
-      await takeScreenshot(page, `marketplace-fail-${market}`);
+      await takeDebugScreenshot(page, `marketplace-dropdown-miss`);
       return false;
     }
     
     await page.waitForTimeout(1500);
-    await takeScreenshot(page, `marketplace-open-${market}`);
+    await takeDebugScreenshot(page, `marketplace-dropdown-open`);
     
-    // Now we need to:
-    // 1. Deselect "All marketplaces" if checked
-    // 2. Select only our target market
-    
-    // Try clicking the specific marketplace
-    const textsToTry = [config.dropdownText];
-    // For Amazon.ca, also try "Amazon.com/Amazon.ca" variant
-    if (market === 'Amazon.ca') {
-      textsToTry.push('Amazon.com/Amazon.ca', 'amazon.com/amazon.ca', 'Amazon.com / Amazon.ca');
-    }
-    
+    // Now click the specific marketplace option
     let selected = false;
-    for (const text of textsToTry) {
+    
+    // Try exact match first, then partial
+    const searchTexts = [marketDropdownText, marketDropdownText.toLowerCase()];
+    
+    for (const text of searchTexts) {
       try {
-        // First, find and deselect "All marketplaces" if it's a checkbox
-        await page.evaluate(() => {
-          const items = document.querySelectorAll('label, div[role="option"], li, span');
-          for (const item of items) {
-            const t = item.innerText?.trim().toLowerCase();
-            if (t && t.includes('all marketplace')) {
-              // Check if it has a checked checkbox
-              const checkbox = item.querySelector('input[type="checkbox"]');
-              if (checkbox && checkbox.checked) {
-                checkbox.click();
-              } else {
-                item.click();  // Toggle it off
-              }
-              break;
-            }
-          }
-        });
-        await page.waitForTimeout(500);
+        // Look for the option in the now-open dropdown
+        const option = page.locator(`text="${text}"`);
+        const count = await option.count();
         
-        // Now select our target market
-        const clicked = await page.evaluate((targetText) => {
-          const lower = targetText.toLowerCase();
-          const items = document.querySelectorAll('label, div[role="option"], li, span, div');
-          for (const item of items) {
-            const t = item.innerText?.trim().toLowerCase();
-            if (t === lower || (t.includes(lower) && t.length < lower.length + 20)) {
-              // Check if it has a checkbox
-              const checkbox = item.querySelector('input[type="checkbox"]');
-              if (checkbox) {
-                if (!checkbox.checked) checkbox.click();
-              } else {
-                item.click();
-              }
-              return t;
-            }
+        // There might be multiple matches — find the one that's in a dropdown/list context
+        for (let i = 0; i < count && i < 5; i++) {
+          const el = option.nth(i);
+          const box = await el.boundingBox({ timeout: 1500 });
+          if (box) {
+            await el.click({ timeout: 2000 });
+            selected = true;
+            console.log(`      ✅ Marketplace geselecteerd: "${text}"`);
+            break;
           }
-          return null;
-        }, text);
-        
-        if (clicked) {
-          selected = true;
-          console.log(`      ✅ Marketplace geselecteerd: "${clicked}"`);
-          break;
         }
+        if (selected) break;
       } catch (e) { /* try next */ }
     }
     
     if (!selected) {
-      // Log what options ARE available
-      const options = await page.evaluate(() => {
-        const items = document.querySelectorAll('label, div[role="option"], li');
-        return Array.from(items).map(i => i.innerText?.trim()).filter(t => t && t.length < 100).slice(0, 20);
-      });
-      console.log(`      ❌ Marketplace "${market}" niet gevonden. Beschikbare opties:`, options);
-      await takeScreenshot(page, `marketplace-miss-${market}`);
+      // Fallback: evaluate to find and click
+      const found = await page.evaluate((target) => {
+        const items = document.querySelectorAll('li, div[role="option"], div[role="menuitem"], label, span, a');
+        for (const item of items) {
+          const t = item.innerText?.trim();
+          if (t && t.toLowerCase() === target.toLowerCase()) {
+            item.click();
+            return t;
+          }
+        }
+        // Partial match
+        for (const item of items) {
+          const t = item.innerText?.trim();
+          if (t && t.toLowerCase().includes(target.toLowerCase())) {
+            item.click();
+            return t;
+          }
+        }
+        return null;
+      }, marketDropdownText);
+      
+      if (found) {
+        selected = true;
+        console.log(`      ✅ Marketplace geselecteerd via evaluate: "${found}"`);
+      }
+    }
+    
+    if (!selected) {
+      console.log(`      ❌ Marketplace optie niet gevonden: ${marketDropdownText}`);
+      await takeDebugScreenshot(page, `marketplace-option-miss-${marketDropdownText}`);
       return false;
     }
     
-    // Close dropdown by clicking outside
-    await page.mouse.click(10, 300);
-    await page.waitForTimeout(3000);  // Wait for data to reload
+    // Wait for data to reload after marketplace change
+    await page.waitForTimeout(5000);
+    await takeDebugScreenshot(page, `marketplace-selected-${marketDropdownText}`);
     
-    await takeScreenshot(page, `marketplace-selected-${market}`);
     return true;
     
   } catch (err) {
     console.log(`      ❌ Marketplace selectie error: ${err.message}`);
+    await takeDebugScreenshot(page, `marketplace-error-${marketDropdownText}`);
     return false;
   }
 }
 
-async function selectGroupByAsin(page) {
-  console.log(`   🔀 Schakel naar Per-ASIN view...`);
-  
-  // The groupBy selector — from PDF step 1 URL has groupBy=asin
-  // In the UI, this is likely a toggle or dropdown
-  // Try URL approach first (add groupBy=asin to current URL)
+async function takeDebugScreenshot(page, label) {
   try {
-    const currentUrl = page.url();
-    const url = new URL(currentUrl);
-    url.searchParams.set('groupBy', 'asin');
-    await page.goto(url.toString(), { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(8000);  // ASIN view needs more time
-    console.log(`      ✅ GroupBy=asin via URL param`);
-    return true;
-  } catch (e) {
-    console.log(`      ⚠️ URL groupBy failed: ${e.message}`);
-  }
-  
-  return false;
+    const dir = path.join(__dirname, 'debug-screenshots');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `sellerboard-${label}-${Date.now()}.png`);
+    await page.screenshot({ path: file, fullPage: false });
+    console.log(`      📸 Screenshot: ${path.basename(file)}`);
+  } catch (e) { /* ignore */ }
 }
 
 async function scrapeTable(page, viewType) {
+  // Wait for table
   for (let attempt = 1; attempt <= 3; attempt++) {
-    console.log(`      ⏳ Wacht op tabel (poging ${attempt}/3)...`);
+    console.log(`      ⏳ Wacht op data (poging ${attempt}/3)...`);
     try {
       await page.waitForSelector('table', { timeout: 10000 });
       break;
     } catch (e) {
       if (attempt === 3) {
-        console.log(`      ❌ Geen tabel na 3 pogingen`);
+        console.log(`      ❌ Geen tabel gevonden na 3 pogingen`);
         return null;
       }
       await page.waitForTimeout(3000);
     }
   }
+  
   await page.waitForTimeout(3000);
   
   if (viewType === 'per_asin') {
@@ -359,6 +350,20 @@ async function scrapeTable(page, viewType) {
 }
 
 async function scrapeMainPlTable(page) {
+  // Try expanding fee rows (click expandable/collapsible rows)
+  try {
+    await page.evaluate(() => {
+      const expandables = document.querySelectorAll('[class*="expand"], [class*="collapse"], [class*="toggle"], tr[class*="parent"]');
+      expandables.forEach(el => {
+        const text = el.innerText?.toLowerCase() || '';
+        if (text.includes('fee') || text.includes('amazon') || text.includes('advertising')) {
+          el.click();
+        }
+      });
+    });
+    await page.waitForTimeout(1000);
+  } catch (e) { /* ignore */ }
+  
   const data = await page.evaluate(() => {
     const tables = document.querySelectorAll('table');
     let bestTable = null;
@@ -366,19 +371,27 @@ async function scrapeMainPlTable(page) {
     
     tables.forEach(t => {
       const rows = t.querySelectorAll('tr');
-      if (rows.length > bestRows) { bestRows = rows.length; bestTable = t; }
+      if (rows.length > bestRows) {
+        bestRows = rows.length;
+        bestTable = t;
+      }
     });
     
     if (!bestTable) return null;
     
+    const rows = bestTable.querySelectorAll('tr');
     const result = [];
-    for (const row of bestTable.querySelectorAll('tr')) {
+    
+    for (const row of rows) {
+      const cells = row.querySelectorAll('th, td');
       const rowData = [];
-      for (const cell of row.querySelectorAll('th, td')) {
-        rowData.push(cell.innerText?.split('\n')[0]?.trim() || '');
+      for (const cell of cells) {
+        let text = cell.innerText?.split('\n')[0]?.trim() || '';
+        rowData.push(text);
       }
       if (rowData.some(c => c)) result.push(rowData);
     }
+    
     return result;
   });
   
@@ -386,9 +399,11 @@ async function scrapeMainPlTable(page) {
   
   const headers = data[0];
   const rows = data.slice(1);
+  
   console.log(`      Rijen: ${rows.length}, Kolommen: ${headers.length}`);
   console.log(`      Headers: ${headers.slice(0, 5).join(', ')}...`);
   if (rows[0]) console.log(`      Row 0: ${rows[0].slice(0, 3).join(', ')}...`);
+  
   return { headers, rows };
 }
 
@@ -401,75 +416,98 @@ async function scrapePerAsinTable(page) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(1000);
   
+  // Retry loop — ASIN table may need time
   for (let attempt = 1; attempt <= 6; attempt++) {
     console.log(`      🔍 Per-ASIN detectie (poging ${attempt}/6)...`);
     
     const result = await page.evaluate(({ plMetrics }) => {
       const tables = document.querySelectorAll('table');
       const asinPattern = /^B0[A-Z0-9]{8,}$/;
-      let debug = `${tables.length} tables.`;
+      let debugInfo = `${tables.length} tables found.`;
+      
       let bestTable = null;
       let bestScore = 0;
       
       tables.forEach((t, idx) => {
         const rows = t.querySelectorAll('tr');
-        let asinCount = 0, productCount = 0, plCount = 0, total = 0;
+        let asinCount = 0;
+        let productCount = 0;
+        let plCount = 0;
+        let totalRows = 0;
         
         rows.forEach(row => {
           const firstCell = row.querySelector('td, th');
           if (!firstCell) return;
           const text = firstCell.innerText?.split('\n')[0]?.trim().toLowerCase() || '';
-          total++;
+          totalRows++;
+          
           if (asinPattern.test(text.toUpperCase())) asinCount++;
           if (plMetrics.some(m => text.includes(m))) plCount++;
-          else if (text.length > 2 && !text.startsWith('€') && !text.startsWith('$') && !text.startsWith('-') && isNaN(text)) productCount++;
+          else if (text.length > 2 && !text.startsWith('€') && !text.startsWith('-') && isNaN(text)) {
+            productCount++;
+          }
         });
         
-        debug += ` T${idx}:${total}r,${asinCount}a,${productCount}p,${plCount}pl;`;
+        debugInfo += ` T${idx}:${totalRows}rows,${asinCount}asins,${productCount}prods,${plCount}pl;`;
         
         let score = asinCount * 10 + productCount * 2 - plCount * 3;
-        if (score > bestScore && asinCount > 0) { bestScore = score; bestTable = t; }
+        if (score > bestScore && asinCount > 0) {
+          bestScore = score;
+          bestTable = t;
+        }
       });
       
-      // Fallback: check headers
+      // Fallback: header check
       if (!bestTable) {
         tables.forEach(t => {
-          const hdr = t.querySelector('tr');
-          if (!hdr) return;
-          const h = hdr.innerText?.toLowerCase() || '';
-          if ((h.includes('asin') || h.includes('product')) && t.querySelectorAll('tr').length > 2) bestTable = t;
+          const headerRow = t.querySelector('tr');
+          if (!headerRow) return;
+          const headerText = headerRow.innerText?.toLowerCase() || '';
+          if (headerText.includes('asin') || headerText.includes('product')) {
+            const rows = t.querySelectorAll('tr');
+            if (rows.length > 2) bestTable = t;
+          }
         });
       }
       
-      if (!bestTable) return { found: false, debug };
+      if (!bestTable) return { found: false, debug: debugInfo };
       
+      const rows = bestTable.querySelectorAll('tr');
       const result = [];
-      for (const row of bestTable.querySelectorAll('tr')) {
+      for (const row of rows) {
+        const cells = row.querySelectorAll('th, td');
         const rowData = [];
-        for (const cell of row.querySelectorAll('th, td')) {
-          rowData.push(cell.innerText?.split('\n')[0]?.trim() || '');
+        for (const cell of cells) {
+          let text = cell.innerText?.split('\n')[0]?.trim() || '';
+          rowData.push(text);
         }
         if (rowData.some(c => c)) result.push(rowData);
       }
-      return { found: true, data: result, debug };
+      
+      return { found: true, data: result, debug: debugInfo };
     }, { plMetrics: P_AND_L_METRICS });
     
     if (result.found && result.data && result.data.length > 1) {
       const headers = result.data[0];
       const rows = result.data.slice(1);
-      const firstCol = rows.map(r => r[0]?.toLowerCase() || '');
-      const plHits = firstCol.filter(v => P_AND_L_METRICS.some(m => v.includes(m))).length;
+      
+      const firstColValues = rows.map(r => r[0]?.toLowerCase() || '');
+      const plHits = firstColValues.filter(v => P_AND_L_METRICS.some(m => v.includes(m))).length;
       
       if (plHits < rows.length * 0.5) {
-        console.log(`      ✅ Per-ASIN gevonden! (${rows.length} producten)`);
-        console.log(`      Debug: ${result.debug}`);
+        console.log(`      ✅ Per-ASIN tabel gevonden! (${rows.length} producten)`);
+        console.log(`      Rijen: ${rows.length}, Kolommen: ${headers.length}`);
+        console.log(`      Debug: ${result.debug.substring(0, 200)}`);
         console.log(`      Headers: ${headers.slice(0, 5).join(', ')}...`);
         if (rows[0]) console.log(`      Row 0: ${rows[0].slice(0, 3).join(', ')}...`);
         return { headers, rows };
+      } else {
+        console.log(`      ⚠️ Tabel gevonden maar het zijn P&L metrics (${plHits}/${rows.length})`);
       }
     }
     
-    console.log(`      ${result.debug || 'no tables'}`);
+    console.log(`      Debug: ${result.debug || 'no tables'}`);
+    
     if (attempt < 6) {
       await page.waitForTimeout(5000);
       await page.evaluate(() => window.scrollBy(0, 800));
@@ -478,12 +516,24 @@ async function scrapePerAsinTable(page) {
     }
   }
   
-  console.log(`      ⚠️ Per-ASIN NIET gevonden`);
+  console.log(`      ⚠️ Per-ASIN tabel NIET gevonden — skip`);
   return null;
 }
 
 async function saveToSupabase(market, viewType, headers, rows) {
-  if (!SUPABASE_KEY) { console.log(`      ⚠️ Geen SUPABASE key`); return; }
+  if (!SUPABASE_KEY) {
+    console.log(`      ⚠️ Geen SUPABASE_SERVICE_ROLE_KEY — skip Supabase`);
+    return;
+  }
+  
+  const body = JSON.stringify({
+    market,
+    view_type: viewType,
+    headers: JSON.stringify(headers),
+    rows: JSON.stringify(rows),
+    row_count: rows.length,
+    exported_at: new Date().toISOString()
+  });
   
   try {
     const resp = await fetch(`${SUPABASE_URL}/rest/v1/Sellerboard_Exports`, {
@@ -494,46 +544,64 @@ async function saveToSupabase(market, viewType, headers, rows) {
         'Authorization': `Bearer ${SUPABASE_KEY}`,
         'Prefer': 'resolution=merge-duplicates'
       },
-      body: JSON.stringify({
-        market, view_type: viewType,
-        headers: JSON.stringify(headers),
-        rows: JSON.stringify(rows),
-        row_count: rows.length,
-        exported_at: new Date().toISOString()
-      })
+      body
     });
-    if (resp.ok) console.log(`      ✅ Supabase: ${market}/${viewType} (${rows.length} rijen)`);
-    else console.log(`      ❌ Supabase: ${resp.status} ${(await resp.text()).substring(0, 200)}`);
-  } catch (e) { console.log(`      ❌ Supabase: ${e.message}`); }
+    
+    if (resp.ok) {
+      console.log(`      ✅ Supabase: ${market} / ${viewType} (${rows.length} rijen)`);
+    } else {
+      const err = await resp.text();
+      console.log(`      ❌ Supabase error: ${resp.status} ${err.substring(0, 200)}`);
+    }
+  } catch (e) {
+    console.log(`      ❌ Supabase fetch error: ${e.message}`);
+  }
 }
 
 function saveCsv(market, viewType, headers, rows) {
   const dir = path.join(__dirname, 'csv-downloads');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const name = market.replace('Amazon.', '').replace('.', '_').toLowerCase();
-  const file = path.join(dir, `sellerboard-${name}-${viewType}.csv`);
-  const esc = v => `"${(v || '').replace(/"/g, '""')}"`;
-  fs.writeFileSync(file, [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n'), 'utf8');
+  
+  const safeName = market.replace('Amazon.', '').replace('.', '_').toLowerCase();
+  const file = path.join(dir, `sellerboard-${safeName}-${viewType}.csv`);
+  
+  const escape = (v) => `"${(v || '').replace(/"/g, '""')}"`;
+  const csvContent = [headers.map(escape).join(','), ...rows.map(r => r.map(escape).join(','))].join('\n');
+  
+  fs.writeFileSync(file, csvContent, 'utf8');
   console.log(`      ✅ CSV: ${path.basename(file)}`);
 }
 
 // --- MAIN ---
 async function main() {
   const args = process.argv.slice(2);
-  let markets = [];
+  let marketsToScrape = [];
   
-  if (args.length === 0 || args[0] === 'eu') markets = EU_MARKETS;
-  else if (args[0] === 'us') markets = US_MARKETS;
-  else if (args[0] === 'all') markets = ALL_MARKETS;
-  else if (MARKET_CONFIG[args[0]]) markets = [args[0]];
-  else { console.log(`❌ Onbekend: ${args[0]}. Gebruik: ${ALL_MARKETS.join(', ')}`); process.exit(1); }
+  if (args.length === 0 || args[0] === 'eu') {
+    marketsToScrape = EU_MARKETS;
+  } else if (args[0] === 'us') {
+    marketsToScrape = US_MARKETS;
+  } else if (args[0] === 'all') {
+    marketsToScrape = ALL_MARKETS;
+  } else {
+    const market = args[0];
+    if (MARKET_CONFIG[market]) {
+      marketsToScrape = [market];
+    } else {
+      console.log(`❌ Onbekende markt: ${market}`);
+      console.log(`Beschikbaar: ${ALL_MARKETS.join(', ')}`);
+      process.exit(1);
+    }
+  }
   
-  console.log(`📊 Sellerboard P&L Export v8.3`);
-  console.log(`   Markten: ${markets.join(', ')}`);
-  console.log(`   Supabase: ${SUPABASE_KEY ? '✅' : '❌'}\n`);
+  console.log(`📊 Sellerboard P&L Export v8.4`);
+  console.log(`   Markten: ${marketsToScrape.join(', ')}`);
+  console.log(`   Supabase: ${SUPABASE_KEY ? '✅' : '❌ Geen key'}`);
+  console.log('');
   
   if (!fs.existsSync(STORAGE_STATE)) {
-    console.log(`❌ Geen cookies: ${STORAGE_STATE}\n   Run: node sellerboard-save-cookies.js`);
+    console.log(`❌ Geen cookies gevonden: ${STORAGE_STATE}`);
+    console.log('   Run eerst: node sellerboard-save-cookies.js');
     process.exit(1);
   }
   
@@ -542,50 +610,52 @@ async function main() {
   const page = await context.newPage();
   page.setDefaultTimeout(15000);
   
-  let currentAccount = 'eu';
+  let currentAccount = 'eu'; // Default after cookie load
   const summary = {};
   
   try {
-    // Initial load
-    console.log('   🌐 Laden Sellerboard dashboard...');
-    await page.goto('https://app.sellerboard.com/en/dashboard/', { waitUntil: 'domcontentloaded' });
+    // Initial load — go to dashboard/P&L page
+    console.log('   🌐 Laden Sellerboard...');
+    await page.goto(buildDashboardUrl(), { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(5000);
-    await takeScreenshot(page, 'initial');
+    await takeDebugScreenshot(page, 'initial-load');
     
-    for (let i = 0; i < markets.length; i++) {
-      const market = markets[i];
+    for (let i = 0; i < marketsToScrape.length; i++) {
+      const market = marketsToScrape[i];
       const config = MARKET_CONFIG[market];
       
-      console.log(`\n📍 [${i + 1}/${markets.length}] ${market}`);
+      console.log(`\n📍 [${i + 1}/${marketsToScrape.length}] ${market}`);
       console.log('============================================================');
       
-      // 1. Switch account if needed
+      // Step 1: Switch account if needed
       if (config.account !== currentAccount) {
-        const ok = await switchAccount(page, config.account);
-        if (ok) { currentAccount = config.account; }
-        else {
+        const switched = await switchAccount(page, config.account);
+        if (switched) {
+          currentAccount = config.account;
+          // After account switch, navigate to P&L again (account switch may redirect)
+          await page.goto(buildDashboardUrl(), { waitUntil: 'domcontentloaded' });
+          await page.waitForTimeout(5000);
+        } else {
           console.log(`   ⚠️ Account switch gefaald — skip ${market}`);
-          summary[market] = { main: '❌ Switch', asin: '❌' };
+          summary[market] = { main: '❌ Account switch', asin: '❌' };
           continue;
         }
       }
       
-      // 2. Click P&L tab FIRST (Tim's instruction!)
-      await clickPandLTab(page);
-      await page.waitForTimeout(3000);
+      // === MAIN P&L ===
+      console.log(`\n   📋 Main P&L...`);
       
-      // 3. Select marketplace via dropdown
-      const marketOk = await selectMarketplace(page, market);
-      if (!marketOk) {
-        console.log(`   ⚠️ Marketplace selectie gefaald — probeer URL fallback`);
-        // URL fallback
-        const url = `https://app.sellerboard.com/en/dashboard/?viewType=table&market[]=${encodeURIComponent(config.dropdownText)}`;
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
+      // Step 2: Navigate to P&L page (no market param — fresh load)
+      await page.goto(buildDashboardUrl(), { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(4000);
+      
+      // Step 3: Select marketplace via on-page dropdown
+      const marketSelected = await selectMarketplace(page, config.dropdownText);
+      if (!marketSelected) {
+        console.log(`   ⚠️ Marketplace selectie gefaald — probeer toch te scrapen`);
       }
       
-      // 4. Scrape Main P&L
-      console.log(`\n   📋 Main P&L...`);
+      // Step 4: Scrape main P&L
       const mainData = await scrapeTable(page, 'main_pl');
       if (mainData) {
         await saveToSupabase(market, 'main_pl', mainData.headers, mainData.rows);
@@ -593,13 +663,24 @@ async function main() {
         summary[market] = { main: `${mainData.rows.length} rijen ✅` };
       } else {
         summary[market] = { main: '❌ Geen data' };
-        await takeScreenshot(page, `no-data-${market}`);
       }
       
-      // 5. Switch to Per-ASIN view (groupBy=asin)
+      // === PER ASIN ===
       console.log(`\n   📋 Per ASIN...`);
-      await selectGroupByAsin(page);
-      await takeScreenshot(page, `per-asin-${market}`);
+      
+      // Step 5: Navigate to P&L with groupBy=asin (fresh load, no market param)
+      await page.goto(buildDashboardUrl('asin'), { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(4000);
+      
+      // Step 6: Select marketplace again via dropdown
+      const marketSelectedAsin = await selectMarketplace(page, config.dropdownText);
+      if (!marketSelectedAsin) {
+        console.log(`   ⚠️ Marketplace selectie gefaald voor per-ASIN`);
+      }
+      
+      // Step 7: Extra wait for ASIN data to load
+      await page.waitForTimeout(5000);
+      await takeDebugScreenshot(page, `per-asin-${config.dropdownText}`);
       
       const asinData = await scrapeTable(page, 'per_asin');
       if (asinData) {
@@ -609,48 +690,68 @@ async function main() {
       } else {
         if (mainData) {
           await saveToSupabase(market, 'per_asin_fallback', mainData.headers, mainData.rows);
-          summary[market].asin = `⚠️ Fallback`;
+          summary[market].asin = `⚠️ Fallback (${mainData.rows.length} rijen)`;
         } else {
-          summary[market].asin = '❌';
+          summary[market] = summary[market] || {};
+          summary[market].asin = '❌ Geen data';
         }
       }
       
+      // Delay between markets
       await page.waitForTimeout(2000);
     }
     
   } catch (err) {
     console.error(`\n❌ FOUT: ${err.message}`);
-    await takeScreenshot(page, 'error');
+    await takeDebugScreenshot(page, 'error');
   } finally {
     await browser.close();
   }
   
-  // Summary
+  // --- SUMMARY ---
   console.log('\n\n============================================================');
   console.log('📊 SAMENVATTING');
   console.log('============================================================');
-  for (const [m, d] of Object.entries(summary)) {
-    console.log(`   ${m.padEnd(18)} Main: ${(d.main||'?').padEnd(15)} |  ASIN: ${d.asin||'?'}`);
+  
+  for (const [market, data] of Object.entries(summary)) {
+    const mainStr = data.main || '?';
+    const asinStr = data.asin || '?';
+    console.log(`   ${market.padEnd(18)} Main: ${mainStr.padEnd(15)} |  ASIN: ${asinStr}`);
   }
-  console.log(`\n   Supabase: Sellerboard_Exports`);
+  
+  console.log(`\n   Supabase: Sellerboard_Exports (volledige data)`);
   console.log(`   CSVs:     ${path.join(__dirname, 'csv-downloads/')}`);
   console.log(`   Debug:    ${path.join(__dirname, 'debug-screenshots/')}`);
   
-  const summaryJson = { version: 'v8.3', markets: Object.keys(summary), results: summary, exported_at: new Date().toISOString() };
+  const summaryJson = {
+    version: 'v8.4',
+    markets: Object.keys(summary),
+    results: summary,
+    exported_at: new Date().toISOString(),
+    note: 'Full data in Supabase Sellerboard_Exports table + local CSVs'
+  };
+  
   const summaryFile = path.join(__dirname, 'sellerboard-pl-data.json');
   fs.writeFileSync(summaryFile, JSON.stringify(summaryJson, null, 2));
-  console.log(`   JSON:     ${summaryFile} (${(JSON.stringify(summaryJson).length / 1024).toFixed(1)}KB)`);
-  console.log('\n✅ Klaar!');
+  console.log(`   JSON:     ${summaryFile} (${(JSON.stringify(summaryJson).length / 1024).toFixed(1)}KB — summary only)`);
   
-  return summaryJson;
+  console.log('\n✅ Klaar!');
 }
 
+// Handle module export for executor
 if (require.main === module) {
   main().catch(console.error);
 } else {
-  module.exports = async function(browser, task) {
-    const args = task.actions || [];
-    if (args.length > 0) process.argv = ['node', 'sellerboard-pl-export.js', ...args];
-    return main();
+  module.exports = async function(task, context, page) {
+    // When called from executor, use the provided page
+    // Parse actions for market selection
+    const actions = task.actions || [];
+    const arg = actions[0] || 'eu';
+    
+    // Override process.argv for main()
+    process.argv = ['node', 'sellerboard-pl-export.js', arg];
+    await main();
+    
+    return { success: true, message: `Sellerboard export complete for: ${arg}` };
   };
 }
