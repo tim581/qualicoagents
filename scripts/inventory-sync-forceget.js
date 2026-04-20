@@ -1,5 +1,5 @@
 /**
- * inventory-sync-forceget.js v2.0
+ * inventory-sync-forceget.js v2.1
  * 
  * Key fixes over v1.0:
  * - Angular-specific login (dispatch input/change/blur events after typing)
@@ -589,7 +589,7 @@ module.exports = async function run({ page, credentials, log }) {
               {
                 method: 'PATCH',
                 headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-                body: JSON.stringify({ units_on_hand: item.qty, last_synced_at: now, sync_source: 'forceget_playwright' })
+                body: JSON.stringify({ on_hand: item.qty, last_synced_at: now, source: 'forceget_playwright' })
               }
             );
             await log('updated', `${item.product_name} (${item.channel}): ${item.qty}`);
@@ -600,9 +600,9 @@ module.exports = async function run({ page, credentials, log }) {
                 method: 'POST',
                 headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
                 body: JSON.stringify({
-                  product_name: item.product_name, product_id: item.product_id,
+                  product_name: item.product_name,
                   channel: item.channel, channel_type: '3PL',
-                  units_on_hand: item.qty, last_synced_at: now, sync_source: 'forceget_playwright'
+                  on_hand: item.qty, last_synced_at: now, source: 'forceget_playwright'
                 })
               }
             );
