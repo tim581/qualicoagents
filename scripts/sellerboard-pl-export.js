@@ -1,4 +1,4 @@
-// Sellerboard P&L Export v7.0
+// Sellerboard P&L Export v7.1
 // FIX: per-ASIN detection — wait for ASIN table to appear, retry loop, ASIN pattern matching
 // FIX: US/CA separate markets — proper account switch with retry
 // FULL data → Supabase `Sellerboard_Exports` table (agents query this)
@@ -275,7 +275,7 @@ function isProductRow(firstCell) {
         }
 
         // ---- Extract table data ----
-        tableData = await page.evaluate((perAsin, plMetrics) => {
+        tableData = await page.evaluate(({ perAsin, plMetrics }) => {
           const result = { headers: [], rows: [], debug: '', isRealPerAsin: false };
           const tables = document.querySelectorAll('table');
 
@@ -421,7 +421,7 @@ function isProductRow(firstCell) {
           }
 
           return result;
-        }, isPerAsin, PL_METRICS);
+        }, { perAsin: isPerAsin, plMetrics: PL_METRICS });
 
         // Check if we got valid data
         if (isPerAsin) {
