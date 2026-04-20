@@ -1,4 +1,4 @@
-// Sellerboard P&L Export v8.1
+// Sellerboard P&L Export v8.2
 // Fixes from PDF analysis: exact account switch flow, marketplace dropdown, per-ASIN detection
 // PDF reference: ExportingAmazonSalesDataFromSellerboard + ExportingSellerboardAnalyticsDatatoCSV
 
@@ -26,7 +26,7 @@ const MARKET_CONFIG = {
   'Amazon.es':     { account: 'eu', urlParam: 'Amazon.es' },
   'Amazon.nl':     { account: 'eu', urlParam: 'Amazon.nl' },
   'Amazon.com':    { account: 'us', urlParam: 'Amazon.com' },
-  'Amazon.ca':     { account: 'us', urlParam: 'Amazon.ca' }
+  'Amazon.ca':     { account: 'us', urlParam: 'Amazon.com/Amazon.ca' }
 };
 
 const EU_MARKETS = ['Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
@@ -477,7 +477,7 @@ async function main() {
     }
   }
   
-  console.log(`📊 Sellerboard P&L Export v8.1`);
+  console.log(`📊 Sellerboard P&L Export v8.2`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   Supabase: ${SUPABASE_KEY ? '✅' : '❌ Geen key'}`);
   console.log('');
@@ -589,7 +589,7 @@ async function main() {
   
   // Write compact summary for executor/Browser_Tasks result
   const summaryJson = {
-    version: 'v8.1',
+    version: 'v8.2',
     markets: Object.keys(summary),
     results: summary,
     exported_at: new Date().toISOString(),
