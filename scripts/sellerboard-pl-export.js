@@ -1,4 +1,4 @@
-// Sellerboard P&L Export v8.6
+// Sellerboard P&L Export v8.7
 // Flow from PDF: navigate to P&L → marketplace dropdown → scrape
 // NEVER use market[] URL param — always use on-page dropdown
 
@@ -156,30 +156,44 @@ async function selectMarketplace(page, marketDropdownText) {
     // Strategy: open dropdown → use COORDINATES to click checkboxes → Escape to close
     // NEVER use text selectors for clicking (they match sidebar items!)
     
-    // Step 1: Find the marketplace dropdown trigger in the FILTER BAR (top area, y < 200)
-    // Use evaluate to find the exact element and its coordinates
+    // Step 1: Find the "All marketplaces" dropdown trigger in the FILTER BAR
+    // CRITICAL: Must be a SMALL element (< 50 chars), NOT a container div
+    // The filter bar has: [Search] [Date range] [All marketplaces ∨] [Heatmap] [Filter]
     const trigger = await page.evaluate(() => {
-      const allElements = document.querySelectorAll('button, div, span, a');
-      const marketKeywords = ['all marketplace', 'alle markt', 'amazon.', 'marketplace'];
+      const allElements = document.querySelectorAll('button, div, span, a, select');
+      let best = null;
       
       for (const el of allElements) {
-        const text = el.innerText?.trim()?.toLowerCase() || '';
+        // Get DIRECT text content only (not descendant text)
+        const directText = Array.from(el.childNodes)
+          .filter(n => n.nodeType === 3) // text nodes only
+          .map(n => n.textContent.trim())
+          .join(' ').trim();
+        const fullText = el.innerText?.trim()?.toLowerCase() || '';
+        const directLower = directText.toLowerCase();
+        
         const rect = el.getBoundingClientRect();
         
-        // Must be in the top filter area (y < 200) and visible
-        if (rect.width === 0 || rect.height === 0 || rect.top > 200) continue;
-        // Must be in the main content area (not sidebar, x > 200)
-        if (rect.left < 180) continue;
+        // Must be visible, in filter bar area (y < 200), and in main content (x > 180)
+        if (rect.width === 0 || rect.height === 0) continue;
+        if (rect.top > 200 || rect.left < 180) continue;
         
-        if (marketKeywords.some(kw => text.includes(kw))) {
-          return {
-            text: text.substring(0, 40),
+        // MUST contain "marketplace" in either direct or full text
+        const hasMarketplace = directLower.includes('marketplace') || fullText.includes('marketplace');
+        if (!hasMarketplace) continue;
+        
+        // Prefer SMALLEST element (most specific) — use area as tiebreaker
+        const area = rect.width * rect.height;
+        if (!best || area < best.area) {
+          best = {
+            text: (directText || el.innerText?.trim() || '').substring(0, 40),
             x: Math.round(rect.left + rect.width / 2),
-            y: Math.round(rect.top + rect.height / 2)
+            y: Math.round(rect.top + rect.height / 2),
+            area
           };
         }
       }
-      return null;
+      return best;
     });
     
     if (!trigger) {
@@ -594,7 +608,7 @@ async function main() {
     }
   }
   
-  console.log(`📊 Sellerboard P&L Export v8.6`);
+  console.log(`📊 Sellerboard P&L Export v8.7`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   Supabase: ${SUPABASE_KEY ? '✅' : '❌ Geen key'}`);
   console.log('');
