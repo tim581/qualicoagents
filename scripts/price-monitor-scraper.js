@@ -324,7 +324,7 @@ const COUNTRY_NAMES = {
  * use the "Zustellung außerhalb" dropdown instead.
  * But typically we scrape each domain with its LOCAL postal code.
  */
-async function setDeliveryLocation(page, channel) {
+async function setDeliveryLocation(page, channel, channelId) {
   console.log(`  📍 Setting delivery to ${channel.country} — ${channel.postalCode}`);
   await dbLog(`location-${channel.name}`, 'info', `Setting: ${channel.country} ${channel.postalCode}`);
 
@@ -532,7 +532,7 @@ async function setDeliveryLocation(page, channel) {
   try {
     console.log(`  📍 Attempt 2/2 (retry)...`);
     // Navigate to fresh product page first
-    const firstVariant = PRODUCTS[channel.name]?.variants?.[0];
+    const firstVariant = AMAZON_PRODUCTS[channelId]?.variants?.[0];
     if (firstVariant) {
       await page.goto(`https://www.${channel.domain}/dp/${firstVariant.asin}?th=1`, { 
         waitUntil: 'domcontentloaded', timeout: 20000 
@@ -688,8 +688,21 @@ async function extractBuyBoxSeller(page) {
   const selectors = [
     '#sellerProfileTriggerId',
     '#merchant-info a',
+    // Multi-language "Sold by" selectors
     '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Sold by"] a',
     '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Sold by"] span',
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Vendu par"] a',        // FR
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Vendu par"] span',     // FR
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Verkauft von"] a',     // DE
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Verkauft von"] span',  // DE
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Verkocht door"] a',    // NL
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Verkocht door"] span', // NL
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Vendido por"] a',      // ES
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Vendido por"] span',   // ES
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Venduto da"] a',       // IT
+    '#tabular-buybox .tabular-buybox-text[tabular-attribute-name="Venduto da"] span',    // IT
+    // Fallback: any seller link in tabular buybox
+    '#tabular-buybox a[role="link"]',
     '#buyboxTabularTruncate-0 a',
     '#aod-offer-soldBy .a-fixed-left-grid-col a',
   ];
@@ -888,7 +901,7 @@ async function scrapeAmazonMarket(browser, channelId) {
     await acceptCookies(page, channel.locale);
 
     // Step 3: Set delivery location (COUNTRY + postal code) — HARD GATE
-    const locationOk = await setDeliveryLocation(page, channel);
+    const locationOk = await setDeliveryLocation(page, channel, channelId);
     if (!locationOk) {
       console.log(`  🚫 SKIPPING ${channel.name} — delivery location NOT verified!`);
       console.log(`  🚫 Prices would be wrong without correct local delivery.`);
