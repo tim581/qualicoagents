@@ -1,5 +1,5 @@
 /**
- * mintsoft-product-export.js v2.0
+ * mintsoft-product-export.js v2.1
  * 
  * Exports product + inventory data from Mintsoft (WePrepFBA UK).
  * module.exports pattern — receives { page, context, supabase, dbShot } from executor.
@@ -38,7 +38,7 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
     let username, password;
     if (supabase) {
       try {
-        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'mintsoft').single();
+        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'mintsoft_login').single();
         if (data) { username = data.username; password = data.password; }
       } catch (e) { console.log('Credentials lookup failed:', e.message); }
     }

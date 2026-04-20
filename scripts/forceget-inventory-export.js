@@ -1,5 +1,5 @@
 /**
- * forceget-inventory-export.js v3.0
+ * forceget-inventory-export.js v3.1
  * 
  * Exports inventory from Forceget Toronto (Angular SPA).
  * FIX: Angular client-side routing — use multiple URL patterns + text-based nav.
@@ -39,7 +39,7 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
     let username, password;
     if (supabase) {
       try {
-        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'forceget').single();
+        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'forceget_login').single();
         if (data) { username = data.username; password = data.password; }
       } catch (e) { console.log('Credentials lookup failed:', e.message); }
     }

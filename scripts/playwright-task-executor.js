@@ -1,4 +1,4 @@
-// playwright-task-executor.js v3.2 — pass task to module scripts, handle string actions
+// playwright-task-executor.js v3.3 — auto-load cookie storage state for module scripts
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
@@ -94,6 +94,16 @@ const SCRIPT_TASKS = {
   'price-scrape':              'price-monitor-scraper.js',
 };
 
+
+// ── COOKIE/STORAGE STATE MAPPING ──────────────────────────────────────────────
+const STORAGE_STATE_MAP = {
+  'vanthiel_corax_wms': 'corax-wms-storage-state.json',
+  'mintsoft_login': 'mintsoft-storage-state.json',
+  'forceget_login': 'forceget-storage-state.json',
+  'sellerboard_login': 'sellerboard-storage-state.json',
+  'flieber_login': 'flieber-storage-state.json',
+};
+
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
 
 function downloadFromGitHub(scriptName) {
@@ -186,10 +196,23 @@ async function executeScriptTask(task, scriptName) {
     console.log(`   📦 module.exports pattern — injecting browser + task context`);
     
     const b = await initBrowser();
-    const context = await b.newContext({
+    
+    // ✅ v3.3: Auto-load storage state (cookies + localStorage) based on credentials_key
+    const contextOpts = {
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36',
       viewport: { width: 1920, height: 1080 }
-    });
+    };
+    const cookieFileName = STORAGE_STATE_MAP[task.credentials_key];
+    if (cookieFileName) {
+      const storageStatePath = path.join(__dirname, cookieFileName);
+      if (fs.existsSync(storageStatePath)) {
+        contextOpts.storageState = storageStatePath;
+        console.log(`   🍪 Loaded storage state: ${cookieFileName}`);
+      } else {
+        console.log(`   ⚠️ Cookie file not found: ${storageStatePath}`);
+      }
+    }
+    const context = await b.newContext(contextOpts);
     const page = await context.newPage();
     
     const runId = `${task.task_type}_${Date.now()}`;
@@ -428,7 +451,7 @@ async function pollTasks() {
 }
 
 async function main() {
-  console.log('🎬 Browser Task Executor v3.2');
+  console.log('🎬 Browser Task Executor v3.3');
   console.log(`📍 Supabase: ${SUPABASE_URL}`);
   console.log('📋 Task types:', Object.keys(SCRIPT_TASKS).join(', '));
   console.log('');

@@ -1,5 +1,5 @@
 /**
- * corax-wms-stock-export.js v2.0
+ * corax-wms-stock-export.js v2.1
  * 
  * Scrapes Vanthiel/Kamps Corax WMS "Stocks per artikel" page.
  * Returns RAW JSON in Browser_Tasks.result — agent handles mapping + Inventory_Levels write.
@@ -42,7 +42,7 @@ module.exports = async ({ page, context, supabase, dbShot }) => {
     let username, password;
     if (supabase) {
       try {
-        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'corax').single();
+        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'vanthiel_corax_wms').single();
         if (data) {
           username = data.username;
           password = data.password;
