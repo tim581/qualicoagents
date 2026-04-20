@@ -1,6 +1,7 @@
-// Sellerboard P&L Export v3.1
-// Exports BOTH main P&L AND per-ASIN P&L for all EU markets.
-// Generates CSV directly from scraped data.
+// Sellerboard P&L Export v4.0
+// Exports BOTH main P&L AND per-ASIN P&L.
+// COMPACT summary → JSON (for Browser_Tasks.result)
+// FULL data → CSV files (local)
 //
 // Usage (CLI):
 //   node sellerboard-pl-export.js              → All EU markets
@@ -43,14 +44,13 @@ function toCsv(headers, rows) {
 }
 
 (async () => {
-  // Read market from env (executor) or CLI arg
   const arg = process.env.MARKET_SCOPE || process.argv[2];
   const markets = getMarkets(arg);
 
-  console.log(`📊 Sellerboard P&L Export v3.1`);
+  console.log(`📊 Sellerboard P&L Export v4.0`);
   console.log(`   Markten: ${markets.join(', ')}`);
   console.log(`   Views: Main P&L + Per ASIN`);
-  console.log(`   Output: JSON + CSV per markt/view`);
+  console.log(`   Output: Compact JSON (summary) + CSV (full data)`);
   console.log('');
 
   if (!fs.existsSync(COOKIE_FILE)) {
@@ -173,53 +173,71 @@ function toCsv(headers, rows) {
           });
         }
 
-        if (result.rows.length === 0 && result.headers.length === 0) {
-          result.debug_tables = document.querySelectorAll('table').length;
-          result.debug_text = document.body.innerText.substring(0, 2000);
-        }
-
         return result;
       });
 
       console.log(`      Rijen: ${tableData.rows.length}, Kolommen: ${tableData.headers.length}`);
 
-      // ---- Generate CSV ----
+      // ---- Generate CSV (FULL data) ----
       const csvFilename = `sellerboard-${marketKey}-${view.name}.csv`;
       const csvPath = path.join(CSV_DIR, csvFilename);
 
       if (tableData.headers.length > 0 && tableData.rows.length > 0) {
         const csvContent = toCsv(tableData.headers, tableData.rows);
         fs.writeFileSync(csvPath, csvContent, 'utf-8');
-        console.log(`      ✅ CSV: ${csvFilename}`);
+        console.log(`      ✅ CSV: ${csvFilename} (${tableData.rows.length} rijen)`);
       } else {
         console.log('      ⚠️ Geen data voor CSV');
       }
 
-      allResults[marketplace][view.name] = {
-        headers: tableData.headers,
-        rows: tableData.rows,
+      // ---- Build COMPACT summary for JSON (not full rows) ----
+      const summary = {
         row_count: tableData.rows.length,
+        headers: tableData.headers,
         csv_file: tableData.rows.length > 0 ? csvFilename : null,
       };
 
-      if (tableData.debug_text) {
-        allResults[marketplace][view.name].debug_text = tableData.debug_text;
+      // Include TOTAL row if it exists (last row often = totals)
+      if (tableData.rows.length > 0) {
+        const lastRow = tableData.rows[tableData.rows.length - 1];
+        const firstCell = (lastRow[0] || '').toLowerCase();
+        if (firstCell.includes('total') || firstCell.includes('sum') || firstCell === '') {
+          summary.totals_row = lastRow;
+        }
       }
+
+      // For per_asin: include first 5 rows as preview
+      if (view.name === 'per_asin' && tableData.rows.length > 0) {
+        summary.preview_rows = tableData.rows.slice(0, 5);
+        summary.preview_note = `Showing 5 of ${tableData.rows.length} ASINs. Full data in CSV.`;
+      }
+
+      // For main_pl: include ALL rows (they're just metric names, not heavy)
+      if (view.name === 'main_pl' && tableData.rows.length > 0) {
+        summary.rows = tableData.rows;
+      }
+
+      allResults[marketplace][view.name] = summary;
     }
   }
 
-  // ---- Save JSON ----
+  // ---- Save COMPACT JSON (summary only) ----
   const output = {
+    version: '4.0',
     exported_at: new Date().toISOString(),
     period: {
       start: new Date(startTs * 1000).toISOString().split('T')[0],
       end: new Date(endTs * 1000).toISOString().split('T')[0],
     },
+    scope: arg || 'eu',
     markets: allResults,
   };
 
   const outputFile = path.join(__dirname, 'sellerboard-pl-data.json');
   fs.writeFileSync(outputFile, JSON.stringify(output, null, 2));
+
+  const jsonSize = fs.statSync(outputFile).size;
+  console.log(`\n📦 JSON size: ${(jsonSize / 1024).toFixed(1)}KB`);
 
   // ---- Summary ----
   console.log(`\n${'='.repeat(60)}`);
@@ -232,7 +250,7 @@ function toCsv(headers, rows) {
     const asinCsv = views.per_asin?.csv_file ? '✅' : '❌';
     console.log(`   ${mkt.padEnd(16)} Main P&L: ${String(main).padStart(3)} rijen ${mainCsv}  |  Per ASIN: ${String(asin).padStart(3)} rijen ${asinCsv}`);
   }
-  console.log(`\n   JSON: ${outputFile}`);
+  console.log(`\n   JSON: ${outputFile} (${(jsonSize / 1024).toFixed(1)}KB)`);
   console.log(`   CSVs: ${CSV_DIR}/`);
   console.log('\n✅ Klaar!');
 
