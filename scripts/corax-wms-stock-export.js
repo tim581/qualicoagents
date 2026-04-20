@@ -1,5 +1,6 @@
 const { chromium } = require('playwright');
 const path = require('path');
+const fs = require('fs');
 
 (async () => {
   const browser = await chromium.launch({
@@ -20,7 +21,7 @@ const path = require('path');
     await page.goto('https://kampspijnacker.coraxwms.nl/#/Dashboard', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
 
-    // Check if we're logged in
+    // Check if logged in
     const url = page.url();
     if (url.includes('login') || url.includes('Login')) {
       console.log('COOKIES VERLOPEN — run corax-wms-save-cookies.js opnieuw');
@@ -29,44 +30,33 @@ const path = require('path');
     }
     console.log('   Ingelogd!');
 
-    // Step 1: Click "Voorraad" in nav menu
+    // Step 1: Click "Voorraad"
     console.log('2/5 Klik Voorraad...');
     await page.click('text=Voorraad');
-    await page.waitForTimeout(1000);
+    await page.waitForTimeout(1500);
 
-    // Step 2: Click "Stocks per artikel" in dropdown
+    // Step 2: Click "Stocks per artikel"
     console.log('3/5 Klik Stocks per artikel...');
     await page.click('text=Stocks per artikel');
     await page.waitForTimeout(3000);
 
-    // Step 3: Click "Exporteren" button
+    // Step 3: Click "Exporteren" — this opens confirmation dialog
     console.log('4/5 Klik Exporteren...');
+    await page.click('text=Exporteren');
+    await page.waitForTimeout(1500);
+
+    // Step 4: Click "JA" in confirmation and wait for download
+    console.log('5/5 Bevestig export (Ja)...');
     const [download] = await Promise.all([
       page.waitForEvent('download', { timeout: 30000 }),
-      page.click('text=Exporteren')
-    ]).catch(async () => {
-      // Maybe there's a confirmation dialog first
-      await page.click('text=Exporteren');
-      await page.waitForTimeout(1000);
-      // Step 4: Click "Ja" in confirmation
-      console.log('5/5 Bevestig export (Ja)...');
-      const dl = await Promise.all([
-        page.waitForEvent('download', { timeout: 30000 }),
-        page.click('text=Ja')
-      ]);
-      return dl;
-    });
+      page.click('text=JA')
+    ]);
 
-    // If we got here without the catch, try clicking Ja anyway
-    if (!download) {
-      await page.waitForTimeout(1000);
-      console.log('5/5 Bevestig export (Ja)...');
-      await page.click('text=Ja');
-    }
-
-    // Wait for any pending download
-    await page.waitForTimeout(5000);
-    console.log('DONE — Export voltooid!');
+    // Save the downloaded file
+    const fileName = download.suggestedFilename() || 'corax-stock-export.xlsx';
+    const savePath = path.join(__dirname, fileName);
+    await download.saveAs(savePath);
+    console.log(`DONE — Bestand opgeslagen: ${savePath}`);
 
   } catch (err) {
     console.error('FOUT:', err.message);
