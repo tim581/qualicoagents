@@ -1,4 +1,4 @@
-// Sellerboard P&L Export v8.4
+// Sellerboard P&L Export v8.5
 // Flow from PDF: navigate to P&L → marketplace dropdown → scrape
 // NEVER use market[] URL param — always use on-page dropdown
 
@@ -152,55 +152,21 @@ async function selectMarketplace(page, marketDropdownText) {
   console.log(`      🌍 Selecteer marketplace: ${marketDropdownText}...`);
   
   try {
-    // PDF steps 6-8: The marketplace dropdown is on the P&L page itself
-    // It shows "All marketplaces" by default, or the currently selected market
-    // Look for the marketplace dropdown button/selector in the filter bar
+    // CRITICAL: This is a MULTI-SELECT CHECKBOX dropdown (like Flieber!)
+    // "All marketplaces" = all checked. To select one: uncheck all others.
+    // The dropdown sits in the filter bar on the P&L page itself.
     
-    // Strategy 1: Look for "All marketplaces" or any market name text in the filter area
+    // Step 1: Find and click the marketplace dropdown trigger in the filter bar
     const dropdownTexts = ['All marketplaces', 'Alle Marktplätze', 'Alle marktplaatsen',
       'Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl',
-      'Amazon.com', 'Amazon.ca', 'amazon.com/amazon.ca'];
+      'Amazon.com', 'Amazon.ca', 'Amazon.com.mx'];
     
     let dropdownClicked = false;
     
-    // First: find and click the marketplace dropdown trigger
-    // It's typically a button or div showing current marketplace selection
-    const dropdownInfo = await page.evaluate((texts) => {
-      // Look for elements containing marketplace-related text
-      const candidates = [];
-      const allEls = document.querySelectorAll('button, div, span, select, [class*="select"], [class*="dropdown"], [class*="market"]');
-      
-      for (const el of allEls) {
-        const text = el.innerText?.trim().toLowerCase() || '';
-        const isMarketElement = texts.some(t => text.includes(t.toLowerCase()));
-        
-        if (isMarketElement) {
-          const rect = el.getBoundingClientRect();
-          // Should be in the top part of the page (filter bar area), not in the data table
-          if (rect.top < 250 && rect.height < 80 && rect.width > 50) {
-            candidates.push({
-              text: el.innerText?.trim().substring(0, 50),
-              tag: el.tagName,
-              top: Math.round(rect.top),
-              left: Math.round(rect.left),
-              width: Math.round(rect.width),
-              classes: el.className?.substring?.(0, 80) || ''
-            });
-          }
-        }
-      }
-      
-      return candidates;
-    }, dropdownTexts);
-    
-    console.log(`      Dropdown kandidaten: ${JSON.stringify(dropdownInfo).substring(0, 300)}`);
-    
-    // Try clicking on marketplace-related elements in the filter bar
     for (const text of dropdownTexts) {
       try {
         const el = page.locator(`text="${text}"`).first();
         const box = await el.boundingBox({ timeout: 1500 });
-        // Only click if it's in the top filter area (not in the data table)
         if (box && box.y < 250) {
           await el.click({ timeout: 2000 });
           dropdownClicked = true;
@@ -208,27 +174,6 @@ async function selectMarketplace(page, marketDropdownText) {
           break;
         }
       } catch (e) { /* try next */ }
-    }
-    
-    if (!dropdownClicked) {
-      // Fallback: look for select element or dropdown-like element with marketplace classes
-      try {
-        const clicked = await page.evaluate(() => {
-          const selects = document.querySelectorAll('select, [class*="marketplace"], [class*="market-select"], [data-testid*="market"]');
-          for (const sel of selects) {
-            const rect = sel.getBoundingClientRect();
-            if (rect.top < 250 && rect.top > 0) {
-              sel.click();
-              return true;
-            }
-          }
-          return false;
-        });
-        if (clicked) {
-          dropdownClicked = true;
-          console.log(`      ✅ Dropdown geopend via class selector`);
-        }
-      } catch (e) { /* */ }
     }
     
     if (!dropdownClicked) {
@@ -240,70 +185,92 @@ async function selectMarketplace(page, marketDropdownText) {
     await page.waitForTimeout(1500);
     await takeDebugScreenshot(page, `marketplace-dropdown-open`);
     
-    // Now click the specific marketplace option
-    let selected = false;
-    
-    // Try exact match first, then partial
-    const searchTexts = [marketDropdownText, marketDropdownText.toLowerCase()];
-    
-    for (const text of searchTexts) {
-      try {
-        // Look for the option in the now-open dropdown
-        const option = page.locator(`text="${text}"`);
-        const count = await option.count();
-        
-        // There might be multiple matches — find the one that's in a dropdown/list context
-        for (let i = 0; i < count && i < 5; i++) {
-          const el = option.nth(i);
-          const box = await el.boundingBox({ timeout: 1500 });
-          if (box) {
-            await el.click({ timeout: 2000 });
-            selected = true;
-            console.log(`      ✅ Marketplace geselecteerd: "${text}"`);
-            break;
-          }
-        }
-        if (selected) break;
-      } catch (e) { /* try next */ }
-    }
-    
-    if (!selected) {
-      // Fallback: evaluate to find and click
-      const found = await page.evaluate((target) => {
-        const items = document.querySelectorAll('li, div[role="option"], div[role="menuitem"], label, span, a');
-        for (const item of items) {
-          const t = item.innerText?.trim();
-          if (t && t.toLowerCase() === target.toLowerCase()) {
-            item.click();
-            return t;
-          }
-        }
-        // Partial match
-        for (const item of items) {
-          const t = item.innerText?.trim();
-          if (t && t.toLowerCase().includes(target.toLowerCase())) {
-            item.click();
-            return t;
-          }
-        }
-        return null;
-      }, marketDropdownText);
+    // Step 2: Read all checkbox options and their checked state
+    const options = await page.evaluate(() => {
+      const results = [];
+      // Look for checkbox-like elements in the open dropdown
+      // Sellerboard uses checkboxes with SVG checkmarks or similar
+      const items = document.querySelectorAll('label, li, div[role="option"], div[role="menuitem"]');
       
-      if (found) {
-        selected = true;
-        console.log(`      ✅ Marketplace geselecteerd via evaluate: "${found}"`);
+      for (const item of items) {
+        const text = item.innerText?.trim();
+        if (!text || !text.toLowerCase().includes('amazon')) continue;
+        
+        const rect = item.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        
+        // Check if it has a checked checkbox (input, SVG checkmark, or class)
+        const checkbox = item.querySelector('input[type="checkbox"]');
+        const svgCheck = item.querySelector('svg, [class*="check"], [class*="Check"]');
+        const isChecked = checkbox ? checkbox.checked : 
+          (item.classList?.toString()?.includes('selected') || 
+           item.classList?.toString()?.includes('active') ||
+           item.querySelector('[data-checked]') !== null ||
+           svgCheck !== null);
+        
+        results.push({
+          text: text.substring(0, 30),
+          checked: isChecked,
+          top: Math.round(rect.top),
+          left: Math.round(rect.left)
+        });
+      }
+      return results;
+    });
+    
+    console.log(`      Opties gevonden: ${JSON.stringify(options)}`);
+    
+    // Step 3: For each option, toggle to get the right state
+    // Target: ONLY marketDropdownText should be checked
+    const targetLower = marketDropdownText.toLowerCase();
+    
+    // First pass: uncheck all non-target markets that are checked
+    for (const opt of options) {
+      const isTarget = opt.text.toLowerCase().includes(targetLower) || 
+                       targetLower.includes(opt.text.toLowerCase());
+      
+      if (!isTarget && opt.checked) {
+        // Need to UNCHECK this one — click it
+        try {
+          const optEl = page.locator(`text="${opt.text}"`).first();
+          await optEl.click({ timeout: 2000 });
+          console.log(`      ❎ Unchecked: "${opt.text}"`);
+          await page.waitForTimeout(500);
+        } catch (e) {
+          console.log(`      ⚠️ Kon niet unchecken: "${opt.text}": ${e.message}`);
+        }
       }
     }
     
-    if (!selected) {
-      console.log(`      ❌ Marketplace optie niet gevonden: ${marketDropdownText}`);
-      await takeDebugScreenshot(page, `marketplace-option-miss-${marketDropdownText}`);
-      return false;
+    // Second pass: ensure target IS checked
+    for (const opt of options) {
+      const isTarget = opt.text.toLowerCase().includes(targetLower) || 
+                       targetLower.includes(opt.text.toLowerCase());
+      
+      if (isTarget && !opt.checked) {
+        // Need to CHECK this one — click it
+        try {
+          const optEl = page.locator(`text="${opt.text}"`).first();
+          await optEl.click({ timeout: 2000 });
+          console.log(`      ☑️ Checked: "${opt.text}"`);
+          await page.waitForTimeout(500);
+        } catch (e) {
+          console.log(`      ⚠️ Kon niet checken: "${opt.text}": ${e.message}`);
+        }
+      } else if (isTarget && opt.checked) {
+        console.log(`      ✅ "${opt.text}" was al geselecteerd`);
+      }
     }
     
-    // Wait for data to reload after marketplace change
-    await page.waitForTimeout(5000);
+    // Step 4: Close dropdown by clicking outside
+    await page.mouse.click(10, 400);
+    await page.waitForTimeout(500);
+    
     await takeDebugScreenshot(page, `marketplace-selected-${marketDropdownText}`);
+    
+    // Wait for data to reload
+    console.log(`      ⏳ Wacht op data reload...`);
+    await page.waitForTimeout(5000);
     
     return true;
     
@@ -594,7 +561,7 @@ async function main() {
     }
   }
   
-  console.log(`📊 Sellerboard P&L Export v8.4`);
+  console.log(`📊 Sellerboard P&L Export v8.5`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   Supabase: ${SUPABASE_KEY ? '✅' : '❌ Geen key'}`);
   console.log('');
