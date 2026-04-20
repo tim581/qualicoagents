@@ -1,4 +1,4 @@
-// playwright-task-executor.js v3.0 — 3-layer script resolution + module.exports support
+// playwright-task-executor.js v3.1 — all warehouse + sellerboard task_types added
 const { chromium } = require('playwright-core');
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
@@ -86,17 +86,23 @@ async function executeAction(page, action, creds = {}) {
 }
 
 // ── SCRIPT-BASED TASK ROUTING ─────────────────────────────────────────────────
-// Maps task_type to standalone Playwright scripts that handle their own browser.
-// These scripts are self-contained (login, execute, log to Supabase).
 const { execSync } = require('child_process');
 const path = require('path');
 
 // Layer 1: Hardcoded map (fast, no DB call)
 const SCRIPT_TASKS = {
+  // Flieber
   'forecast-sync':            'flieber-forecast-updater.js',
+  'forecast-verify':          'flieber-forecast-verifier.js',
   'po-simulation':            'flieber-replenishment-simulator.js',
   'to-simulation':            'flieber-replenishment-simulator.js',
-  'forecast-verify':          'flieber-forecast-verifier.js',
+  // Warehouse exports
+  'corax-stock-export':       'corax-wms-stock-export.js',
+  'mintsoft-product-export':  'mintsoft-product-export.js',
+  'forceget-inventory-export':'forceget-inventory-export.js',
+  // Sellerboard
+  'sellerboard-pl-export':    'sellerboard-pl-export.js',
+  // Legacy / future
   'inventory-sync-forceget':  'inventory-sync-forceget.js',
   'inventory-sync-kamps':     'inventory-sync-kamps.js',
   'inventory-sync-mintsoft':  'inventory-sync-mintsoft.js',
@@ -125,6 +131,11 @@ function downloadFromGitHub(scriptName) {
         }).on('error', reject);
         return;
       }
+      if (res.statusCode === 404) {
+        console.log(`⚠️ Script not found on GitHub: ${scriptName}`);
+        resolve(); // Don't fail — try local
+        return;
+      }
       const chunks = [];
       res.on('data', (d) => chunks.push(d));
       res.on('end', () => {
@@ -137,10 +148,7 @@ function downloadFromGitHub(scriptName) {
   });
 }
 
-// ── 3-LAYER SCRIPT RESOLUTION (v2.5) ─────────────────────────────────────────
-// 1. SCRIPT_TASKS hardcoded map (fast)
-// 2. actions[] array — look for {"script": "filename.js"} entries (flexible)
-// 3. Browser_Task_Registry in Supabase (dynamic, no code change needed)
+// ── 3-LAYER SCRIPT RESOLUTION ─────────────────────────────────────────────────
 async function resolveScript(task) {
   // Layer 1: Hardcoded map
   if (SCRIPT_TASKS[task.task_type]) {
@@ -169,11 +177,10 @@ async function resolveScript(task) {
       return registry.script_name;
     }
   } catch (e) {
-    // Registry lookup failed — fall through to action-based
     console.log(`   ℹ️ Registry lookup failed: ${e.message}`);
   }
 
-  return null; // No script found → action-based execution
+  return null;
 }
 
 async function executeScriptTask(task, scriptName) {
@@ -188,14 +195,12 @@ async function executeScriptTask(task, scriptName) {
   
   console.log(`\n🔧 Running script: ${scriptName} for task type: ${task.task_type}`);
   
-  // Detect script type: module.exports (needs browser injection) vs standalone (runs with node)
+  // Detect script type: module.exports vs standalone
   const scriptContent = fs.readFileSync(scriptPath, 'utf-8');
   const isModuleExports = /module\.exports\s*=/.test(scriptContent);
   
   if (isModuleExports) {
     // ── MODULE.EXPORTS PATTERN ──────────────────────────────
-    // Script exports an async function: ({ page, context, supabase, dbShot }) => result
-    // We create a browser context, call the function, and capture the return value
     console.log(`   📦 Detected module.exports pattern — injecting browser context`);
     
     const b = await initBrowser();
@@ -205,7 +210,6 @@ async function executeScriptTask(task, scriptName) {
     });
     const page = await context.newPage();
     
-    // dbShot helper — saves screenshot to Flieber_Debug_Log
     const runId = `${task.task_type}_${Date.now()}`;
     const dbShot = async (p, step, message) => {
       try {
@@ -222,7 +226,6 @@ async function executeScriptTask(task, scriptName) {
     };
     
     try {
-      // Clear require cache to get fresh version
       delete require.cache[require.resolve(scriptPath)];
       const scriptFn = require(scriptPath);
       
@@ -246,13 +249,24 @@ async function executeScriptTask(task, scriptName) {
     }
   } else {
     // ── STANDALONE PATTERN ───────────────────────────────────
-    // Script runs independently with node, captures stdout
     console.log(`   🖥️ Standalone script — running with node`);
     
     const env = { ...process.env };
     env.BROWSER_TASK_ID = String(task.id);
+    
+    // Pass task-specific env variables
     if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
     if (task.task_type === 'to-simulation') env.RUN_MODE = 'to';
+    
+    // Sellerboard: pass market scope from actions array
+    if (task.task_type === 'sellerboard-pl-export') {
+      // actions can be: ["eu"], ["us"], ["all"], ["Amazon.de"] or empty (default: eu)
+      if (Array.isArray(task.actions) && task.actions.length > 0 && typeof task.actions[0] === 'string') {
+        env.MARKET_SCOPE = task.actions[0];
+      } else {
+        env.MARKET_SCOPE = 'eu'; // default
+      }
+    }
     
     try {
       const output = execSync(`node "${scriptPath}"`, {
@@ -264,27 +278,25 @@ async function executeScriptTask(task, scriptName) {
       });
       console.log(output);
       
-      // Check if script wrote a JSON file we can read
-      const jsonOutputPath = scriptPath.replace('.js', '-data.json')
-        .replace('stock-export', 'stock-data')
-        .replace('product-export', 'product-data')
-        .replace('inventory-export', 'inventory-data');
-      
+      // ── Detect JSON output files ──
       let jsonData = null;
-      // Try common output file patterns
       const possibleFiles = [
-        path.join(__dirname, scriptName.replace('.js', '-data.json')),
-        path.join(__dirname, 'forceget-inventory-data.json'),
-        path.join(__dirname, 'mintsoft-product-data.json'),
         path.join(__dirname, 'corax-stock-data.json'),
+        path.join(__dirname, 'mintsoft-product-data.json'),
+        path.join(__dirname, 'forceget-inventory-data.json'),
+        path.join(__dirname, 'sellerboard-pl-data.json'),
       ];
       
       for (const f of possibleFiles) {
         if (fs.existsSync(f)) {
           try {
-            jsonData = JSON.parse(fs.readFileSync(f, 'utf-8'));
-            console.log(`📄 Found JSON output: ${f} (${Array.isArray(jsonData) ? jsonData.length : 'object'} items)`);
-            break;
+            const stat = fs.statSync(f);
+            // Only read if modified in last 10 minutes (this run)
+            if (Date.now() - stat.mtimeMs < 600000) {
+              jsonData = JSON.parse(fs.readFileSync(f, 'utf-8'));
+              console.log(`📄 Found JSON output: ${path.basename(f)}`);
+              break;
+            }
           } catch (e) {
             console.log(`⚠️ Could not parse ${f}: ${e.message}`);
           }
@@ -292,7 +304,25 @@ async function executeScriptTask(task, scriptName) {
       }
       
       if (jsonData) {
-        return { success: true, data: { items: jsonData, output: output.substring(0, 1000) } };
+        // Truncate if too large for Supabase (max ~1MB for JSONB)
+        const jsonStr = JSON.stringify(jsonData);
+        if (jsonStr.length > 500000) {
+          console.log(`⚠️ JSON output too large (${(jsonStr.length/1024).toFixed(0)}KB) — storing summary only`);
+          // Store summary with counts
+          const summary = { _truncated: true, _size_kb: Math.round(jsonStr.length / 1024) };
+          if (jsonData.markets) {
+            summary.markets = {};
+            for (const [mkt, views] of Object.entries(jsonData.markets)) {
+              summary.markets[mkt] = {};
+              for (const [view, data] of Object.entries(views)) {
+                summary.markets[mkt][view] = { row_count: data.row_count, headers: data.headers };
+              }
+            }
+          }
+          if (Array.isArray(jsonData)) summary.item_count = jsonData.length;
+          return { success: true, data: summary };
+        }
+        return { success: true, data: jsonData };
       }
       return { success: true, data: { output: output.substring(0, 2000) } };
     } catch (error) {
@@ -308,7 +338,6 @@ async function executeTask(task) {
   console.log(`   Type: ${task.task_type}`);
   console.log(`   URL: ${task.url || '(script-based)'}`);
 
-  // ── v2.5: 3-layer script resolution ──
   const scriptName = await resolveScript(task);
   if (scriptName) {
     return await executeScriptTask(task, scriptName);
@@ -317,11 +346,9 @@ async function executeTask(task) {
   // No script found → generic action-based execution
   console.log(`   🌐 No script found — using action-based execution`);
   
-  // Safety check: if actions contain script references but we couldn't resolve, warn
   if (Array.isArray(task.actions) && task.actions.some(a => a.script && !a.type)) {
-    console.error(`   ⚠️ Actions contain script references but no 'type' field — these are NOT executable as actions!`);
-    console.error(`   💡 Make sure the script file exists on GitHub or register task_type in Browser_Task_Registry`);
-    return { success: false, error: `Task has script references in actions but script could not be resolved. Check GitHub or Browser_Task_Registry.` };
+    console.error(`   ⚠️ Actions contain script references but no 'type' field`);
+    return { success: false, error: `Script references in actions but script not resolved. Check GitHub or Browser_Task_Registry.` };
   }
 
   const b = await initBrowser();
@@ -329,21 +356,17 @@ async function executeTask(task) {
   
   try {
     let result = {};
-
     for (const action of (task.actions || [])) {
       const actionResult = await executeAction(page, action);
       if (actionResult) {
         result = { ...result, ...actionResult };
       }
     }
-
     console.log(`✅ Task complete!`);
     return { success: true, data: result };
-
   } catch (error) {
     console.error(`❌ Task failed: ${error.message}`);
     return { success: false, error: error.message };
-
   } finally {
     await page.close();
   }
@@ -357,7 +380,6 @@ async function pollTasks() {
       .from('Browser_Tasks')
       .select('*')
       .eq('status', 'pending')
-      .order('priority', { ascending: false })
       .order('created_at', { ascending: true })
       .limit(1);
 
@@ -369,16 +391,13 @@ async function pollTasks() {
     }
 
     for (const task of tasks) {
-      // Mark as running
       await supabase
         .from('Browser_Tasks')
         .update({ status: 'running' })
         .eq('id', task.id);
 
-      // Execute
       const result = await executeTask(task);
 
-      // Save result
       await supabase
         .from('Browser_Tasks')
         .update({
@@ -416,18 +435,16 @@ async function pollTasks() {
 }
 
 async function main() {
-  console.log('🎬 Browser Task Executor v3.0 — 3-layer script resolution');
-  console.log(`📍 Checking Supabase: ${SUPABASE_URL}`);
+  console.log('🎬 Browser Task Executor v3.1 — all warehouse + sellerboard task_types');
+  console.log(`📍 Supabase: ${SUPABASE_URL}`);
+  console.log('📋 Registered task_types:', Object.keys(SCRIPT_TASKS).join(', '));
 
   if (!SUPABASE_URL || !SUPABASE_KEY) {
     console.error('❌ Missing .env credentials');
     process.exit(1);
   }
 
-  // Poll continuously
   setInterval(() => pollTasks(), POLL_INTERVAL);
-
-  // Also poll immediately on start
   await pollTasks();
 }
 

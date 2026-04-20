@@ -1,12 +1,14 @@
-// Sellerboard P&L Export v3
+// Sellerboard P&L Export v3.1
 // Exports BOTH main P&L AND per-ASIN P&L for all EU markets.
-// Generates CSV directly from scraped data (more reliable than download button).
+// Generates CSV directly from scraped data.
 //
-// Usage:
+// Usage (CLI):
 //   node sellerboard-pl-export.js              → All EU markets
 //   node sellerboard-pl-export.js Amazon.co.uk  → Single market
-//   node sellerboard-pl-export.js Amazon.com    → US market (switches account)
+//   node sellerboard-pl-export.js us            → US markets (switches account)
 //   node sellerboard-pl-export.js all           → All EU + US markets
+//
+// Usage (executor): reads MARKET_SCOPE env variable
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -41,10 +43,11 @@ function toCsv(headers, rows) {
 }
 
 (async () => {
-  const arg = process.argv[2];
+  // Read market from env (executor) or CLI arg
+  const arg = process.env.MARKET_SCOPE || process.argv[2];
   const markets = getMarkets(arg);
 
-  console.log(`📊 Sellerboard P&L Export v3`);
+  console.log(`📊 Sellerboard P&L Export v3.1`);
   console.log(`   Markten: ${markets.join(', ')}`);
   console.log(`   Views: Main P&L + Per ASIN`);
   console.log(`   Output: JSON + CSV per markt/view`);
@@ -170,7 +173,6 @@ function toCsv(headers, rows) {
           });
         }
 
-        // Fallback: no table found
         if (result.rows.length === 0 && result.headers.length === 0) {
           result.debug_tables = document.querySelectorAll('table').length;
           result.debug_text = document.body.innerText.substring(0, 2000);
@@ -181,14 +183,14 @@ function toCsv(headers, rows) {
 
       console.log(`      Rijen: ${tableData.rows.length}, Kolommen: ${tableData.headers.length}`);
 
-      // ---- Generate CSV from scraped data ----
+      // ---- Generate CSV ----
       const csvFilename = `sellerboard-${marketKey}-${view.name}.csv`;
       const csvPath = path.join(CSV_DIR, csvFilename);
 
       if (tableData.headers.length > 0 && tableData.rows.length > 0) {
         const csvContent = toCsv(tableData.headers, tableData.rows);
         fs.writeFileSync(csvPath, csvContent, 'utf-8');
-        console.log(`      ✅ CSV: ${csvPath}`);
+        console.log(`      ✅ CSV: ${csvFilename}`);
       } else {
         console.log('      ⚠️ Geen data voor CSV');
       }
@@ -197,7 +199,7 @@ function toCsv(headers, rows) {
         headers: tableData.headers,
         rows: tableData.rows,
         row_count: tableData.rows.length,
-        csv_file: tableData.rows.length > 0 ? csvPath : null,
+        csv_file: tableData.rows.length > 0 ? csvFilename : null,
       };
 
       if (tableData.debug_text) {
