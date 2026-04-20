@@ -1,7 +1,8 @@
-// Sellerboard P&L Export v4.0
+// Sellerboard P&L Export v5.0
 // Exports BOTH main P&L AND per-ASIN P&L.
+// FULL data → Supabase `Sellerboard_Exports` table (agents query this)
+// FULL data → CSV files (local backup)
 // COMPACT summary → JSON (for Browser_Tasks.result)
-// FULL data → CSV files (local)
 //
 // Usage (CLI):
 //   node sellerboard-pl-export.js              → All EU markets
@@ -14,12 +15,20 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+const { createClient } = require('@supabase/supabase-js');
+require('dotenv').config();
 
 const COOKIE_FILE = path.join(__dirname, 'sellerboard-storage-state.json');
 const EU_MARKETS = ['Amazon.co.uk', 'Amazon.de', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
 const US_MARKETS = ['Amazon.com', 'Amazon.ca'];
 const ALL_MARKETS = [...EU_MARKETS, ...US_MARKETS];
 const CSV_DIR = path.join(__dirname, 'csv-downloads');
+
+// Supabase client
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
 function getMarkets(arg) {
   if (!arg || arg === 'eu') return EU_MARKETS;
@@ -43,14 +52,39 @@ function toCsv(headers, rows) {
   return lines.join('\n');
 }
 
+async function writeToSupabase(market, viewType, headers, rows, periodStart, periodEnd) {
+  try {
+    const { error } = await supabase
+      .from('Sellerboard_Exports')
+      .upsert({
+        market,
+        view_type: viewType,
+        headers: JSON.stringify(headers),
+        rows: JSON.stringify(rows),
+        row_count: rows.length,
+        period_start: periodStart,
+        period_end: periodEnd,
+        exported_at: new Date().toISOString(),
+      }, { onConflict: 'market,view_type' });
+
+    if (error) {
+      console.log(`      ⚠️ Supabase write fout: ${error.message}`);
+    } else {
+      console.log(`      ✅ Supabase: ${market} / ${viewType} (${rows.length} rijen)`);
+    }
+  } catch (e) {
+    console.log(`      ⚠️ Supabase error: ${e.message}`);
+  }
+}
+
 (async () => {
   const arg = process.env.MARKET_SCOPE || process.argv[2];
   const markets = getMarkets(arg);
 
-  console.log(`📊 Sellerboard P&L Export v4.0`);
+  console.log(`📊 Sellerboard P&L Export v5.0`);
   console.log(`   Markten: ${markets.join(', ')}`);
   console.log(`   Views: Main P&L + Per ASIN`);
-  console.log(`   Output: Compact JSON (summary) + CSV (full data)`);
+  console.log(`   Output: Supabase (full) + CSV (local) + JSON (summary)`);
   console.log('');
 
   if (!fs.existsSync(COOKIE_FILE)) {
@@ -68,6 +102,8 @@ function toCsv(headers, rows) {
   const now = new Date();
   const startTs = Math.floor(new Date(now.getFullYear() - 1, now.getMonth(), 1).getTime() / 1000);
   const endTs = Math.floor(new Date(now.getFullYear(), now.getMonth() + 1, 0).getTime() / 1000);
+  const periodStart = new Date(startTs * 1000).toISOString().split('T')[0];
+  const periodEnd = new Date(endTs * 1000).toISOString().split('T')[0];
 
   console.log('🔄 Navigeren naar Sellerboard...');
   await page.goto('https://app.sellerboard.com/en/dashboard/?viewType=table', {
@@ -77,7 +113,7 @@ function toCsv(headers, rows) {
   await page.waitForTimeout(5000);
 
   let currentAccount = 'eu';
-  const allResults = {};
+  const summaryResults = {};
 
   for (let mi = 0; mi < markets.length; mi++) {
     const marketplace = markets[mi];
@@ -122,7 +158,7 @@ function toCsv(headers, rows) {
       }
     }
 
-    allResults[marketplace] = {};
+    summaryResults[marketplace] = {};
 
     const views = [
       { name: 'main_pl', label: 'Main P&L', groupBy: '' },
@@ -178,80 +214,61 @@ function toCsv(headers, rows) {
 
       console.log(`      Rijen: ${tableData.rows.length}, Kolommen: ${tableData.headers.length}`);
 
-      // ---- Generate CSV (FULL data) ----
+      // ---- Write FULL data to Supabase ----
+      if (tableData.headers.length > 0 && tableData.rows.length > 0) {
+        await writeToSupabase(marketplace, view.name, tableData.headers, tableData.rows, periodStart, periodEnd);
+      }
+
+      // ---- Generate CSV (local backup) ----
       const csvFilename = `sellerboard-${marketKey}-${view.name}.csv`;
       const csvPath = path.join(CSV_DIR, csvFilename);
 
       if (tableData.headers.length > 0 && tableData.rows.length > 0) {
         const csvContent = toCsv(tableData.headers, tableData.rows);
         fs.writeFileSync(csvPath, csvContent, 'utf-8');
-        console.log(`      ✅ CSV: ${csvFilename} (${tableData.rows.length} rijen)`);
-      } else {
-        console.log('      ⚠️ Geen data voor CSV');
+        console.log(`      ✅ CSV: ${csvFilename}`);
       }
 
-      // ---- Build COMPACT summary for JSON (not full rows) ----
-      const summary = {
+      // ---- Compact summary for Browser_Tasks.result ----
+      summaryResults[marketplace][view.name] = {
         row_count: tableData.rows.length,
+        col_count: tableData.headers.length,
         headers: tableData.headers,
-        csv_file: tableData.rows.length > 0 ? csvFilename : null,
+        supabase: tableData.rows.length > 0 ? 'written' : 'no_data',
       };
-
-      // Include TOTAL row if it exists (last row often = totals)
-      if (tableData.rows.length > 0) {
-        const lastRow = tableData.rows[tableData.rows.length - 1];
-        const firstCell = (lastRow[0] || '').toLowerCase();
-        if (firstCell.includes('total') || firstCell.includes('sum') || firstCell === '') {
-          summary.totals_row = lastRow;
-        }
-      }
-
-      // For per_asin: include first 5 rows as preview
-      if (view.name === 'per_asin' && tableData.rows.length > 0) {
-        summary.preview_rows = tableData.rows.slice(0, 5);
-        summary.preview_note = `Showing 5 of ${tableData.rows.length} ASINs. Full data in CSV.`;
-      }
-
-      // For main_pl: include ALL rows (they're just metric names, not heavy)
-      if (view.name === 'main_pl' && tableData.rows.length > 0) {
-        summary.rows = tableData.rows;
-      }
-
-      allResults[marketplace][view.name] = summary;
     }
   }
 
-  // ---- Save COMPACT JSON (summary only) ----
+  // ---- Save compact summary JSON ----
   const output = {
-    version: '4.0',
+    version: '5.0',
     exported_at: new Date().toISOString(),
-    period: {
-      start: new Date(startTs * 1000).toISOString().split('T')[0],
-      end: new Date(endTs * 1000).toISOString().split('T')[0],
-    },
+    period: { start: periodStart, end: periodEnd },
     scope: arg || 'eu',
-    markets: allResults,
+    data_location: 'Supabase table: Sellerboard_Exports',
+    query_example: 'SELECT * FROM "Sellerboard_Exports" WHERE market = \'Amazon.co.uk\' AND view_type = \'per_asin\';',
+    markets: summaryResults,
   };
 
   const outputFile = path.join(__dirname, 'sellerboard-pl-data.json');
   fs.writeFileSync(outputFile, JSON.stringify(output, null, 2));
 
   const jsonSize = fs.statSync(outputFile).size;
-  console.log(`\n📦 JSON size: ${(jsonSize / 1024).toFixed(1)}KB`);
 
   // ---- Summary ----
   console.log(`\n${'='.repeat(60)}`);
   console.log('📊 SAMENVATTING');
   console.log(`${'='.repeat(60)}`);
-  for (const [mkt, views] of Object.entries(allResults)) {
+  for (const [mkt, views] of Object.entries(summaryResults)) {
     const main = views.main_pl?.row_count || 0;
     const asin = views.per_asin?.row_count || 0;
-    const mainCsv = views.main_pl?.csv_file ? '✅' : '❌';
-    const asinCsv = views.per_asin?.csv_file ? '✅' : '❌';
-    console.log(`   ${mkt.padEnd(16)} Main P&L: ${String(main).padStart(3)} rijen ${mainCsv}  |  Per ASIN: ${String(asin).padStart(3)} rijen ${asinCsv}`);
+    const mainDb = views.main_pl?.supabase === 'written' ? '✅' : '❌';
+    const asinDb = views.per_asin?.supabase === 'written' ? '✅' : '❌';
+    console.log(`   ${mkt.padEnd(16)} Main P&L: ${String(main).padStart(3)} rijen ${mainDb}  |  Per ASIN: ${String(asin).padStart(3)} rijen ${asinDb}`);
   }
-  console.log(`\n   JSON: ${outputFile} (${(jsonSize / 1024).toFixed(1)}KB)`);
-  console.log(`   CSVs: ${CSV_DIR}/`);
+  console.log(`\n   Supabase: Sellerboard_Exports (volledige data)`);
+  console.log(`   CSVs:     ${CSV_DIR}/`);
+  console.log(`   JSON:     ${outputFile} (${(jsonSize / 1024).toFixed(1)}KB — summary only)`);
   console.log('\n✅ Klaar!');
 
   await browser.close();
