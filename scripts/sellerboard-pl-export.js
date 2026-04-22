@@ -1,9 +1,9 @@
-// Sellerboard P&L Export v9.1
-// FIX: dotenv loading + enhanced table detection + working Supabase debug logging
-// URL params for marketplace selection (proven for EU + US after account switch)
-
-// CRITICAL: Load .env FIRST so SUPABASE_KEY is available
-try { require('dotenv').config(); } catch (e) { /* dotenv not installed — use hardcoded fallback */ }
+// Sellerboard P&L Export v9.2
+// FIX: SPA overrides URL params after account switch
+// Solution: navigate to about:blank first to force fresh state
+// + HTML body logging for self-debugging
+// + JPEG screenshots (smaller, fits in 50KB DB limit)
+require('dotenv').config();
 
 const { chromium } = require('playwright');
 const fs = require('fs');
@@ -11,15 +11,14 @@ const path = require('path');
 
 // --- CONFIG ---
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const STORAGE_STATE = path.join(__dirname, 'sellerboard-storage-state.json');
 const RUN_ID = `sb-${Date.now()}`;
 
-// Verify key is loaded
 if (SUPABASE_KEY) {
-  console.log(`🔑 Supabase key geladen (${SUPABASE_KEY.substring(0, 20)}...)`);
+  console.log(`🔑 Supabase key geladen (${SUPABASE_KEY.substring(0, 10)}...)`);
 } else {
-  console.log(`⚠️ Geen Supabase key — debug logging uitgeschakeld`);
+  console.log('⚠️ Geen SUPABASE_KEY — debug logging uitgeschakeld');
 }
 
 // Market config
@@ -43,9 +42,7 @@ const P_AND_L_METRICS = [
   'amazon fees', 'cost of goods', 'gross profit', 'net profit',
   'refund cost', 'other', 'roi', 'margin', 'fba', 'commission',
   'variable expenses', 'fixed expenses', 'indirect expenses',
-  'money back', 'storage fees', 'disposal', 'returns processing',
-  'vat', 'estimated payout', 'real acos', '% refunds', 'sellable returns',
-  'active subscriptions', 'sessions', 'unit session', 'giftwrap'
+  'money back', 'storage fees', 'disposal', 'returns processing'
 ];
 
 // --- HELPERS ---
@@ -62,12 +59,13 @@ function buildUrl(market, groupBy = null) {
   params.set('tableSorting[field]', 'margin');
   params.set('tableSorting[direction]', 'desc');
   params.set('market[]', market);
+  
   if (groupBy) params.set('groupBy', groupBy);
   
   return `https://app.sellerboard.com/en/dashboard/?${params.toString()}`;
 }
 
-// Debug: screenshot to local + Supabase
+// Debug: screenshot (JPEG, 40% quality to fit in 50KB) + message to Supabase
 async function debugLog(page, step, message, takeScreenshot = true) {
   console.log(`      ${message}`);
   
@@ -76,17 +74,59 @@ async function debugLog(page, step, message, takeScreenshot = true) {
     try {
       const dir = path.join(__dirname, 'debug-screenshots');
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, `sb-${step}-${Date.now()}.png`);
-      const buffer = await page.screenshot({ path: file, fullPage: false });
-      screenshotBase64 = buffer.toString('base64').substring(0, 50000); // cap at 50KB for Supabase
-      console.log(`      📸 ${path.basename(file)}`);
-    } catch (e) { console.log(`      ⚠️ Screenshot failed: ${e.message}`); }
+      // Use JPEG at 40% quality — smaller, fits in DB
+      const file = path.join(dir, `sb-${step}-${Date.now()}.jpg`);
+      const buffer = await page.screenshot({ path: file, fullPage: false, type: 'jpeg', quality: 40 });
+      screenshotBase64 = buffer.toString('base64');
+      console.log(`      📸 ${path.basename(file)} (${Math.round(screenshotBase64.length / 1024)}KB b64)`);
+    } catch (e) { /* ignore */ }
   }
   
   // Write to Supabase debug log
   if (SUPABASE_KEY) {
-    try {
-      await fetch(`${SUPABASE_URL}/rest/v1/Sellerboard_Debug_Log`, {
+    fetch(`${SUPABASE_URL}/rest/v1/Sellerboard_Debug_Log`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`
+      },
+      body: JSON.stringify({
+        run_id: RUN_ID,
+        step,
+        message: message.substring(0, 2000),
+        screenshot: screenshotBase64,
+        created_at: new Date().toISOString()
+      })
+    }).catch(() => {});
+  }
+}
+
+// Log HTML body content when table not found (for self-debugging)
+async function logPageInfo(page, step) {
+  try {
+    const info = await page.evaluate(() => {
+      return {
+        url: window.location.href,
+        title: document.title,
+        tableCount: document.querySelectorAll('table').length,
+        gridCount: document.querySelectorAll('[role="grid"]').length,
+        divTableCount: document.querySelectorAll('.ag-root, .handsontable, [class*="table"]').length,
+        bodyText: document.body?.innerText?.substring(0, 1500) || '(empty)',
+        bodyHtml: document.body?.innerHTML?.substring(0, 2000) || '(empty)'
+      };
+    });
+    
+    const msg = `📋 Page info — URL: ${info.url}\n` +
+      `Title: ${info.title}\n` +
+      `Tables: ${info.tableCount}, Grids: ${info.gridCount}, DivTables: ${info.divTableCount}\n` +
+      `Body text (first 1500): ${info.bodyText}`;
+    
+    await debugLog(page, `page-info-${step}`, msg, false);
+    
+    // Also log HTML separately
+    if (SUPABASE_KEY) {
+      fetch(`${SUPABASE_URL}/rest/v1/Sellerboard_Debug_Log`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -95,14 +135,50 @@ async function debugLog(page, step, message, takeScreenshot = true) {
         },
         body: JSON.stringify({
           run_id: RUN_ID,
-          step,
-          message,
-          screenshot: screenshotBase64,
+          step: `html-${step}`,
+          message: `HTML body (first 2000): ${info.bodyHtml}`,
           created_at: new Date().toISOString()
         })
-      });
-    } catch (e) { /* fire and forget */ }
+      }).catch(() => {});
+    }
+    
+    return info;
+  } catch (e) {
+    console.log(`      ⚠️ Kon page info niet ophalen: ${e.message}`);
+    return null;
   }
+}
+
+// CRITICAL FIX: Force fresh navigation (bypass SPA state)
+// After account switch, SPA overrides URL params with saved state.
+// Solution: navigate to about:blank first, then to target URL.
+async function freshNavigate(page, url, label) {
+  console.log(`      🌐 Fresh navigate: ${url.substring(0, 80)}...`);
+  
+  // Step 1: Go to blank page to clear SPA state
+  await page.goto('about:blank');
+  await page.waitForTimeout(500);
+  
+  // Step 2: Navigate to actual target
+  await page.goto(url, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(5000);
+  
+  // Step 3: Check if URL matches what we expected
+  const currentUrl = page.url();
+  if (currentUrl !== url) {
+    console.log(`      ⚠️ URL mismatch! Expected params may have been overridden by SPA`);
+    console.log(`      Expected: ${url.substring(0, 80)}...`);
+    console.log(`      Got:      ${currentUrl.substring(0, 80)}...`);
+    
+    // Try reload to force our URL
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3000);
+    
+    const afterReload = page.url();
+    console.log(`      After reload: ${afterReload.substring(0, 80)}...`);
+  }
+  
+  await debugLog(page, `navigated-${label}`, `Navigatie compleet. URL: ${page.url()}`);
 }
 
 async function switchAccount(page, targetAccount) {
@@ -110,9 +186,7 @@ async function switchAccount(page, targetAccount) {
   await debugLog(page, 'account-switch-start', `🔄 Switchen naar ${targetAccount} (${targetName})...`);
   
   try {
-    // Click avatar/account button in top navigation bar
     let clicked = false;
-    
     for (const text of ['Tim@qualico.be', 'tim@qualico.be', 'AMZ USA', 'AMZ usa']) {
       try {
         const el = page.locator(`text="${text}"`).first();
@@ -126,7 +200,6 @@ async function switchAccount(page, targetAccount) {
       } catch (e) { /* try next */ }
     }
     
-    // Fallback: top-right avatar position
     if (!clicked) {
       const vp = page.viewportSize();
       await page.mouse.click(vp.width - 60, 35);
@@ -137,7 +210,6 @@ async function switchAccount(page, targetAccount) {
     await page.waitForTimeout(2000);
     await debugLog(page, 'account-dropdown-open', '📋 Account dropdown geopend');
     
-    // Click target account
     let switched = false;
     try {
       await page.locator(`text="${targetName}"`).first().click({ timeout: 3000 });
@@ -165,12 +237,9 @@ async function switchAccount(page, targetAccount) {
       return false;
     }
     
-    // Wait for account switch to complete (page redirects + session update)
+    // Wait for account switch to fully complete
     await page.waitForTimeout(8000);
-    
-    // Log the current URL to verify we're on the right account
-    const currentUrl = page.url();
-    await debugLog(page, 'account-switch-done', `✅ Account switch compleet. URL: ${currentUrl}`);
+    await debugLog(page, 'account-switch-done', `✅ Account switch compleet. URL: ${page.url()}`);
     return true;
     
   } catch (err) {
@@ -179,46 +248,7 @@ async function switchAccount(page, targetAccount) {
   }
 }
 
-// Enhanced table detection: supports both <table> and div-based grids
-async function findTableData(page) {
-  return await page.evaluate(() => {
-    // Strategy 1: Regular <table> elements
-    const tables = document.querySelectorAll('table');
-    let bestTable = null;
-    let bestRows = 0;
-    
-    tables.forEach(t => {
-      const rows = t.querySelectorAll('tr');
-      if (rows.length > bestRows) {
-        bestRows = rows.length;
-        bestTable = t;
-      }
-    });
-    
-    if (bestTable && bestRows > 5) {
-      const rows = bestTable.querySelectorAll('tr');
-      const result = [];
-      for (const row of rows) {
-        const cells = row.querySelectorAll('th, td');
-        const rowData = [];
-        for (const cell of cells) {
-          rowData.push(cell.innerText?.split('\n')[0]?.trim() || '');
-        }
-        if (rowData.some(c => c)) result.push(rowData);
-      }
-      return { source: 'table', tableCount: tables.length, data: result };
-    }
-    
-    // Strategy 2: Look for div-based grids (modern React dashboards)
-    // Find containers with many rows of similarly-structured divs
-    const gridContainers = document.querySelectorAll('[class*="table"], [class*="grid"], [class*="row"], [role="table"], [role="grid"]');
-    
-    return { source: 'none', tableCount: tables.length, gridCount: gridContainers.length, bestRows, data: null };
-  });
-}
-
 async function scrapeMainPlTable(page) {
-  // Try expanding fee rows
   try {
     await page.evaluate(() => {
       const expandables = document.querySelectorAll('[class*="expand"], [class*="collapse"], [class*="toggle"], tr[class*="parent"]');
@@ -232,18 +262,39 @@ async function scrapeMainPlTable(page) {
     await page.waitForTimeout(1000);
   } catch (e) { /* ignore */ }
   
-  const result = await findTableData(page);
+  const data = await page.evaluate(() => {
+    const tables = document.querySelectorAll('table');
+    let bestTable = null;
+    let bestRows = 0;
+    
+    tables.forEach(t => {
+      const rows = t.querySelectorAll('tr');
+      if (rows.length > bestRows) {
+        bestRows = rows.length;
+        bestTable = t;
+      }
+    });
+    
+    if (!bestTable) return null;
+    
+    const rows = bestTable.querySelectorAll('tr');
+    const result = [];
+    for (const row of rows) {
+      const cells = row.querySelectorAll('th, td');
+      const rowData = [];
+      for (const cell of cells) {
+        rowData.push(cell.innerText?.split('\n')[0]?.trim() || '');
+      }
+      if (rowData.some(c => c)) result.push(rowData);
+    }
+    return result;
+  });
   
-  if (!result.data || result.data.length === 0) {
-    console.log(`      ℹ️ Table info: ${result.tableCount} tables, ${result.gridCount || 0} grids, best: ${result.bestRows || 0} rows`);
-    return null;
-  }
-  
-  return { headers: result.data[0], rows: result.data.slice(1) };
+  if (!data || data.length === 0) return null;
+  return { headers: data[0], rows: data.slice(1) };
 }
 
 async function scrapePerAsinTable(page) {
-  // Scroll to trigger lazy loading
   for (let i = 0; i < 5; i++) {
     await page.evaluate(() => window.scrollBy(0, 500));
     await page.waitForTimeout(500);
@@ -251,7 +302,6 @@ async function scrapePerAsinTable(page) {
   await page.evaluate(() => window.scrollTo(0, 0));
   await page.waitForTimeout(1000);
   
-  // Retry loop — ASIN table may need time
   for (let attempt = 1; attempt <= 6; attempt++) {
     console.log(`      🔍 Per-ASIN detectie (poging ${attempt}/6)...`);
     
@@ -281,7 +331,6 @@ async function scrapePerAsinTable(page) {
         if (score > bestScore && asinCount > 0) { bestScore = score; bestTable = t; }
       });
       
-      // Fallback: header check
       if (!bestTable) {
         tables.forEach(t => {
           const headerRow = t.querySelector('tr');
@@ -315,12 +364,9 @@ async function scrapePerAsinTable(page) {
       
       if (plHits < rows.length * 0.5) {
         console.log(`      ✅ Per-ASIN tabel gevonden! (${rows.length} producten)`);
-        console.log(`      Headers: ${headers.slice(0, 5).join(', ')}...`);
         return { headers, rows };
       }
     }
-    
-    console.log(`      Debug: ${result.debug || 'no info'}`);
     
     if (attempt < 6) {
       await page.waitForTimeout(5000);
@@ -334,46 +380,38 @@ async function scrapePerAsinTable(page) {
   return null;
 }
 
-async function scrapeTable(page, viewType, market) {
-  // Enhanced retry with debug logging
+async function waitForTable(page, viewType, market) {
   for (let attempt = 1; attempt <= 6; attempt++) {
-    console.log(`      ⏳ Wacht op data (poging ${attempt}/6)...`);
+    console.log(`      ⏳ Wacht op <table> (poging ${attempt}/6)...`);
     try {
-      await page.waitForSelector('table', { timeout: 10000 });
-      break;
+      await page.waitForSelector('table', { timeout: 8000 });
+      console.log(`      ✅ <table> gevonden!`);
+      await page.waitForTimeout(2000); // extra settle time
+      return true;
     } catch (e) {
       if (attempt === 6) {
-        // Take debug screenshot before giving up
-        await debugLog(page, `no-table-${viewType}-${market}`, `❌ Geen <table> na 6 pogingen. URL: ${page.url()}`);
-        
-        // Log what IS on the page
-        const pageInfo = await page.evaluate(() => ({
-          title: document.title,
-          url: window.location.href,
-          tableCount: document.querySelectorAll('table').length,
-          bodyText: document.body?.innerText?.substring(0, 500) || 'empty'
-        }));
-        console.log(`      ℹ️ Page: ${pageInfo.title}, Tables: ${pageInfo.tableCount}`);
-        console.log(`      ℹ️ URL: ${pageInfo.url}`);
-        console.log(`      ℹ️ Body preview: ${pageInfo.bodyText.substring(0, 200)}...`);
-        
-        return null;
+        // TABLE NOT FOUND — log full page info for self-debugging
+        console.log(`      ❌ Geen <table> na 6 pogingen`);
+        await debugLog(page, `no-table-${viewType}-${market}`, 
+          `❌ Geen <table> na 6 pogingen. URL: ${page.url()}`);
+        await logPageInfo(page, `${viewType}-${market}`);
+        return false;
       }
-      await page.waitForTimeout(5000);
+      await page.waitForTimeout(3000);
     }
   }
-  
-  await page.waitForTimeout(3000);
-  await debugLog(page, `table-found-${viewType}-${market}`, `✅ Table gevonden voor ${viewType} ${market}`, true);
+  return false;
+}
+
+async function scrapeTable(page, viewType, market) {
+  const found = await waitForTable(page, viewType, market);
+  if (!found) return null;
   
   return viewType === 'per_asin' ? await scrapePerAsinTable(page) : await scrapeMainPlTable(page);
 }
 
 async function saveToSupabase(market, viewType, headers, rows) {
-  if (!SUPABASE_KEY) {
-    console.log(`      ⚠️ Skip Supabase save (geen key)`);
-    return;
-  }
+  if (!SUPABASE_KEY) return;
   
   try {
     const resp = await fetch(`${SUPABASE_URL}/rest/v1/Sellerboard_Exports`, {
@@ -397,8 +435,7 @@ async function saveToSupabase(market, viewType, headers, rows) {
     if (resp.ok) {
       console.log(`      ✅ Supabase: ${market} / ${viewType} (${rows.length} rijen)`);
     } else {
-      const body = await resp.text();
-      console.log(`      ❌ Supabase error: ${resp.status} ${body.substring(0, 200)}`);
+      console.log(`      ❌ Supabase error: ${resp.status}`);
     }
   } catch (e) {
     console.log(`      ❌ Supabase fetch error: ${e.message}`);
@@ -440,10 +477,10 @@ async function main() {
     }
   }
   
-  console.log(`📊 Sellerboard P&L Export v9.1`);
+  console.log(`📊 Sellerboard P&L Export v9.2`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   Run ID: ${RUN_ID}`);
-  console.log(`   Debug: ${SUPABASE_KEY ? 'Supabase logging AAN' : 'GEEN logging (geen key)'}`);
+  console.log(`   Fix: about:blank before navigation (bypass SPA state)`);
   console.log('');
   
   if (!fs.existsSync(STORAGE_STATE)) {
@@ -455,9 +492,9 @@ async function main() {
   const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({ storageState: STORAGE_STATE });
   const page = await context.newPage();
-  page.setDefaultTimeout(20000); // increased from 15s
+  page.setDefaultTimeout(15000);
   
-  let currentAccount = 'eu'; // Default after cookie load
+  let currentAccount = 'eu';
   const summary = {};
   
   try {
@@ -473,7 +510,7 @@ async function main() {
         console.log(`   🌐 Laden Sellerboard voor account switch...`);
         await page.goto('https://app.sellerboard.com/en/dashboard/', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(5000);
-        await debugLog(page, `pre-switch-${market}`, `📋 Pre-switch pagina geladen`);
+        await debugLog(page, `pre-switch-${market}`, '📋 Pre-switch pagina geladen');
         
         const switched = await switchAccount(page, config.account);
         if (switched) {
@@ -488,14 +525,9 @@ async function main() {
       // === MAIN P&L ===
       console.log(`\n   📋 Main P&L...`);
       const mainUrl = buildUrl(config.urlParam);
-      console.log(`      URL: ${mainUrl.substring(0, 100)}...`);
-      await page.goto(mainUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(8000); // increased from 5s — give page time to load data
       
-      // Log current state
-      const afterNav = page.url();
-      console.log(`      Na navigatie URL: ${afterNav.substring(0, 80)}...`);
-      await debugLog(page, `main-pl-loaded-${market}`, `Main P&L geladen voor ${market}`);
+      // CRITICAL FIX v9.2: Use freshNavigate to bypass SPA state
+      await freshNavigate(page, mainUrl, `main-pl-${market}`);
       
       const mainData = await scrapeTable(page, 'main_pl', market);
       if (mainData) {
@@ -509,10 +541,9 @@ async function main() {
       // === PER ASIN ===
       console.log(`\n   📋 Per ASIN...`);
       const asinUrl = buildUrl(config.urlParam, 'asin');
-      console.log(`      URL: ${asinUrl.substring(0, 100)}...`);
-      await page.goto(asinUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(8000); // increased from 5s
-      await debugLog(page, `per-asin-loaded-${market}`, `Per ASIN geladen voor ${market}`);
+      
+      // CRITICAL FIX v9.2: Use freshNavigate
+      await freshNavigate(page, asinUrl, `per-asin-${market}`);
       
       const asinData = await scrapeTable(page, 'per_asin', market);
       if (asinData) {
@@ -543,29 +574,25 @@ async function main() {
     console.log(`   ${market.padEnd(18)} Main: ${main} |  ASIN: ${asin}`);
   }
   console.log(`\n   Supabase: Sellerboard_Exports (volledige data)`);
+  console.log(`   Debug:    Sellerboard_Debug_Log (run_id: ${RUN_ID})`);
   console.log(`   CSVs:     ${path.join(__dirname, 'csv-downloads')}`);
-  console.log(`   Debug:    ${path.join(__dirname, 'debug-screenshots')}`);
-  
-  // Save lightweight JSON summary
-  const jsonFile = path.join(__dirname, 'sellerboard-pl-data.json');
-  fs.writeFileSync(jsonFile, JSON.stringify(summary, null, 2));
-  console.log(`   JSON:     ${jsonFile} (${(fs.statSync(jsonFile).size / 1024).toFixed(1)}KB — summary only)`);
-  
-  console.log('\n✅ Klaar!');
+  console.log(`\n✅ Klaar!`);
 }
 
-// Support both standalone and module execution
+// Module export for executor
+module.exports = async function(browser, context, page, task) {
+  const args = task?.actions || [];
+  if (args.length > 0) {
+    process.argv = ['node', 'sellerboard-pl-export.js', ...args];
+  }
+  await main();
+  return { success: true, run_id: RUN_ID };
+};
+
+// Direct run
 if (require.main === module) {
   main().catch(err => {
-    console.error(`\n❌ Fatal error: ${err.message}`);
+    console.error('Fatal:', err);
     process.exit(1);
   });
-} else {
-  module.exports = async (page, task) => {
-    // Module mode: executor passes page + task
-    // Use task.actions for market selection
-    const args = task?.actions || [];
-    process.argv = ['node', 'sellerboard-pl-export.js', ...args];
-    await main();
-  };
 }
