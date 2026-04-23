@@ -1,17 +1,20 @@
 /**
- * corax-wms-stock-export.js — v4.0
+ * corax-wms-stock-export.js — v5.0
  * Based on Playwright Codegen recording (Apr 23, 2026)
+ * 
+ * APPROACH: Download CSV/Excel export instead of HTML scraping — much more reliable.
  * 
  * CRITICAL: Corax shows stock in KOLI (= master cartons), NOT individual units!
  * Must multiply KOLI × units_per_master to get real unit count.
  * 
- * Flow: Microsoft OAuth login → Voorraad → Stocks per artikel → scrape KOLI → convert → write to Inventory_Levels
+ * Flow: Microsoft OAuth login → Voorraad → Stocks per artikel → Export → Parse → Write to Inventory_Levels
  */
 module.exports = async function({ page, supabase, dbShot, credentials }) {
   const TIMEOUT = 60000;
+  const fs = require('fs');
+  const path = require('path');
   
   // KOLI = master cartons. Multiply by units_per_master to get units.
-  // Source: Puzzlup_Product_Info table
   const PRODUCT_CONFIG = {
     'PUZZLUP 1000':       { name: 'MAT 1000 GIFT',    upm: 12 },
     'PUZZLUP 1500 ECO':   { name: 'MAT 1500 ECO',     upm: 10 },
@@ -23,19 +26,11 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     'TRAYS 1500 BLACK':   { name: 'TRAYS 1500 BLACK',  upm: 8 },
     'TRAYS 1500 WHITE':   { name: 'TRAYS 1500 WHITE',  upm: 8 },
     'TRAYS 3000 BLACK':   { name: 'TRAYS 3000 BLACK',  upm: 4 },
-    // Aliases that may appear in Corax
-    '1000 GIFT':          { name: 'MAT 1000 GIFT',    upm: 12 },
-    '1500 ECO':           { name: 'MAT 1500 ECO',     upm: 10 },
-    '1500 GIFT':          { name: 'MAT 1500 GIFT',    upm: 10 },
-    '1500 LUX':           { name: 'MAT 1500 LUX',     upm: 10 },
-    '3000 ECO':           { name: 'MAT 3000 ECO',     upm: 9 },
-    '3000 GIFT':          { name: 'MAT 3000 GIFT',    upm: 6 },
-    '5000 GIFT':          { name: 'MAT 5000 GIFT',    upm: 6 },
   };
 
-  // Helper: find product config from a cell text
+  // Helper: find product config from cell text
   function matchProduct(text) {
-    const upper = text.toUpperCase();
+    const upper = (text || '').toUpperCase();
     // Try longest keys first for best match
     const keys = Object.keys(PRODUCT_CONFIG).sort((a, b) => b.length - a.length);
     for (const key of keys) {
@@ -60,10 +55,18 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     await page.getByRole('button', { name: 'Volgende' }).click();
     await page.waitForTimeout(2000);
 
-    const pwField = page.locator('#i0118');
-    await pwField.waitFor({ state: 'visible', timeout: TIMEOUT });
-    await pwField.click();
-    await pwField.fill(credentials?.password || 'GXE.NYeUJX6.f!J');
+    // Password field — try Codegen role first, then fallback to ID selector
+    try {
+      const pwField = page.getByRole('textbox', { name: 'Voer het wachtwoord voor' });
+      await pwField.waitFor({ state: 'visible', timeout: 5000 });
+      await pwField.click();
+      await pwField.fill(credentials?.password || 'GXE.NYeUJX6.f!J');
+    } catch {
+      const pwField = page.locator('#i0118');
+      await pwField.waitFor({ state: 'visible', timeout: TIMEOUT });
+      await pwField.click();
+      await pwField.fill(credentials?.password || 'GXE.NYeUJX6.f!J');
+    }
     
     await page.getByRole('button', { name: 'Aanmelden' }).click();
     await page.waitForTimeout(3000);
@@ -86,124 +89,155 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     await page.waitForTimeout(3000);
     await dbShot?.('step3_stocks', 'On Stocks per artikel page');
 
-    // Click expand/show all (from Codegen)
+    // Set items per page to 150 so export has everything (from Codegen)
     try {
-      await page.locator('.btn-right.ng-scope').click();
+      await page.getByRole('combobox').nth(1).selectOption('number:150');
       await page.waitForTimeout(2000);
-    } catch { /* no expand button */ }
-
-    await dbShot?.('step4_ready', 'Ready to scrape');
-
-    // ─── Step 4: Scrape stock table (ALL pages) ───
-    const inventory = [];
-    let pageNum = 1;
-
-    while (pageNum <= 20) {  // Safety limit
-      await page.waitForSelector('table tbody tr', { timeout: 15000 });
-      const rows = await page.locator('table tbody tr').all();
-      await dbShot?.(`step4_p${pageNum}`, `Page ${pageNum}: ${rows.length} rows`);
-
-      for (const row of rows) {
-        const cells = await row.locator('td').allTextContents();
-        if (cells.length >= 2) {
-          inventory.push(cells.map(c => c.trim()));
-        }
-      }
-
-      // Try to go to next page
-      try {
-        const nextBtn = page.locator('.btn-right.ng-scope');
-        const isVisible = await nextBtn.isVisible();
-        if (!isVisible) break;
-        const isDisabled = await nextBtn.getAttribute('disabled');
-        if (isDisabled) break;
-        await nextBtn.click();
-        await page.waitForTimeout(2000);
-        pageNum++;
-      } catch {
-        break;  // No more pages
-      }
+    } catch (e) {
+      await dbShot?.('warn_pagesize', 'Could not set page size to 150: ' + e.message);
     }
 
-    await dbShot?.('step4_raw', `Total ${inventory.length} rows across ${pageNum} pages. First 5: ${JSON.stringify(inventory.slice(0, 5))}`);
+    await dbShot?.('step4_ready', 'Ready to export');
 
-    // ─── Step 5: Parse — find product name + KOLI count, convert to units ───
-    const parsedItems = [];
-    const seen = new Set();
+    // ─── Step 4: Export file (exact from Codegen) ───
+    await page.getByRole('button', { name: 'Exporteren' }).click();
+    await page.waitForTimeout(1000);
 
-    for (const row of inventory) {
-      let product = null;
-      let koli = null;
+    const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
+    await page.getByRole('button', { name: 'Ja' }).click();
+    const download = await downloadPromise;
 
-      for (const cell of row) {
-        // Try to match product
+    // Save the downloaded file
+    const downloadDir = '/tmp/corax-export';
+    if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
+    const fileName = download.suggestedFilename() || 'export.csv';
+    const filePath = path.join(downloadDir, fileName);
+    await download.saveAs(filePath);
+    
+    await dbShot?.('step5_downloaded', `File downloaded: ${fileName} (${fs.statSync(filePath).size} bytes)`);
+
+    // ─── Step 5: Parse the export file ───
+    const fileContent = fs.readFileSync(filePath, 'utf-8');
+    await dbShot?.('step5_content', `File first 500 chars: ${fileContent.substring(0, 500)}`);
+
+    let inventory = [];
+
+    // Try CSV parsing (semicolon or comma delimited)
+    const lines = fileContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    
+    if (lines.length > 0) {
+      // Detect delimiter
+      const delimiter = lines[0].includes(';') ? ';' : ',';
+      const headers = lines[0].split(delimiter).map(h => h.replace(/"/g, '').trim().toLowerCase());
+      
+      await dbShot?.('step5_headers', `Headers (${delimiter}): ${JSON.stringify(headers)}`);
+
+      // Find relevant columns — look for article/product name and KOLI/quantity
+      const nameIdx = headers.findIndex(h => 
+        h.includes('artikel') || h.includes('article') || h.includes('product') || h.includes('omschrijving') || h.includes('description')
+      );
+      const koliIdx = headers.findIndex(h => 
+        h.includes('koli') || h.includes('colli') || h.includes('voorraad') || h.includes('stock') || h.includes('aantal')
+      );
+      // Also check for a SKU/code column
+      const skuIdx = headers.findIndex(h =>
+        h.includes('sku') || h.includes('code') || h.includes('artikelcode') || h.includes('artikelnummer')
+      );
+
+      await dbShot?.('step5_cols', `Column indices — name: ${nameIdx}, koli: ${koliIdx}, sku: ${skuIdx}`);
+
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(delimiter).map(c => c.replace(/"/g, '').trim());
+        
+        // Try matching on product name column first, then SKU, then any column
+        let product = null;
+        let koliCount = 0;
+
+        if (nameIdx >= 0 && cols[nameIdx]) {
+          product = matchProduct(cols[nameIdx]);
+        }
+        if (!product && skuIdx >= 0 && cols[skuIdx]) {
+          product = matchProduct(cols[skuIdx]);
+        }
+        // Fallback: search all columns for product name
         if (!product) {
-          const match = matchProduct(cell);
-          if (match) product = match;
+          for (const col of cols) {
+            product = matchProduct(col);
+            if (product) break;
+          }
         }
-      }
 
-      if (!product) continue;
-
-      // Find the KOLI number — look for numeric cells
-      // The KOLI column typically contains the stock count
-      for (const cell of row) {
-        const cleaned = cell.replace(/[.\s]/g, '').replace(',', '.');
-        const num = parseFloat(cleaned);
-        if (!isNaN(num) && num >= 0 && num < 100000) {
-          koli = Math.round(num);
-          break; // Take first numeric value as KOLI count
+        if (product && koliIdx >= 0) {
+          koliCount = parseInt(cols[koliIdx]) || 0;
         }
-      }
 
-      if (product && koli !== null && !seen.has(product.name)) {
-        seen.add(product.name);
-        const units = koli * product.upm;
-        parsedItems.push({
-          product_name: product.name,
-          koli: koli,
-          units_per_master: product.upm,
-          on_hand: units  // KOLI × units_per_master = actual units
-        });
+        if (product && koliCount >= 0) {
+          // Check if we already have this product (take highest/last value)
+          const existing = inventory.find(inv => inv.name === product.name);
+          if (existing) {
+            existing.koli += koliCount;
+            existing.units = existing.koli * product.upm;
+          } else {
+            inventory.push({
+              name: product.name,
+              koli: koliCount,
+              upm: product.upm,
+              units: koliCount * product.upm,
+              rawLine: cols.join(' | ')
+            });
+          }
+        }
       }
     }
 
-    await dbShot?.('step5_parsed', `Parsed ${parsedItems.length} products: ${JSON.stringify(parsedItems)}`);
+    await dbShot?.('step6_parsed', `Parsed ${inventory.length} products: ${JSON.stringify(inventory.map(p => `${p.name}: ${p.koli} KOLI = ${p.units}u`))}`);
 
     // ─── Step 6: Write to Inventory_Levels ───
-    let written = 0;
-    if (supabase && parsedItems.length > 0) {
-      for (const item of parsedItems) {
-        const { error } = await supabase.from('Inventory_Levels').upsert({
-          product_name: item.product_name,
-          channel_type: '3PL',
-          channel: 'Kamps/Vanthiel',
-          warehouse: 'Vanthiel Pijnacker',
-          region: 'EU',
-          on_hand: item.on_hand,  // Already converted: KOLI × units_per_master
-          source: 'corax_wms_v4',
-          updated_at: new Date().toISOString()
-        }, { onConflict: 'product_name,channel' });
+    let itemsWritten = 0;
 
-        if (!error) written++;
-        else await dbShot?.('write_err', `${item.product_name}: ${JSON.stringify(error)}`);
+    for (const item of inventory) {
+      try {
+        const { error } = await supabase
+          .from('Inventory_Levels')
+          .upsert({
+            product_name: item.name,
+            channel: 'Vanthiel',
+            channel_type: '3PL',
+            region: 'EU',
+            warehouse: 'Kamps Pijnacker',
+            on_hand: item.units,
+            source: 'corax_wms_export',
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'product_name,channel' });
+
+        if (error) {
+          await dbShot?.(`write_err_${item.name}`, `Upsert error: ${JSON.stringify(error)}`);
+        } else {
+          itemsWritten++;
+        }
+      } catch (e) {
+        await dbShot?.(`write_crash_${item.name}`, `Exception: ${e.message}`);
       }
     }
 
-    const summary = parsedItems.map(p => `${p.product_name}: ${p.koli} KOLI × ${p.units_per_master} = ${p.on_hand} units`);
-    await dbShot?.('done', `Written ${written}/${parsedItems.length}. ${summary.join(', ')}`);
-
-    return {
+    const summary = {
       success: true,
-      source: 'corax_wms_v4',
-      warehouse: 'Vanthiel Pijnacker',
-      note: 'KOLI (master cartons) converted to units using units_per_master',
-      items_written: written,
-      products: parsedItems
+      file: fileName,
+      products_found: inventory.length,
+      items_written: itemsWritten,
+      inventory: inventory.map(p => ({
+        product: p.name,
+        koli: p.koli,
+        units_per_master: p.upm,
+        units: p.units
+      }))
     };
 
+    await dbShot?.('done', JSON.stringify(summary));
+    return summary;
+
   } catch (err) {
-    await dbShot?.('error', `Fatal: ${err.message}`);
+    await dbShot?.('error', `Fatal: ${err.message}\n${err.stack?.substring(0, 500)}`);
     return { success: false, error: err.message };
   }
 };
