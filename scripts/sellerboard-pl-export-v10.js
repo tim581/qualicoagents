@@ -156,8 +156,10 @@ async function switchAccount(page, accountType, currentAccount) {
   
   console.log(`   🔄 Switching to ${accountType} account...`);
   
-  // Open account menu
-  await page.getByRole('link', { name: 'Tim@qualico.be' }).first().click();
+  // Open account menu — wait for it to be visible (may take time after login)
+  const accountLink = page.getByRole('link', { name: 'Tim@qualico.be' }).first();
+  await accountLink.waitFor({ state: 'visible', timeout: 30000 });
+  await accountLink.click();
   await page.waitForTimeout(1500);
   
   if (accountType === 'eu') {
