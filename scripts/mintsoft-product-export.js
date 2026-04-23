@@ -1,288 +1,190 @@
 /**
- * mintsoft-product-export.js v3.0
+ * mintsoft-product-export.js — v4.0
+ * Based on Playwright Codegen recording (Apr 23, 2026)
  * 
- * Exports product + inventory data from Mintsoft (WePrepFBA UK).
- * Key fix: aggressive debug logging, URL tracking, proper error handling.
+ * CRITICAL FIX: Must click "Customer / Client sign In" before login form appears!
+ * Previous versions failed because they skipped this account type selector.
+ * 
+ * Flow: Login page → Customer sign in → credentials → Products → Overview → scrape all pages → write to Inventory_Levels
  */
+module.exports = async function({ page, supabase, dbShot, credentials }) {
+  const TIMEOUT = 60000;
 
-module.exports = async ({ page, context, supabase, dbShot }) => {
-  const MINTSOFT_URL = 'https://om.mintsoft.co.uk';
-  const fs = require('fs');
-  
-  const log = (msg) => console.log(`[Mintsoft] ${msg}`);
-  const shot = async (step, msg) => {
-    try {
-      const url = page.url();
-      log(`📸 ${step}: ${msg} [URL: ${url}]`);
-      if (dbShot) await dbShot(page, step, `${msg} | URL: ${url}`);
-    } catch (e) {
-      log(`dbShot failed at ${step}: ${e.message}`);
-    }
+  // Product name mapping: Mintsoft name → standard name
+  // Mintsoft may use old naming (UK_1500_MAT) or new (PUZZLUP 1500 GIFT)
+  const PRODUCT_MAP = {
+    'PUZZLUP 1000 GIFT':  'MAT 1000 GIFT',
+    'PUZZLUP 1500 ECO':   'MAT 1500 ECO',
+    'PUZZLUP 1500 GIFT':  'MAT 1500 GIFT',
+    'PUZZLUP 1500 LUX':   'MAT 1500 LUX',
+    'PUZZLUP 3000 ECO':   'MAT 3000 ECO',
+    'PUZZLUP 3000 GIFT':  'MAT 3000 GIFT',
+    'PUZZLUP 5000 GIFT':  'MAT 5000 GIFT',
+    'TRAYS 1500 BLACK':   'TRAYS 1500 BLACK',
+    'TRAYS 1500 WHITE':   'TRAYS 1500 WHITE',
+    'TRAYS 3000 BLACK':   'TRAYS 3000 BLACK',
+    // Old naming aliases used in Mintsoft
+    'UK_1000_MAT':        'MAT 1000 GIFT',
+    'UK_1500_MAT':        'MAT 1500 GIFT',
+    'UK_1500_ECO':        'MAT 1500 ECO',
+    'UK_1500_LUX':        'MAT 1500 LUX',
+    'UK_3000_MAT':        'MAT 3000 GIFT',
+    'UK_3000_ECO':        'MAT 3000 ECO',
+    'UK_5000_MAT':        'MAT 5000 GIFT',
+    'UK_TRAYS_1500_BLACK':'TRAYS 1500 BLACK',
+    'UK_TRAYS_1500_WHITE':'TRAYS 1500 WHITE',
+    'UK_TRAYS_3000_BLACK':'TRAYS 3000 BLACK',
   };
 
-  log('=== Mintsoft Product Export v3.0 ===');
-  
-  // ── Load saved cookies ──
-  const storageStatePath = './mintsoft-storage-state.json';
-  if (fs.existsSync(storageStatePath)) {
-    try {
-      const state = JSON.parse(fs.readFileSync(storageStatePath, 'utf8'));
-      if (state.cookies && state.cookies.length > 0) {
-        await context.addCookies(state.cookies);
-        log(`Loaded ${state.cookies.length} saved cookies`);
-      }
-    } catch (e) {
-      log('Failed to load cookies: ' + e.message);
+  function matchProduct(text) {
+    const upper = text.toUpperCase().trim();
+    // Try exact match first
+    for (const [key, mapped] of Object.entries(PRODUCT_MAP)) {
+      if (upper.includes(key.toUpperCase())) return mapped;
     }
+    return null;
   }
 
-  // ── Navigate to Product page ──
-  log('1/5 Opening Mintsoft Product Overview...');
   try {
-    await page.goto(`${MINTSOFT_URL}/Product`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  } catch (e) {
-    log('Navigation failed, trying without waitUntil: ' + e.message);
-    await page.goto(`${MINTSOFT_URL}/Product`, { timeout: 30000 });
-  }
-  await page.waitForTimeout(5000);
-  
-  await shot('01-initial', 'Initial page');
+    // ─── Step 1: Navigate to Mintsoft login ───
+    await dbShot?.('step1', 'Navigating to Mintsoft login...');
+    await page.goto('https://om.mintsoft.co.uk/UserAccount/LogOn?ReturnUrl=%2fProduct%2f', { 
+      waitUntil: 'networkidle', timeout: TIMEOUT 
+    });
+    await page.waitForTimeout(2000);
+    await dbShot?.('step1_landed', 'On login page');
 
-  // ── Check login ──
-  const currentUrl = page.url();
-  log(`Current URL: ${currentUrl}`);
-  
-  if (currentUrl.includes('LogOn') || currentUrl.includes('login') || currentUrl.includes('Login') || currentUrl.includes('Account/LogOn')) {
-    log('Session expired — logging in...');
+    // ─── Step 2: Click "Customer / Client sign In" (THIS WAS THE MISSING STEP!) ───
+    await page.getByRole('link', { name: 'Customer / Client sign In' }).click();
+    await page.waitForTimeout(1000);
+    await dbShot?.('step2_customer', 'Selected Customer login type');
+
+    // ─── Step 3: Fill credentials (exact from Codegen) ───
+    await page.getByRole('textbox', { name: 'UserName' }).click();
+    await page.getByRole('textbox', { name: 'UserName' }).fill(credentials.username || 'Tim@qualico.be');
     
-    let username, password;
-    if (supabase) {
+    await page.getByRole('textbox', { name: 'Password' }).click();
+    await page.getByRole('textbox', { name: 'Password' }).fill(credentials.password || '');
+    
+    await page.getByRole('button', { name: 'Sign In' }).click();
+    await page.waitForTimeout(3000);
+    await dbShot?.('step3_login', 'Signed in');
+
+    // ─── Step 4: Navigate to Products → Overview (exact from Codegen) ───
+    await page.getByRole('link', { name: ' Products ' }).click();
+    await page.waitForTimeout(1000);
+    await page.getByRole('link', { name: 'Overview' }).click();
+    await page.waitForTimeout(3000);
+    await dbShot?.('step4_products', 'On Products Overview page');
+
+    // ─── Step 5: Scrape ALL pages of products ───
+    const allProducts = {};  // product_name → total stock
+    let pageNum = 1;
+    let hasNext = true;
+
+    while (hasNext && pageNum <= 20) {  // Safety limit: max 20 pages
+      await dbShot?.(`step5_page${pageNum}`, `Scraping page ${pageNum}...`);
+      
+      // Wait for table
       try {
-        const { data } = await supabase.from('Browser_Credentials').select('*').eq('key', 'mintsoft').single();
-        if (data) { username = data.username; password = data.password; }
-        log(`Credentials loaded: ${username ? 'yes' : 'no'}`);
-      } catch (e) { log('Credentials lookup failed: ' + e.message); }
-    }
-    
-    if (!username || !password) {
-      return { error: 'Session expired and no credentials available' };
-    }
-    
-    try {
-      // Dump all input fields
-      const inputs = await page.evaluate(() => {
-        return Array.from(document.querySelectorAll('input, select, button[type="submit"]')).map(i => ({
-          tag: i.tagName, type: i.type, name: i.name, id: i.id, 
-          placeholder: i.placeholder, value: i.value
-        }));
-      });
-      log('Form fields: ' + JSON.stringify(inputs));
-      
-      // Fill username — try multiple selectors
-      const userSelectors = ['#UserName', 'input[name="UserName"]', 'input[type="email"]', 'input[type="text"]'];
-      for (const sel of userSelectors) {
-        const field = await page.$(sel);
-        if (field) {
-          await field.fill(username);
-          log(`Username filled with: ${sel}`);
-          break;
-        }
+        await page.waitForSelector('table tbody tr', { timeout: 10000 });
+      } catch {
+        await dbShot?.(`step5_no_table_p${pageNum}`, 'No table found on this page');
+        break;
       }
-      
-      // Fill password
-      const passSelectors = ['#Password', 'input[name="Password"]', 'input[type="password"]'];
-      for (const sel of passSelectors) {
-        const field = await page.$(sel);
-        if (field) {
-          await field.fill(password);
-          log(`Password filled with: ${sel}`);
-          break;
+
+      const rows = await page.locator('table tbody tr').all();
+      await dbShot?.(`step5_rows_p${pageNum}`, `Page ${pageNum}: ${rows.length} rows`);
+
+      for (const row of rows) {
+        const cells = await row.locator('td').allTextContents();
+        const cellTexts = cells.map(c => c.trim());
+        
+        // Find product name in any cell
+        let productName = null;
+        let stockQty = null;
+
+        for (const cell of cellTexts) {
+          const matched = matchProduct(cell);
+          if (matched) productName = matched;
         }
-      }
-      
-      await shot('02-login-filled', 'Credentials filled');
-      
-      // Click login
-      const loginSelectors = ['input[type="submit"]', 'button[type="submit"]', '.btn-primary', '#loginButton', 'button:has-text("Log")'];
-      for (const sel of loginSelectors) {
-        const btn = await page.$(sel);
-        if (btn) {
-          await btn.click();
-          log(`Login clicked: ${sel}`);
-          break;
-        }
-      }
-      
-      await page.waitForTimeout(6000);
-      await shot('03-after-login', 'After login');
-      
-      // Save cookies
-      const cookies = await context.cookies();
-      fs.writeFileSync(storageStatePath, JSON.stringify({ cookies }));
-      
-      // Navigate to product page after login
-      log('Navigating to Product page after login...');
-      await page.goto(`${MINTSOFT_URL}/Product`, { waitUntil: 'domcontentloaded', timeout: 30000 });
-      await page.waitForTimeout(5000);
-      
-    } catch (loginErr) {
-      await shot('login-error', 'Login failed: ' + loginErr.message);
-      return { error: 'Login failed: ' + loginErr.message };
-    }
-  }
-  
-  log('On product page!');
-  await shot('04-product-page', 'Product page loaded');
 
-  // ── Cookie popup ──
-  try {
-    const cookieBtn = await page.$('button:has-text("Accept"), a:has-text("Accept")');
-    if (cookieBtn) { await cookieBtn.click(); log('Cookie popup dismissed'); }
-  } catch (e) { /* no popup */ }
+        if (!productName) continue;
 
-  // ── Dump page content ──
-  log('2/5 Analyzing page...');
-  const pageInfo = await page.evaluate(() => {
-    const text = document.body.innerText.substring(0, 2000);
-    const tables = document.querySelectorAll('table');
-    const selects = document.querySelectorAll('select');
-    return {
-      bodyPreview: text,
-      tableCount: tables.length,
-      selectCount: selects.length,
-      title: document.title
-    };
-  });
-  log(`Page title: ${pageInfo.title}`);
-  log(`Tables: ${pageInfo.tableCount}, Selects: ${pageInfo.selectCount}`);
-  log(`Body preview: ${pageInfo.bodyPreview.substring(0, 500)}`);
-
-  // ── Expand page size ──
-  log('3/5 Expanding page size...');
-  try {
-    const expanded = await page.evaluate(() => {
-      const selects = document.querySelectorAll('select');
-      for (const sel of selects) {
-        const opts = Array.from(sel.options);
-        const hasPageSize = opts.some(o => ['10', '25', '50', '100'].includes(o.value));
-        if (hasPageSize) {
-          const highest = opts.reduce((max, o) => {
-            const v = parseInt(o.value);
-            return (!isNaN(v) && v > max) ? v : max;
-          }, 0);
-          if (highest > 0) {
-            sel.value = String(highest);
-            sel.dispatchEvent(new Event('change', { bubbles: true }));
-            return `Set to ${highest}`;
+        // Find stock quantity — look for numeric cells
+        // Typically: SKU, Name, ..., Available/In Stock column
+        for (let i = cellTexts.length - 1; i >= 0; i--) {
+          const cleaned = cellTexts[i].replace(/[,\s]/g, '');
+          const num = parseInt(cleaned, 10);
+          if (!isNaN(num) && num >= 0 && num < 100000) {
+            stockQty = num;
+            break;  // Take last (rightmost) valid number as stock
           }
         }
-      }
-      return null;
-    });
-    if (expanded) {
-      log(`Page size: ${expanded}`);
-      await page.waitForTimeout(4000);
-    }
-  } catch (e) { log('No page size control: ' + e.message); }
 
-  // ── Get total records ──
-  const bodyText = await page.textContent('body');
-  const match = bodyText.match(/(?:Displaying|Showing)\s+(\d+)\s*[-–]\s*(\d+)\s+of\s+(\d+)/i);
-  const totalRecords = match ? parseInt(match[3]) : 0;
-  log(`Total records: ${totalRecords}`);
-
-  // ── Get headers ──
-  log('4/5 Reading data...');
-  const headers = await page.evaluate(() => {
-    const ths = document.querySelectorAll('table thead th');
-    return Array.from(ths).map(th => th.innerText.trim()).filter(h => h);
-  });
-  log('Headers: ' + headers.join(' | '));
-
-  if (headers.length === 0) {
-    log('WARNING: No table headers found!');
-    const htmlSnippet = await page.evaluate(() => document.body.innerHTML.substring(0, 5000));
-    log('HTML preview: ' + htmlSnippet.substring(0, 1000));
-    return {
-      error: 'No table headers found',
-      page_url: page.url(),
-      body_preview: pageInfo.bodyPreview.substring(0, 2000)
-    };
-  }
-
-  // ── Paginate and collect ──
-  let allRows = [];
-  let pageNum = 1;
-  const maxPages = 20;
-  
-  while (pageNum <= maxPages) {
-    log(`Page ${pageNum}...`);
-    
-    const rows = await page.evaluate((hdrs) => {
-      const data = [];
-      document.querySelectorAll('table tbody tr').forEach(tr => {
-        const cells = tr.querySelectorAll('td');
-        if (cells.length < 2) return;
-        const row = {};
-        cells.forEach((cell, i) => {
-          const key = hdrs[i] || `col_${i}`;
-          row[key] = cell.innerText.trim();
-        });
-        if (Object.values(row).some(v => v !== '')) data.push(row);
-      });
-      return data;
-    }, headers);
-    
-    allRows = allRows.concat(rows);
-    log(`${rows.length} rows on page ${pageNum} (total: ${allRows.length})`);
-    
-    if (rows.length === 0 || (totalRecords > 0 && allRows.length >= totalRecords)) break;
-    
-    // Next page
-    pageNum++;
-    const clicked = await page.evaluate((np) => {
-      // Try pagination links
-      const links = document.querySelectorAll('.pagination a, .pager a, a[data-page]');
-      for (const a of links) {
-        if (a.textContent.trim() === String(np) || a.getAttribute('data-page') === String(np)) {
-          a.click();
-          return true;
+        if (productName && stockQty !== null) {
+          // Accumulate (same product might appear under old + new naming)
+          allProducts[productName] = (allProducts[productName] || 0) + stockQty;
         }
       }
-      // Try "Next" button
-      const nextBtns = document.querySelectorAll('a:has-text("Next"), a:has-text("»"), .pagination .next a');
-      for (const btn of nextBtns) {
-        btn.click();
-        return true;
+
+      // Check if there's a Next page button
+      try {
+        const nextBtn = page.getByTitle('Next').nth(1);
+        const isDisabled = await nextBtn.getAttribute('class');
+        if (isDisabled && isDisabled.includes('disabled')) {
+          hasNext = false;
+        } else {
+          await nextBtn.click();
+          await page.waitForTimeout(2000);
+          pageNum++;
+        }
+      } catch {
+        hasNext = false;  // No next button = last page
       }
-      return false;
-    }, pageNum);
-    
-    if (!clicked) {
-      log(`No page ${pageNum} button found — stopping`);
-      break;
     }
-    
-    await page.waitForTimeout(3000);
+
+    const parsedItems = Object.entries(allProducts).map(([name, qty]) => ({
+      product_name: name,
+      on_hand: qty
+    }));
+
+    await dbShot?.('step5_done', `Total: ${parsedItems.length} products across ${pageNum} pages: ${JSON.stringify(parsedItems)}`);
+
+    // ─── Step 6: Write to Inventory_Levels ───
+    let written = 0;
+    if (supabase && parsedItems.length > 0) {
+      for (const item of parsedItems) {
+        const { error } = await supabase.from('Inventory_Levels').upsert({
+          product_name: item.product_name,
+          channel_type: '3PL',
+          channel: 'WePrepFBA',
+          warehouse: 'WP_Raeburn',
+          region: 'UK',
+          on_hand: item.on_hand,
+          source: 'mintsoft_v4',
+          updated_at: new Date().toISOString()
+        }, { onConflict: 'product_name,channel,warehouse' });
+
+        if (!error) written++;
+        else await dbShot?.('write_err', `${item.product_name}: ${JSON.stringify(error)}`);
+      }
+    }
+
+    const summary = parsedItems.map(p => `${p.product_name}: ${p.on_hand}`).join(', ');
+    await dbShot?.('done', `Written ${written}/${parsedItems.length}. ${summary}`);
+
+    return {
+      success: true,
+      source: 'mintsoft_v4',
+      warehouse: 'WP_Raeburn',
+      pages_scraped: pageNum,
+      items_written: written,
+      products: parsedItems
+    };
+
+  } catch (err) {
+    await dbShot?.('error', `Fatal: ${err.message}`);
+    return { success: false, error: err.message };
   }
-  
-  await shot('05-scraped', `${allRows.length} products scraped across ${pageNum} pages`);
-
-  log(`\n=== TOTAL: ${allRows.length} products ===`);
-  allRows.forEach((row, i) => {
-    const sku = row['SKU'] || row['Sku'] || '';
-    const name = row['Name'] || row['Product Name'] || '';
-    const inv = row['Inventory'] || row['Stock'] || row['Qty'] || '';
-    log(`  ${i+1}. ${sku} — ${name} — Inv: ${inv}`);
-  });
-
-  return {
-    success: true,
-    scraped_at: new Date().toISOString(),
-    source: 'mintsoft',
-    page_url: page.url(),
-    headers,
-    items: allRows,
-    total_rows: allRows.length
-  };
 };
