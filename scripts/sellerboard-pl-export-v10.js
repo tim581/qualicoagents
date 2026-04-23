@@ -363,7 +363,8 @@ async function main() {
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({
     ...(fs.existsSync(STORAGE_STATE) ? { storageState: STORAGE_STATE } : {}),
-    acceptDownloads: true
+    acceptDownloads: true,
+    viewport: { width: 1920, height: 1080 }
   });
   const page = await context.newPage();
   
