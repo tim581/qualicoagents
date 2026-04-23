@@ -164,11 +164,17 @@ async function switchAccount(page, accountType, currentAccount) {
   
   console.log(`   🔄 Switching to ${accountType} account...`);
   
-  // Wait for dashboard to be fully loaded before attempting account switch
-  await page.waitForURL('**/dashboard**', { timeout: 30000 }).catch(() => {});
-  await page.waitForTimeout(2000);
+  // Wait for page to be fully loaded (network idle = no pending requests)
+  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(3000);
   
-  // Open account menu (exact codegen selector — no .first())
+  // Debug: screenshot before account switch attempt
+  const debugPath = path.join(CSV_DIR, `debug_before_switch_${accountType}.png`);
+  await page.screenshot({ path: debugPath, fullPage: false });
+  console.log(`   📸 Debug screenshot saved: ${debugPath}`);
+  console.log(`   📍 Current URL: ${page.url()}`);
+  
+  // Open account menu (exact codegen selector)
   const accountLink = page.getByRole('link', { name: 'Tim@qualico.be' });
   await accountLink.waitFor({ state: 'visible', timeout: 30000 });
   await accountLink.click();
