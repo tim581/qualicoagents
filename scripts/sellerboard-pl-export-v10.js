@@ -144,6 +144,14 @@ async function login(page) {
   await page.getByRole('textbox', { name: 'Password' }).fill(process.env.SELLERBOARD_PASSWORD || 'deAK}Uce7JF,6[<2@}Q1');
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.waitForTimeout(5000);
+  
+  // Debug: save screenshot + log URL after login
+  const postLoginUrl = page.url();
+  console.log(`   📍 Post-login URL: ${postLoginUrl}`);
+  const screenshotPath = path.join(DOWNLOAD_DIR, 'debug_post_login.png');
+  await page.screenshot({ path: screenshotPath, fullPage: true });
+  console.log(`   📸 Screenshot saved: ${screenshotPath}`);
+  
   await debugLog(page, 'login', '🔐 Logged in');
 }
 
@@ -156,14 +164,18 @@ async function switchAccount(page, accountType, currentAccount) {
   
   console.log(`   🔄 Switching to ${accountType} account...`);
   
-  // Open account menu — wait for it to be visible (may take time after login)
-  const accountLink = page.getByRole('link', { name: 'Tim@qualico.be' }).first();
+  // Wait for dashboard to be fully loaded before attempting account switch
+  await page.waitForURL('**/dashboard**', { timeout: 30000 }).catch(() => {});
+  await page.waitForTimeout(2000);
+  
+  // Open account menu (exact codegen selector — no .first())
+  const accountLink = page.getByRole('link', { name: 'Tim@qualico.be' });
   await accountLink.waitFor({ state: 'visible', timeout: 30000 });
   await accountLink.click();
   await page.waitForTimeout(1500);
   
   if (accountType === 'eu') {
-    // EU account is the second "Tim@qualico.be" link in the dropdown
+    // EU account is the second "Tim@qualico.be" link in the dropdown (codegen: .nth(1))
     await page.getByRole('link', { name: 'Tim@qualico.be' }).nth(1).click();
   } else {
     await page.getByRole('link', { name: 'AMZ USA' }).click();
@@ -190,7 +202,13 @@ async function selectMarketplace(page, marketName, accountType) {
   await page.waitForTimeout(500);
   
   // Step 4: Select the specific marketplace
-  await page.getByRole('treeitem', { name: marketName, exact: true }).click();
+  // Codegen shows US treeitems have leading space: ' Amazon.com' vs 'Amazon.com'
+  // Try exact match first, then with leading space
+  try {
+    await page.getByRole('treeitem', { name: marketName }).first().click({ timeout: 3000 });
+  } catch (e) {
+    await page.getByRole('treeitem', { name: ` ${marketName}` }).click({ timeout: 3000 });
+  }
   await page.waitForTimeout(500);
   
   if (accountType === 'us') {
@@ -326,15 +344,17 @@ async function main() {
   
   const allMonths = getLast12Months();
   const months = monthsToProcess ? allMonths.slice(-monthsToProcess) : allMonths;
+  const headed = args.includes('--headed');
   
   console.log('═══════════════════════════════════════');
   console.log(`🚀 Sellerboard CSV Export v10.0`);
   console.log(`   Markets: ${marketsToProcess.join(', ')}`);
   console.log(`   Months: ${months.map(m => `${m.name} ${m.year}`).join(', ')}`);
+  console.log(`   Headed: ${headed}`);
   console.log(`   Run ID: ${RUN_ID}`);
   console.log('═══════════════════════════════════════\n');
   
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext({
     ...(fs.existsSync(STORAGE_STATE) ? { storageState: STORAGE_STATE } : {}),
     acceptDownloads: true
