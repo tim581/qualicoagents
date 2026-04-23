@@ -169,7 +169,7 @@ async function switchAccount(page, accountType, currentAccount) {
   await page.waitForTimeout(3000);
   
   // Debug: screenshot before account switch attempt
-  const debugPath = path.join(CSV_DIR, `debug_before_switch_${accountType}.png`);
+  const debugPath = path.join(DOWNLOAD_DIR, `debug_before_switch_${accountType}.png`);
   await page.screenshot({ path: debugPath, fullPage: false });
   console.log(`   📸 Debug screenshot saved: ${debugPath}`);
   console.log(`   📍 Current URL: ${page.url()}`);
