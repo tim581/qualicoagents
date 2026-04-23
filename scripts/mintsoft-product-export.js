@@ -70,10 +70,8 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     await page.waitForTimeout(3000);
     await dbShot?.('step3_login', 'Signed in');
 
-    // ─── Step 4: Navigate to Products → Overview (exact from Codegen) ───
-    await page.getByRole('link', { name: ' Products ' }).click();
-    await page.waitForTimeout(1000);
-    await page.getByRole('link', { name: 'Overview' }).click();
+    // ─── Step 4: Navigate to Products Overview (direct URL — avoids ambiguous nav selectors) ───
+    await page.goto('https://om.mintsoft.co.uk/Product', { waitUntil: 'networkidle', timeout: TIMEOUT });
     await page.waitForTimeout(3000);
     await dbShot?.('step4_products', 'On Products Overview page');
 
@@ -164,7 +162,7 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
           on_hand: item.on_hand,
           source: 'mintsoft_v4',
           updated_at: new Date().toISOString()
-        }, { onConflict: 'product_name,channel,warehouse' });
+        }, { onConflict: 'product_name,channel' });
 
         if (!error) written++;
         else await dbShot?.('write_err', `${item.product_name}: ${JSON.stringify(error)}`);

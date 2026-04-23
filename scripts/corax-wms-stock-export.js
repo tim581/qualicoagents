@@ -94,22 +94,38 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
 
     await dbShot?.('step4_ready', 'Ready to scrape');
 
-    // ─── Step 4: Scrape stock table ───
-    // Wait for table to be populated
-    await page.waitForSelector('table tbody tr', { timeout: 15000 });
-    const rows = await page.locator('table tbody tr').all();
-    await dbShot?.('step4_rows', `Found ${rows.length} table rows`);
-
+    // ─── Step 4: Scrape stock table (ALL pages) ───
     const inventory = [];
-    for (const row of rows) {
-      const cells = await row.locator('td').allTextContents();
-      if (cells.length >= 2) {
-        inventory.push(cells.map(c => c.trim()));
+    let pageNum = 1;
+
+    while (pageNum <= 20) {  // Safety limit
+      await page.waitForSelector('table tbody tr', { timeout: 15000 });
+      const rows = await page.locator('table tbody tr').all();
+      await dbShot?.(`step4_p${pageNum}`, `Page ${pageNum}: ${rows.length} rows`);
+
+      for (const row of rows) {
+        const cells = await row.locator('td').allTextContents();
+        if (cells.length >= 2) {
+          inventory.push(cells.map(c => c.trim()));
+        }
+      }
+
+      // Try to go to next page
+      try {
+        const nextBtn = page.locator('.btn-right.ng-scope');
+        const isVisible = await nextBtn.isVisible();
+        if (!isVisible) break;
+        const isDisabled = await nextBtn.getAttribute('disabled');
+        if (isDisabled) break;
+        await nextBtn.click();
+        await page.waitForTimeout(2000);
+        pageNum++;
+      } catch {
+        break;  // No more pages
       }
     }
 
-    // Log first rows for debugging
-    await dbShot?.('step4_raw', `First 5 rows: ${JSON.stringify(inventory.slice(0, 5))}`);
+    await dbShot?.('step4_raw', `Total ${inventory.length} rows across ${pageNum} pages. First 5: ${JSON.stringify(inventory.slice(0, 5))}`);
 
     // ─── Step 5: Parse — find product name + KOLI count, convert to units ───
     const parsedItems = [];
@@ -167,7 +183,7 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
           on_hand: item.on_hand,  // Already converted: KOLI × units_per_master
           source: 'corax_wms_v4',
           updated_at: new Date().toISOString()
-        }, { onConflict: 'product_name,channel,warehouse' });
+        }, { onConflict: 'product_name,channel' });
 
         if (!error) written++;
         else await dbShot?.('write_err', `${item.product_name}: ${JSON.stringify(error)}`);
