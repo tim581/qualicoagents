@@ -1,5 +1,5 @@
 /**
- * corax-wms-stock-export.js — v5.0
+ * corax-wms-stock-export.js — v5.1
  * Based on Playwright Codegen recording (Apr 23, 2026)
  * 
  * APPROACH: Download CSV/Excel export instead of HTML scraping — much more reliable.
@@ -116,76 +116,105 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     
     await dbShot?.('step5_downloaded', `File downloaded: ${fileName} (${fs.statSync(filePath).size} bytes)`);
 
-    // ─── Step 5: Parse the export file ───
-    const fileContent = fs.readFileSync(filePath, 'utf-8');
-    await dbShot?.('step5_content', `File first 500 chars: ${fileContent.substring(0, 500)}`);
-
+    // ─── Step 5: Parse the export file (xlsx or CSV) ───
     let inventory = [];
+    let rows = []; // array of arrays (each row = array of cell values)
+    let headers = [];
 
-    // Try CSV parsing (semicolon or comma delimited)
-    const lines = fileContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-    
-    if (lines.length > 0) {
-      // Detect delimiter
-      const delimiter = lines[0].includes(';') ? ';' : ',';
-      const headers = lines[0].split(delimiter).map(h => h.replace(/"/g, '').trim().toLowerCase());
+    if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+      // Parse Excel using SheetJS (xlsx package)
+      let XLSX;
+      try {
+        XLSX = require('xlsx');
+      } catch {
+        // If not installed, try installing it
+        const { execSync } = require('child_process');
+        try {
+          execSync('npm install xlsx', { cwd: process.cwd(), timeout: 30000 });
+          XLSX = require('xlsx');
+        } catch (installErr) {
+          await dbShot?.('error_xlsx', `Cannot load xlsx package: ${installErr.message}. Run: npm install xlsx`);
+          return { success: false, error: 'xlsx package not available. Run: npm install xlsx' };
+        }
+      }
       
-      await dbShot?.('step5_headers', `Headers (${delimiter}): ${JSON.stringify(headers)}`);
+      const workbook = XLSX.readFile(filePath);
+      const sheetName = workbook.SheetNames[0];
+      const sheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      
+      if (jsonData.length > 0) {
+        headers = jsonData[0].map(h => String(h).trim().toLowerCase());
+        rows = jsonData.slice(1);
+      }
+      
+      await dbShot?.('step5_xlsx', `Excel parsed: ${jsonData.length} rows, sheet: ${sheetName}, headers: ${JSON.stringify(headers)}`);
+    } else {
+      // CSV fallback
+      const fileContent = fs.readFileSync(filePath, 'utf-8');
+      const lines = fileContent.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+      
+      if (lines.length > 0) {
+        const delimiter = lines[0].includes(';') ? ';' : ',';
+        headers = lines[0].split(delimiter).map(h => h.replace(/"/g, '').trim().toLowerCase());
+        rows = lines.slice(1).map(l => l.split(delimiter).map(c => c.replace(/"/g, '').trim()));
+      }
+      
+      await dbShot?.('step5_csv', `CSV parsed: ${rows.length} rows, headers: ${JSON.stringify(headers)}`);
+    }
 
-      // Find relevant columns — look for article/product name and KOLI/quantity
-      const nameIdx = headers.findIndex(h => 
-        h.includes('artikel') || h.includes('article') || h.includes('product') || h.includes('omschrijving') || h.includes('description')
-      );
-      const koliIdx = headers.findIndex(h => 
-        h.includes('koli') || h.includes('colli') || h.includes('voorraad') || h.includes('stock') || h.includes('aantal')
-      );
-      // Also check for a SKU/code column
-      const skuIdx = headers.findIndex(h =>
-        h.includes('sku') || h.includes('code') || h.includes('artikelcode') || h.includes('artikelnummer')
-      );
+    // Find relevant columns
+    const nameIdx = headers.findIndex(h => 
+      h.includes('artikel') || h.includes('article') || h.includes('product') || h.includes('omschrijving') || h.includes('description')
+    );
+    const koliIdx = headers.findIndex(h => 
+      h.includes('koli') || h.includes('colli') || h.includes('voorraad') || h.includes('stock') || h.includes('aantal')
+    );
+    const skuIdx = headers.findIndex(h =>
+      h.includes('sku') || h.includes('code') || h.includes('artikelcode') || h.includes('artikelnummer')
+    );
 
-      await dbShot?.('step5_cols', `Column indices — name: ${nameIdx}, koli: ${koliIdx}, sku: ${skuIdx}`);
+    await dbShot?.('step5_cols', `Column indices — name: ${nameIdx}, koli: ${koliIdx}, sku: ${skuIdx}. Total rows: ${rows.length}`);
 
-      for (let i = 1; i < lines.length; i++) {
-        const cols = lines[i].split(delimiter).map(c => c.replace(/"/g, '').trim());
-        
-        // Try matching on product name column first, then SKU, then any column
-        let product = null;
-        let koliCount = 0;
+    // Log first 3 rows for debugging
+    await dbShot?.('step5_sample', `Sample rows: ${JSON.stringify(rows.slice(0, 3))}`);
 
-        if (nameIdx >= 0 && cols[nameIdx]) {
-          product = matchProduct(cols[nameIdx]);
+    for (const cols of rows) {
+      let product = null;
+      let koliCount = 0;
+
+      // Try matching on product name column first, then SKU, then any column
+      if (nameIdx >= 0 && cols[nameIdx]) {
+        product = matchProduct(String(cols[nameIdx]));
+      }
+      if (!product && skuIdx >= 0 && cols[skuIdx]) {
+        product = matchProduct(String(cols[skuIdx]));
+      }
+      // Fallback: search all columns for product name
+      if (!product) {
+        for (const col of cols) {
+          product = matchProduct(String(col));
+          if (product) break;
         }
-        if (!product && skuIdx >= 0 && cols[skuIdx]) {
-          product = matchProduct(cols[skuIdx]);
-        }
-        // Fallback: search all columns for product name
-        if (!product) {
-          for (const col of cols) {
-            product = matchProduct(col);
-            if (product) break;
-          }
-        }
+      }
 
-        if (product && koliIdx >= 0) {
-          koliCount = parseInt(cols[koliIdx]) || 0;
-        }
+      if (product && koliIdx >= 0) {
+        koliCount = parseInt(cols[koliIdx]) || 0;
+      }
 
-        if (product && koliCount >= 0) {
-          // Check if we already have this product (take highest/last value)
-          const existing = inventory.find(inv => inv.name === product.name);
-          if (existing) {
-            existing.koli += koliCount;
-            existing.units = existing.koli * product.upm;
-          } else {
-            inventory.push({
-              name: product.name,
-              koli: koliCount,
-              upm: product.upm,
-              units: koliCount * product.upm,
-              rawLine: cols.join(' | ')
-            });
-          }
+      if (product && koliCount >= 0) {
+        const existing = inventory.find(inv => inv.name === product.name);
+        if (existing) {
+          existing.koli += koliCount;
+          existing.units = existing.koli * product.upm;
+        } else {
+          inventory.push({
+            name: product.name,
+            koli: koliCount,
+            upm: product.upm,
+            units: koliCount * product.upm,
+            rawLine: cols.map(c => String(c)).join(' | ')
+          });
         }
       }
     }
