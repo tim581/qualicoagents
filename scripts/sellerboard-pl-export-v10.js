@@ -136,6 +136,9 @@ async function login(page) {
   // Check if already logged in (storage state)
   const url = page.url();
   if (url.includes('/dashboard')) {
+    // Wait for page to fully render (SPA needs time after redirect)
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(3000);
     console.log('   ✅ Already logged in (storage state)');
     return;
   }
@@ -175,7 +178,8 @@ async function switchAccount(page, accountType, currentAccount) {
   console.log(`   📍 Current URL: ${page.url()}`);
   
   // Open account menu (exact codegen selector)
-  const accountLink = page.getByRole('link', { name: 'Tim@qualico.be' });
+  // Use getByText instead of getByRole('link') — element might not be <a> tag after storage state
+  const accountLink = page.getByText('Tim@qualico.be').first();
   await accountLink.waitFor({ state: 'visible', timeout: 30000 });
   await accountLink.click();
   await page.waitForTimeout(1500);
