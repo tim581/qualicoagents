@@ -148,7 +148,10 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
         rows = jsonData.slice(1);
       }
       
+      // Log ALL rows for debugging (first 30 rows, truncated cells)
+      const debugRows = jsonData.slice(0, 30).map(r => r.slice(0, 8).map(c => String(c).substring(0, 40)));
       await dbShot?.('step5_xlsx', `Excel parsed: ${jsonData.length} rows, sheet: ${sheetName}, headers: ${JSON.stringify(headers)}`);
+      await dbShot?.('step5_xlsx_rows', `First 30 rows: ${JSON.stringify(debugRows)}`);
     } else {
       // CSV fallback
       const fileContent = fs.readFileSync(filePath, 'utf-8');
