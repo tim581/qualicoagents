@@ -55,7 +55,7 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     const emailField = page.getByRole('textbox', { name: 'someone@coraxwms.nl' });
     await emailField.waitFor({ state: 'visible', timeout: TIMEOUT });
     await emailField.click();
-    await emailField.fill(credentials.username || 'qualico@coraxwms.nl');
+    await emailField.fill(credentials?.username || 'qualico@coraxwms.nl');
     
     await page.getByRole('button', { name: 'Volgende' }).click();
     await page.waitForTimeout(2000);
@@ -63,7 +63,7 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
     const pwField = page.locator('#i0118');
     await pwField.waitFor({ state: 'visible', timeout: TIMEOUT });
     await pwField.click();
-    await pwField.fill(credentials.password || 'GXE.NYeUJX6.f!J');
+    await pwField.fill(credentials?.password || 'GXE.NYeUJX6.f!J');
     
     await page.getByRole('button', { name: 'Aanmelden' }).click();
     await page.waitForTimeout(3000);

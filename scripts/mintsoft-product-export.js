@@ -61,10 +61,10 @@ module.exports = async function({ page, supabase, dbShot, credentials }) {
 
     // ─── Step 3: Fill credentials (exact from Codegen) ───
     await page.getByRole('textbox', { name: 'UserName' }).click();
-    await page.getByRole('textbox', { name: 'UserName' }).fill(credentials.username || 'Tim@qualico.be');
+    await page.getByRole('textbox', { name: 'UserName' }).fill(credentials?.username || 'Tim@qualico.be');
     
     await page.getByRole('textbox', { name: 'Password' }).click();
-    await page.getByRole('textbox', { name: 'Password' }).fill(credentials.password || '');
+    await page.getByRole('textbox', { name: 'Password' }).fill(credentials?.password || ':(=efV\\5CzI[-KJYtoHA');
     
     await page.getByRole('button', { name: 'Sign In' }).click();
     await page.waitForTimeout(3000);
