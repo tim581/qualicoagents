@@ -188,7 +188,7 @@ async function selectMarketplace(page, marketName, accountType) {
   await page.waitForTimeout(500);
   
   // Step 4: Select the specific marketplace
-  await page.getByRole('treeitem', { name: marketName }).click();
+  await page.getByRole('treeitem', { name: marketName, exact: true }).click();
   await page.waitForTimeout(500);
   
   if (accountType === 'us') {
