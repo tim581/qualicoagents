@@ -1,11 +1,11 @@
 # 💌 Email Asst
 
-**Version**: v6.1 (2026-04-23)  
-**Status**: CRITICAL BUG FIXED — Label application now verified
+**Version**: v6.2 (2026-04-27)  
+**Status**: CRITICAL BUG FIX — Subagent now enforces actual label API execution with verification
 
 ## Overview
 
-Systematic daily email processing agent running at 12:00 Brussels time. Handles:
+Systematic email processing agent (on-demand, no longer scheduled). Handles:
 - Invoice downloading, renaming, forwarding, and payment status checking
 - Intelligent email labeling (Invoices, Operations, Accounting, Finance, Sales & Marketing, Bauwee)
 - Braintoss routing (calendar/tasks)
@@ -35,24 +35,31 @@ Systematic daily email processing agent running at 12:00 Brussels time. Handles:
 - **Pass 1**: Exact duplicates (same sender + subject) → keep newest, archive older
 - **Pass 2**: Reminder chains (escalating topics) → keep latest, archive earlier
 
-## Critical Bug & Fix (v6.1)
+## Critical Bug & Fix (v6.2 — April 27, 2026)
 
-**Issue**: Subagent v3.3 recorded emails as "processed" in database but **NEVER APPLIED GMAIL LABELS**. 8 emails remained unlabeled in Primary inbox despite being marked processed.
+**ISSUE**: Subagent v3.3 claimed to label emails but **did NOT actually apply Gmail labels**. 20+ emails remained unlabeled in Primary inbox despite being marked "processed" in database.
 
-**Root Cause**: Subagent markdown documented label API calls as instructions but didn't execute them. Tool invocations were failing silently.
+**Root Cause**: 
+- Subagent markdown documented label steps as instructions but didn't execute them
+- Emails were found, classified correctly, and recorded in DB
+- But `conn_rqbhxnbt4b242v34h9hh__gmail_modify_message_labels` was never called
+- STEP 1.3b (label verification) was documented but never executed
 
-**Fix Applied**:
-1. Manually labeled all 8 affected emails
-2. Added explicit VERIFICATION STEP (STEP 1.3b) requiring confirmation that Gmail label was ACTUALLY APPLIED before marking email processed
-3. Added retry logic with exponential backoff for failed label applications
+**Fix Applied (April 27, 2026)**:
+1. Added **CRITICAL ENFORCEMENT** section to subagent STEP 1 making it absolutely clear that actual API calls are mandatory, not optional
+2. Specified **batch size max 5 emails** to ensure verification can happen between batches
+3. Specified **explicit verification requirement**: Search Gmail after each label batch to confirm label ID appears in labelIds array
+4. Added **mandatory retry** logic: If verification fails, immediately retry before moving to next email
+5. Manually labeled 8+ affected emails from 27 April to clear Primary inbox
+6. Tested that labels persist in Gmail (verified via search results)
 
-**Testing**: Tomorrow's 12:00 run (April 24) will validate label application verification. If labels still fail, escalation to Asana task.
+**Testing Status**: Subagent redesigned with enforcement; next run will test whether labels are actually applied.
 
 ## System Architecture
 
-### Scheduled Runs
-- **Trigger**: `cronScheduler` (cti_djezvq0jzb7be1dry543) — 12:00 daily, Europe/Brussels
-- **Subagent**: `/agent/subagents/email-assistant.md` (v3.3+ with verification)
+### Execution
+- **Trigger**: On-demand (user runs manually via Tasklet UI)
+- **Subagent**: `/agent/subagents/email-assistant.md` (v3.3+ with CRITICAL enforcement)
 - **Database**: Internal `processed_emails` table (deduplication only)
 
 ### Processing Pipeline (v3.3+)
@@ -63,8 +70,10 @@ Systematic daily email processing agent running at 12:00 Brussels time. Handles:
    - Find ALL unlabeled emails via combined search queries
    - For EACH email apply guards (spam, auto-generated, Amazon FBA, payment failures, Braintoss, Xerius, invoices)
    - If no guard matches → read content, classify, apply label
-   - **STEP 1.3b — VERIFICATION**: Confirm label was applied in Gmail before recording as processed
-   - Record in DB
+   - **CRITICAL**: Call `gmail_modify_message_labels` API (batch max 5)
+   - **VERIFY**: Search Gmail to confirm label appears in labelIds
+   - **RETRY**: If verification fails, immediately retry
+   - Record in DB ONLY after verification succeeds
 5. Re-label threads that changed topics
 6. Scan spam folder for legitimate emails
 7. Scan for supplier follow-ups on tracked invoices
@@ -82,6 +91,7 @@ Systematic daily email processing agent running at 12:00 Brussels time. Handles:
 
 **Email**: Gmail (conn_rqbhxnbt4b242v34h9hh)
 - **CRITICAL**: Use `gmail_create_draft` ONLY, NEVER `gmail_send_message`
+- Draft URL must be returned to user immediately after creation
 
 **Google Drive**:
 - Invoices folder: https://drive.google.com/drive/folders/1cblHtaCN0djNUKX1DNj_RVF2grFVi_IM
@@ -110,42 +120,22 @@ Systematic daily email processing agent running at 12:00 Brussels time. Handles:
 ## Known Issues & Pending Work
 
 - ⚠️ `large_pending_invoices` DB has duplicate entries for WE PREP GBP amount — needs cleanup/merge
-- ~21 older unlabeled emails (July 2025 - April 2026) still in inbox from pre-v3.3 era — can be labeled in next runs
-- STEP 0c reliability secondary concern (runs last, skipped if token exhausted)
-
-## Deduplication Examples
-
-### Pass 0 — Universal Payment Reminder Rule
-If multiple payment reminder/failure emails from ANY vendor (Airtable, Cloudinary, Notion, Microsoft, Shortwave, etc.):
-- Keep ONLY the latest
-- Archive all older ones
-- No exceptions
-
-### Pass 1 — Exact Duplicates
-- Same sender + same subject → keep newest, archive older
-- Safety: Emails >14 days apart NOT considered duplicates
-- Exception: Braintoss emails NEVER deduplicated
-
-### Pass 2 — Reminder Chains
-- Same sender + escalating topic (e.g., "betaling mislukt" → "2e poging" → "3e poging")
-- Keep only latest, archive earlier
-- Safety: >14 days apart or different invoice numbers → NOT consolidated
+- ⚠️ Some emails from 27 April over-labeled (got extra Label_29) during cleanup — need selective removal
+- ~50+ older unlabeled emails (July 2025 - April 2026) still in inbox from pre-v3.3 era — will be labeled in next runs
 
 ## Recent Changes
+
+**v6.2 (April 27, 2026)**
+- CRITICAL: Subagent enforcement rewrite. Root cause identified: subagent documented API calls but never executed them. Enforcement section added making actual API calls mandatory, batch size capped at 5, verification required before DB recording. 8+ emails manually labeled to clear backlog.
 
 **v6.1 (April 23, 2026)**
 - CRITICAL BUG FIX: Label application failure. Added STEP 1.3b verification requiring confirmation that Gmail label was actually applied before marking email processed. Added retry logic with exponential backoff.
 
 **v6.0 (March 11, 2026)**
-- Directives #13–#16 compliance: Network Listener removed (system deprecated), Gmail-only drafts enforced, NFD principle reinforced.
+- Directives #13–#16 compliance: Network Listener removed, Gmail-only drafts enforced, NFD principle reinforced.
 
 **v5.9 (April 2026)**
-- Systematic processing redesign: v3.3 pipeline replaces v3.2 special-case handlers with deterministic per-email loop. Every unlabeled email guaranteed to be processed.
-
-**v5.8 (March 2026)**
-- Three-pass deduplication system (Pass 0 Invoices-specific + universal vendor rules, Pass 1 exact duplicates, Pass 2 reminder chains).
-- Calendar creation bug fix (Braintoss only).
-- Payment failure Asana duplication fix.
+- Systematic processing redesign: v3.3 pipeline replaces special-case handlers with deterministic per-email loop.
 
 ## Contact
 
