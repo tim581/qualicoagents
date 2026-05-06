@@ -457,6 +457,12 @@ async function setDeliveryLocation(page, channel, channelId) {
   }
 
   // ─── Helper: attempt the popup flow once ───
+  // Based on Playwright Codegen recording (May 2026):
+  //   1. Click "Deliver to Belgium" → opens popup
+  //   2. Fill postcode textbox (NO country dropdown change needed!)
+  //   3. Click "Apply" via getByLabel
+  //   4. Click "Done" button
+  //   5. Dismiss any cookie/accept prompts
   async function attemptPopupFlow() {
     // Click delivery location link (top-left)
     console.log(`  📍 Clicking delivery location link...`);
@@ -465,59 +471,34 @@ async function setDeliveryLocation(page, channel, channelId) {
     await locationLink.click();
     await page.waitForTimeout(2500);
 
-    // Wait for popup to appear — check for EITHER country dropdown or zip input
-    const popupVisible = await page.locator('#GLUXZipUpdateInput, #GLUXCountryListDropdown, .a-popover-wrapper').first().isVisible({ timeout: 5000 }).catch(() => false);
+    // Wait for popup to appear
+    const popupVisible = await page.locator('#GLUXZipUpdateInput, .a-popover-wrapper').first().isVisible({ timeout: 5000 }).catch(() => false);
     if (!popupVisible) {
       await page.waitForTimeout(2000);
       console.log(`  📍 Popup not immediately visible, waiting...`);
     }
 
-    // ── CRITICAL FIX: Select correct COUNTRY from dropdown first ──
-    // Tim's Belgian account defaults to Belgium on ALL domains.
-    // We MUST select the target country before entering postal code,
-    // otherwise Amazon rejects the postal code (wrong format for Belgium).
-    const targetCountryCode = COUNTRY_DROPDOWN_VALUES[channel.domain];
-    try {
-      const countryDropdown = page.locator('#GLUXCountryListDropdown');
-      if (await countryDropdown.isVisible({ timeout: 3000 }).catch(() => false)) {
-        console.log(`  📍 Country dropdown found — selecting ${targetCountryCode}...`);
-        await countryDropdown.selectOption(targetCountryCode);
-        await page.waitForTimeout(2000);
-        console.log(`  ✅ Country set to ${targetCountryCode}`);
-        await dbLog(`location-${channel.name}`, 'info', `Country dropdown: selected ${targetCountryCode}`);
-      } else {
-        console.log(`  📍 No country dropdown visible — might already be correct`);
-      }
-    } catch (e) {
-      console.log(`  ⚠️ Country dropdown error: ${e.message}`);
-      await dbLog(`location-${channel.name}`, 'warn', `Country dropdown failed: ${e.message}`);
-    }
+    // ── NO country dropdown change needed ──
+    // Codegen proved: Amazon accepts any postcode regardless of which country shows.
+    // The old selectOption() on #GLUXCountryListDropdown CRASHED because it's not a <select>.
+    // Just skip it entirely.
 
-    // Wait for zip input to appear (may appear after country selection)
-    const zipVisible = await page.locator('#GLUXZipUpdateInput').isVisible({ timeout: 5000 }).catch(() => false);
-    if (!zipVisible) {
-      // Try alternative input selectors
-      const anyInput = page.locator('.a-popover-wrapper input[type="text"], .a-popover-wrapper input:not([type])').first();
-      if (!await anyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-        // Maybe Amazon shows a "Done" button after country change (no zip needed for some countries)
-        const doneAfterCountry = page.locator('#GLUXConfirmClose, button:has-text("Done"), button:has-text("Fertig"), button:has-text("Continue")');
-        if (await doneAfterCountry.first().isVisible({ timeout: 2000 }).catch(() => false)) {
-          console.log(`  📍 No zip input — clicking Done after country selection`);
-          await doneAfterCountry.first().click();
-          await page.waitForTimeout(2000);
-          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
-          await page.waitForTimeout(3000);
-          return; // Country-only selection (some markets don't need zip)
+    // Find the postal code textbox — try multiple strategies
+    console.log(`  📍 Entering postal code "${channel.postalCode}"...`);
+    let zipInput = page.locator('#GLUXZipUpdateInput');
+    if (!await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+      // Codegen fallback: getByRole textbox with postal code label
+      zipInput = page.getByRole('textbox', { name: /postal|zip|code|plz|postleitzahl|postcode|código/i }).first();
+      if (!await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+        // Last resort: any text input in the popup
+        zipInput = page.locator('.a-popover-wrapper input[type="text"]').first();
+        if (!await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+          throw new Error('No postal code input found in popup');
         }
-        throw new Error('No postal code input found in popup after country selection');
       }
     }
 
     // Clear and fill postal code
-    console.log(`  📍 Entering postal code "${channel.postalCode}"...`);
-    const zipInput = page.locator('#GLUXZipUpdateInput').or(
-      page.locator('.a-popover-wrapper input[type="text"]').first()
-    );
     await zipInput.click({ clickCount: 3 });
     await page.waitForTimeout(300);
     await zipInput.fill('');
@@ -525,32 +506,87 @@ async function setDeliveryLocation(page, channel, channelId) {
     await zipInput.fill(channel.postalCode);
     await page.waitForTimeout(500);
 
-    // Click "Bestätigen" / "Apply"
-    console.log(`  📍 Clicking confirm...`);
-    const confirmBtn = page.locator(
-      '#GLUXZipUpdate, ' +
-      'input[aria-labelledby="GLUXZipUpdate-announce"], ' +
-      '.a-popover-wrapper input[type="submit"], ' +
-      'span:has-text("Bestätigen"), span:has-text("Apply"), ' +
-      'span:has-text("Appliquer"), span:has-text("Aplicar"), ' +
-      'span:has-text("Applica"), span:has-text("Toepassen")'
-    );
-    await confirmBtn.first().click({ timeout: 5000 });
+    // Click "Apply" — use getByLabel first (from codegen), then fallback selectors
+    console.log(`  📍 Clicking Apply...`);
+    let applyClicked = false;
+
+    // Strategy 1: getByLabel (exact match from codegen)
+    try {
+      const applyLabel = page.getByLabel('Apply');
+      if (await applyLabel.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await applyLabel.click();
+        applyClicked = true;
+        console.log(`  ✅ Clicked Apply via getByLabel`);
+      }
+    } catch (e) { /* try next */ }
+
+    // Strategy 2: #GLUXZipUpdate (the original input/button ID)
+    if (!applyClicked) {
+      try {
+        const gluxBtn = page.locator('#GLUXZipUpdate, input[aria-labelledby="GLUXZipUpdate-announce"]').first();
+        if (await gluxBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await gluxBtn.click();
+          applyClicked = true;
+          console.log(`  ✅ Clicked Apply via #GLUXZipUpdate`);
+        }
+      } catch (e) { /* try next */ }
+    }
+
+    // Strategy 3: text-based fallback for all languages
+    if (!applyClicked) {
+      const confirmBtn = page.locator(
+        'span:has-text("Apply"), span:has-text("Bestätigen"), ' +
+        'span:has-text("Appliquer"), span:has-text("Aplicar"), ' +
+        'span:has-text("Applica"), span:has-text("Toepassen"), ' +
+        '.a-popover-wrapper input[type="submit"]'
+      );
+      await confirmBtn.first().click({ timeout: 5000, force: true });
+      console.log(`  ✅ Clicked Apply via text fallback`);
+    }
+
     await page.waitForTimeout(3000);
 
-    // Click "Fertig" / "Done" / "Continue" if visible
-    const doneBtn = page.locator(
-      '#GLUXConfirmClose, button.a-button-close, ' +
-      'button:has-text("Fertig"), button:has-text("Done"), ' +
-      'button:has-text("Terminé"), button:has-text("Hecho"), ' +
-      'button:has-text("Fine"), button:has-text("Klaar"), ' +
-      'button:has-text("Continue"), button:has-text("Weiter"), ' +
-      '.a-popover-footer button'
-    );
-    if (await doneBtn.first().isVisible({ timeout: 3000 }).catch(() => false)) {
-      await doneBtn.first().click();
-      await page.waitForTimeout(2000);
+    // Click "Done" button if visible (from codegen: getByRole button "Done")
+    console.log(`  📍 Looking for Done button...`);
+    let doneClicked = false;
+
+    // Strategy 1: getByRole (from codegen)
+    try {
+      const doneRole = page.getByRole('button', { name: /^(Done|Fertig|Terminé|Hecho|Fine|Klaar|Gereed)$/i });
+      if (await doneRole.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await doneRole.click();
+        doneClicked = true;
+        console.log(`  ✅ Clicked Done via getByRole`);
+      }
+    } catch (e) { /* try next */ }
+
+    // Strategy 2: ID-based + text fallback
+    if (!doneClicked) {
+      const doneBtn = page.locator(
+        '#GLUXConfirmClose, button.a-button-close, ' +
+        'button:has-text("Done"), button:has-text("Fertig"), ' +
+        'button:has-text("Terminé"), button:has-text("Hecho"), ' +
+        'button:has-text("Fine"), button:has-text("Klaar"), ' +
+        'button:has-text("Continue"), button:has-text("Weiter"), ' +
+        '.a-popover-footer button'
+      );
+      if (await doneBtn.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+        await doneBtn.first().click();
+        console.log(`  ✅ Clicked Done via fallback`);
+      }
     }
+
+    await page.waitForTimeout(2000);
+
+    // Dismiss any "Accept" / cookie prompts that appear after location change
+    try {
+      const acceptBtn = page.getByRole('button', { name: /^Accept$/i });
+      if (await acceptBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await acceptBtn.click();
+        console.log(`  ✅ Clicked Accept prompt`);
+        await page.waitForTimeout(1000);
+      }
+    } catch (e) { /* no accept prompt */ }
 
     // Reload to lock in cookies
     await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
