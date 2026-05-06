@@ -308,6 +308,25 @@ const COUNTRY_NAMES = {
 };
 
 /**
+ * Amazon location popup country dropdown values.
+ * When Tim's Belgian account visits foreign Amazon domains,
+ * the popup defaults to "Belgium". We must select the correct country
+ * BEFORE entering the postal code, otherwise the postal code is rejected.
+ */
+const COUNTRY_DROPDOWN_VALUES = {
+  'amazon.de':     'DE',
+  'amazon.fr':     'FR',
+  'amazon.es':     'ES',
+  'amazon.it':     'IT',
+  'amazon.com.be': 'BE',
+  'amazon.nl':     'NL',
+  'amazon.com':    'US',
+  'amazon.ca':     'CA',
+  'amazon.co.uk':  'GB',
+};
+
+
+/**
  * Set delivery location on Amazon.
  * 
  * EXACT FLOW (based on Amazon DE popup screenshot):
@@ -446,13 +465,51 @@ async function setDeliveryLocation(page, channel, channelId) {
     await locationLink.click();
     await page.waitForTimeout(2500);
 
-    // Wait for popup to appear
-    const popupVisible = await page.locator('#GLUXZipUpdateInput').isVisible({ timeout: 5000 }).catch(() => false);
+    // Wait for popup to appear — check for EITHER country dropdown or zip input
+    const popupVisible = await page.locator('#GLUXZipUpdateInput, #GLUXCountryListDropdown, .a-popover-wrapper').first().isVisible({ timeout: 5000 }).catch(() => false);
     if (!popupVisible) {
       await page.waitForTimeout(2000);
+      console.log(`  📍 Popup not immediately visible, waiting...`);
+    }
+
+    // ── CRITICAL FIX: Select correct COUNTRY from dropdown first ──
+    // Tim's Belgian account defaults to Belgium on ALL domains.
+    // We MUST select the target country before entering postal code,
+    // otherwise Amazon rejects the postal code (wrong format for Belgium).
+    const targetCountryCode = COUNTRY_DROPDOWN_VALUES[channel.domain];
+    try {
+      const countryDropdown = page.locator('#GLUXCountryListDropdown');
+      if (await countryDropdown.isVisible({ timeout: 3000 }).catch(() => false)) {
+        console.log(`  📍 Country dropdown found — selecting ${targetCountryCode}...`);
+        await countryDropdown.selectOption(targetCountryCode);
+        await page.waitForTimeout(2000);
+        console.log(`  ✅ Country set to ${targetCountryCode}`);
+        await dbLog(`location-${channel.name}`, 'info', `Country dropdown: selected ${targetCountryCode}`);
+      } else {
+        console.log(`  📍 No country dropdown visible — might already be correct`);
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Country dropdown error: ${e.message}`);
+      await dbLog(`location-${channel.name}`, 'warn', `Country dropdown failed: ${e.message}`);
+    }
+
+    // Wait for zip input to appear (may appear after country selection)
+    const zipVisible = await page.locator('#GLUXZipUpdateInput').isVisible({ timeout: 5000 }).catch(() => false);
+    if (!zipVisible) {
+      // Try alternative input selectors
       const anyInput = page.locator('.a-popover-wrapper input[type="text"], .a-popover-wrapper input:not([type])').first();
       if (!await anyInput.isVisible({ timeout: 3000 }).catch(() => false)) {
-        throw new Error('No postal code input found in popup');
+        // Maybe Amazon shows a "Done" button after country change (no zip needed for some countries)
+        const doneAfterCountry = page.locator('#GLUXConfirmClose, button:has-text("Done"), button:has-text("Fertig"), button:has-text("Continue")');
+        if (await doneAfterCountry.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+          console.log(`  📍 No zip input — clicking Done after country selection`);
+          await doneAfterCountry.first().click();
+          await page.waitForTimeout(2000);
+          await page.reload({ waitUntil: 'domcontentloaded', timeout: 20000 });
+          await page.waitForTimeout(3000);
+          return; // Country-only selection (some markets don't need zip)
+        }
+        throw new Error('No postal code input found in popup after country selection');
       }
     }
 
@@ -481,12 +538,13 @@ async function setDeliveryLocation(page, channel, channelId) {
     await confirmBtn.first().click({ timeout: 5000 });
     await page.waitForTimeout(3000);
 
-    // Click "Fertig" / "Done" if visible
+    // Click "Fertig" / "Done" / "Continue" if visible
     const doneBtn = page.locator(
       '#GLUXConfirmClose, button.a-button-close, ' +
       'button:has-text("Fertig"), button:has-text("Done"), ' +
       'button:has-text("Terminé"), button:has-text("Hecho"), ' +
       'button:has-text("Fine"), button:has-text("Klaar"), ' +
+      'button:has-text("Continue"), button:has-text("Weiter"), ' +
       '.a-popover-footer button'
     );
     if (await doneBtn.first().isVisible({ timeout: 3000 }).catch(() => false)) {
@@ -524,8 +582,10 @@ async function setDeliveryLocation(page, channel, channelId) {
       return true;
     }
     console.log(`  ⚠️ Attempt 1 failed: ${check1.reason}`);
+    await dbLog(`location-${channel.name}`, 'warn', `Attempt 1 failed: ${check1.reason}`);
   } catch (e) {
     console.log(`  ⚠️ Attempt 1 error: ${e.message}`);
+    await dbLog(`location-${channel.name}`, 'warn', `Attempt 1 error: ${e.message}`);
   }
 
   // Attempt 2 (retry)
@@ -548,8 +608,10 @@ async function setDeliveryLocation(page, channel, channelId) {
       return true;
     }
     console.log(`  ❌ Attempt 2 failed: ${check2.reason}`);
+    await dbLog(`location-${channel.name}`, 'warn', `Attempt 2 failed: ${check2.reason}`);
   } catch (e) {
     console.log(`  ❌ Attempt 2 error: ${e.message}`);
+    await dbLog(`location-${channel.name}`, 'warn', `Attempt 2 error: ${e.message}`);
   }
 
   // HARD FAIL — could not set postal code
