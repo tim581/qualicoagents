@@ -607,18 +607,17 @@ async function fetchSimulationResults(simId, type) {
   while (hasNext) {
     const query = `{
       replenishment_simulation_products(
-        simulationId: "${simId}",
+        replenishmentSimulationId: "${simId}",
         pagination: { limit: ${limit}, offset: ${offset} }
       ) {
         items {
-          productName
-          locationName
-          replenishmentUnits
-          onHandUnits
-          coverageDays
+          product { name }
+          originName
+          replenishmentNeedsUnits
+          cartonsQuantity
         }
         pageInfo {
-          hasNext
+          hasNextPage
         }
       }
     }`;
@@ -647,7 +646,7 @@ async function fetchSimulationResults(simId, type) {
     
     const data = json.data.replenishment_simulation_products;
     allItems.push(...data.items);
-    hasNext = data.pageInfo.hasNext;
+    hasNext = data.pageInfo.hasNextPage;
     offset += limit;
     
     console.log(`  📦 Fetched ${allItems.length} items so far (hasNext: ${hasNext})`);
@@ -663,12 +662,12 @@ async function fetchSimulationResults(simId, type) {
 
 async function logResults(items, type, simId) {
   // Log a summary + full JSON to debug log
-  const summary = items.map(i => `${i.productName} @ ${i.locationName}: ${i.replenishmentUnits} units (on-hand: ${i.onHandUnits}, coverage: ${i.coverageDays}d)`);
+  const summary = items.map(i => `${i.product?.name || i.productName} @ ${i.originName || i.locationName}: ${i.replenishmentNeedsUnits || i.replenishmentUnits || 0} units (cartons: ${i.cartonsQuantity || 0})`);
   
   await dbLog(`results-${type}`, 'success', 
     `Simulation ${simId}\n` +
     `Total items: ${items.length}\n` +
-    `Total replenishment units: ${items.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)}\n\n` +
+    `Total replenishment units: ${items.reduce((s, i) => s + (i.replenishmentNeedsUnits || i.replenishmentUnits || 0), 0)}\n\n` +
     summary.slice(0, 50).join('\n') + 
     (summary.length > 50 ? `\n... and ${summary.length - 50} more` : '')
   );
@@ -678,13 +677,13 @@ async function logResults(items, type, simId) {
   
   console.log(`\n📊 ${type.toUpperCase()} Summary:`);
   console.log(`   Items: ${items.length}`);
-  console.log(`   Total reorder units: ${items.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)}`);
+  console.log(`   Total reorder units: ${items.reduce((s, i) => s + (i.replenishmentNeedsUnits || i.replenishmentUnits || 0), 0)}`);
   
   // Print top items
-  const sorted = [...items].sort((a, b) => (b.replenishmentUnits || 0) - (a.replenishmentUnits || 0));
+  const sorted = [...items].sort((a, b) => (b.replenishmentNeedsUnits || b.replenishmentUnits || 0) - (a.replenishmentNeedsUnits || a.replenishmentUnits || 0));
   console.log('   Top 10 by replenishment units:');
   for (const item of sorted.slice(0, 10)) {
-    console.log(`     ${item.productName} @ ${item.locationName}: ${item.replenishmentUnits} units`);
+    console.log(`     ${item.product?.name || item.productName} @ ${item.originName || item.locationName}: ${item.replenishmentNeedsUnits || item.replenishmentUnits || 0} units`);
   }
 }
 
@@ -897,7 +896,7 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v3.0 — simplified pickDate, env RUN_MODE');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v3.1 — simplified pickDate, env RUN_MODE');
     console.log('📌 Script version: v3.0');
     await login(page);
     
@@ -920,13 +919,13 @@ async function runTOSimulation(page) {
     if (poResult) {
       console.log(`\n📦 PO Simulation ID: ${poResult.simId}`);
       console.log(`   Results: ${poResult.results.length} items`);
-      console.log(`   Total reorder: ${poResult.results.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)} units`);
+      console.log(`   Total reorder: ${poResult.results.reduce((s, i) => s + (i.replenishmentNeedsUnits || i.replenishmentUnits || 0), 0)} units`);
     }
     
     if (toResult) {
       console.log(`\n🚚 TO Simulation ID: ${toResult.simId}`);
       console.log(`   Results: ${toResult.results.length} items`);
-      console.log(`   Total transfer: ${toResult.results.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)} units`);
+      console.log(`   Total transfer: ${toResult.results.reduce((s, i) => s + (i.replenishmentNeedsUnits || i.replenishmentUnits || 0), 0)} units`);
     }
     
     await dbLog('main', 'success', `Done! PO: ${poResult ? poResult.results.length + ' items' : 'skipped'}, TO: ${toResult ? toResult.results.length + ' items' : 'skipped'}`);
