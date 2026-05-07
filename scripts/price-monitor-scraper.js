@@ -1072,18 +1072,41 @@ async function scrapeBolcom() {
 
       const html = await response.text();
 
-      // Extract price — Bol.com uses "XX,XX" format in <meta> or price spans
+      // Extract price — parse JSON-LD structured data for the MAIN product
+      // CRITICAL: Do NOT use generic "price" regex — it matches cross-sell products first!
       let price = null;
       let raw = null;
       
-      // Strategy 1: meta tag
-      const metaMatch = html.match(/"price":\s*"?([\d,.]+)"?/);
-      if (metaMatch) {
-        price = parsePrice(metaMatch[1]);
-        raw = metaMatch[1];
+      // Strategy 1: Parse JSON-LD <script type="application/ld+json"> blocks
+      // Find the Product schema with the correct price
+      const ldJsonBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+      for (const block of ldJsonBlocks) {
+        try {
+          const jsonStr = block.replace(/<script[^>]*>|<\/script>/gi, '').trim();
+          const data = JSON.parse(jsonStr);
+          
+          // Handle both direct Product and @graph arrays
+          const items = Array.isArray(data['@graph']) ? data['@graph'] : [data];
+          for (const item of items) {
+            if (item['@type'] === 'Product' && item.offers) {
+              const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
+              for (const offer of offers) {
+                if (offer.price || offer.price === 0) {
+                  price = parseFloat(String(offer.price).replace(',', '.'));
+                  raw = `€${offer.price}`;
+                  break;
+                }
+              }
+            }
+            if (price) break;
+          }
+        } catch (e) {
+          // JSON parse error — skip this block
+        }
+        if (price) break;
       }
 
-      // Strategy 2: price display
+      // Strategy 2: price display spans (promo-price class)
       if (!price) {
         const priceMatch = html.match(/class="promo-price"[^>]*>([\d]+)<sup>([\d]+)<\/sup>/);
         if (priceMatch) {
@@ -1092,7 +1115,7 @@ async function scrapeBolcom() {
         }
       }
 
-      // Strategy 3: structured data
+      // Strategy 3: LAST resort — generic price regex (least reliable)
       if (!price) {
         const sdMatch = html.match(/"price":\s*([\d.]+)/);
         if (sdMatch) {
@@ -1100,6 +1123,8 @@ async function scrapeBolcom() {
           raw = `€${sdMatch[1]}`;
         }
       }
+      
+      console.log(`    💰 Price extracted: €${price} (raw: ${raw})`);
 
       // Check stock — positive signal "Op voorraad" is definitive
       // "Niet leverbaar" / "Uitverkocht" can appear elsewhere in the HTML, so use positive matching
