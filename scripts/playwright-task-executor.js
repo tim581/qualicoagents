@@ -1,5 +1,7 @@
-// playwright-task-executor.js v3.3 — auto-load cookie storage state for module scripts
-const { chromium } = require('playwright-core');
+// playwright-task-executor.js v3.4 — stealth plugin (playwright-extra)
+const { chromium } = require('playwright-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+chromium.use(StealthPlugin());
 const { createClient } = require('@supabase/supabase-js');
 const https = require('https');
 const fs = require('fs');
@@ -14,7 +16,7 @@ let browser;
 
 async function initBrowser() {
   if (!browser) {
-    console.log('🚀 Initializing Chromium...');
+    console.log('🚀 Initializing Chromium (stealth mode)...');
     browser = await chromium.launch({ headless: false });
   }
   return browser;
@@ -451,7 +453,7 @@ async function pollTasks() {
 }
 
 async function main() {
-  console.log('🎬 Browser Task Executor v3.3');
+  console.log('🎬 Browser Task Executor v3.4 (stealth)');
   console.log(`📍 Supabase: ${SUPABASE_URL}`);
   console.log('📋 Task types:', Object.keys(SCRIPT_TASKS).join(', '));
   console.log('');
