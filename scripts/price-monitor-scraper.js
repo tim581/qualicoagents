@@ -1132,18 +1132,24 @@ async function scrapeBolcom() {
       const hasNietLeverbaar = html.includes('Niet leverbaar') || html.includes('Uitverkocht');
       const inStock = hasOpVoorraad ? true : !hasNietLeverbaar;
 
-      // Extract rating
+      // Extract rating + review count from JSON-LD (same source as price)
       let rating = null;
-      const ratingMatch = html.match(/rating.*?([\d,.]+)\s*\/\s*5|"ratingValue":\s*"?([\d,.]+)"?/);
-      if (ratingMatch) {
-        rating = parseFloat((ratingMatch[1] || ratingMatch[2]).replace(',', '.'));
-      }
-
-      // Extract review count
       let reviewCount = null;
-      const reviewMatch = html.match(/"reviewCount":\s*"?(\d+)"?|(\d+)\s*reviews?/);
-      if (reviewMatch) {
-        reviewCount = parseInt(reviewMatch[1] || reviewMatch[2]);
+      try {
+        const jsonLdBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
+        for (const block of jsonLdBlocks) {
+          const jsonStr = block.replace(/<\/?script[^>]*>/gi, '').trim();
+          const parsed = JSON.parse(jsonStr);
+          const product = Array.isArray(parsed) ? parsed.find(p => p['@type'] === 'Product') : (parsed['@type'] === 'Product' ? parsed : null);
+          if (product && product.aggregateRating) {
+            const ar = product.aggregateRating;
+            if (ar.ratingValue) rating = parseFloat(String(ar.ratingValue).replace(',', '.'));
+            if (ar.reviewCount) reviewCount = parseInt(String(ar.reviewCount));
+            break;
+          }
+        }
+      } catch (e) {
+        console.log(`    ⚠️ JSON-LD rating parse error: ${e.message}`);
       }
 
       results.push({
