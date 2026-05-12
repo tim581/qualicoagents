@@ -57,6 +57,7 @@ const AMAZON_PRODUCTS = {
       { name: '3000 ECO',      productId: 5,  asin: 'B0B8DDWL97' },
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
       { name: 'Luxe 1500',     productId: 10, asin: 'B0FDL8BD8V' },
+      { name: 'Gift 5000',     productId: 11, asin: 'B0FDBLB658' },
     ],
     // Gift 1000 is a SEPARATE listing on DE (own ASIN, not a variant of the 1500/3000 listing)
     separateProducts: [
@@ -78,6 +79,7 @@ const AMAZON_PRODUCTS = {
       { name: '3000 Eco',      productId: 5,  asin: 'B0B8DDWL97' },
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
       { name: '1500 Luxury',   productId: 10, asin: 'B0FDL8BD8V' },
+      { name: '5000 Gift',     productId: 11, asin: 'B0FDBLB658' },
     ],
     // Gift 1000 is a SEPARATE listing on FR (own ASIN)
     separateProducts: [
@@ -146,6 +148,7 @@ const AMAZON_PRODUCTS = {
       { name: '1500 Eco',      productId: 1,  asin: 'B0BN3PLV93' },
       { name: 'ECO 3000',      productId: 5,  asin: 'B0B8DDWL97' },
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
+      { name: 'Gift 5000',     productId: 11, asin: 'B0FDBLB658' },
     ],
   },
 
@@ -157,6 +160,7 @@ const AMAZON_PRODUCTS = {
       { name: '1500 Eco',      productId: 1,  asin: 'B0BN3PLV93' },
       { name: 'Eco 3000',      productId: 5,  asin: 'B0B8DDWL97' },
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
+      { name: 'Gift 5000',     productId: 11, asin: 'B0FDBLB658' },
     ],
   },
 
@@ -169,6 +173,7 @@ const AMAZON_PRODUCTS = {
       { name: 'ECO 3000',      productId: 5,  asin: 'B0B8DDWL97' },
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
       { name: 'Luxe 1500',     productId: 10, asin: 'B0FDL8BD8V' },
+      { name: 'Gift 5000',     productId: 11, asin: 'B0FDBLB658' },
     ],
   },
 
@@ -181,6 +186,7 @@ const AMAZON_PRODUCTS = {
       { name: 'ECO 3000',      productId: 5,  asin: 'B0B8DDWL97' },
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
       { name: 'Luxe 1500',     productId: 10, asin: 'B0FDL8BD8V' },
+      { name: 'Gift 5000',     productId: 11, asin: 'B0FDBLB658' },
     ],
   },
 };
@@ -196,6 +202,7 @@ const BOL_PRODUCTS = [
   { name: 'Stapelbare Puzzelbakjes',       productId: 14, url: 'https://www.bol.com/nl/nl/p/puzzlup-stapelbare-puzzelbakjes-sorteerbakjes-1500-stukjes/9300000176363501/' },
   { name: 'Stapelbare Puzzelbakjes XL 3000', productId: 15, url: 'https://www.bol.com/nl/nl/p/puzzlup-stapelbare-puzzelbakjes-sorteerbakjes-xl-3000-stukjes/9300000240566990/' },
   { name: '1000 Puzzelmat Gift',           productId: 16, url: 'https://www.bol.com/nl/nl/p/puzzlup-puzzelmat-1000-stukjes-satijnzacht-antislip-gebruiksvriendelijk-geschenkverpakking-59-x-100-cm/9300000240566062/' },
+  { name: '5000 Puzzelmat Gift',           productId: 11, url: 'https://www.bol.com/nl/nl/p/puzzlup-puzzelmat-5000-stukjes-xl-satijnzacht-antislip-gebruiksvriendelijk-geschenkverpakking-118-x-170-cm/9300000240566183/' },
 ];
 
 // ── WEBSHOP PRODUCTS ─────────────────────────────────────────────────────────
