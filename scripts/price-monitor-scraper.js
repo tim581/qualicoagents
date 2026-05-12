@@ -58,6 +58,10 @@ const AMAZON_PRODUCTS = {
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
       { name: 'Luxe 1500',     productId: 10, asin: 'B0FDL8BD8V' },
     ],
+    // Gift 1000 is a SEPARATE listing on DE (own ASIN, not a variant of the 1500/3000 listing)
+    separateProducts: [
+      { name: 'Gift 1000',     productId: 16, asin: 'B0C11B8PDB', url: 'https://www.amazon.de/dp/B0C11B8PDB' },
+    ],
     traysUrl: 'https://www.amazon.de/dp/B0CNW5BJXF?th=1',
     trays: [
       { name: 'Sorting Trays 1500 Black', productId: 14, asin: 'B0CNW5BJXF' },
@@ -75,6 +79,10 @@ const AMAZON_PRODUCTS = {
       { name: 'Gift 3000',     productId: 4,  asin: 'B09WTR77CV' },
       { name: '1500 Luxury',   productId: 10, asin: 'B0FDL8BD8V' },
     ],
+    // Gift 1000 is a SEPARATE listing on FR (own ASIN)
+    separateProducts: [
+      { name: 'Gift 1000',     productId: 16, asin: 'B0C1HKG2NP', url: 'https://www.amazon.fr/dp/B0C1HKG2NP' },
+    ],
     traysUrl: 'https://www.amazon.fr/dp/B0CNW5BJXF?th=1',
     trays: [
       { name: 'Sorting Trays Noir 1500', productId: 14, asin: 'B0CNW5BJXF' },
@@ -86,6 +94,7 @@ const AMAZON_PRODUCTS = {
   32: {
     url: 'https://www.amazon.co.uk/Puzzlup-Jigsaw-Puzzle-Roll-Mat/dp/B09MBH7RFW?th=1',
     variants: [
+      { name: '1000 GIFT',     productId: 16, asin: 'B0C93JHXHG' },
       { name: '1500 GIFT',     productId: 12, asin: 'B09MBH7RFW' },
       { name: '1500 LUXE',     productId: 10, asin: 'B0FDL8BD8V' },
       { name: '3000 GIFT',     productId: 4,  asin: 'B09WTR77CV' },
@@ -186,6 +195,7 @@ const BOL_PRODUCTS = [
   { name: 'Luxe 1500 Puzzelmat',           productId: 10, url: 'https://www.bol.com/nl/nl/p/puzzlup-luxe-puzzelmat-1500-stukjes-premium-puzzelrol/9300000240566271/' },
   { name: 'Stapelbare Puzzelbakjes',       productId: 14, url: 'https://www.bol.com/nl/nl/p/puzzlup-stapelbare-puzzelbakjes-sorteerbakjes-1500-stukjes/9300000176363501/' },
   { name: 'Stapelbare Puzzelbakjes XL 3000', productId: 15, url: 'https://www.bol.com/nl/nl/p/puzzlup-stapelbare-puzzelbakjes-sorteerbakjes-xl-3000-stukjes/9300000240566990/' },
+  { name: '1000 Puzzelmat Gift',           productId: 16, url: 'https://www.bol.com/nl/nl/p/puzzlup-puzzelmat-1000-stukjes-satijnzacht-antislip-gebruiksvriendelijk-geschenkverpakking-59-x-100-cm/9300000240566062/' },
 ];
 
 // ── WEBSHOP PRODUCTS ─────────────────────────────────────────────────────────
@@ -484,52 +494,18 @@ async function setDeliveryLocation(page, channel, channelId) {
     // Just skip it entirely.
 
     // Find the postal code textbox — try multiple strategies
-    // NB: amazon.nl has a DIFFERENT popup layout than other markets!
     console.log(`  📍 Entering postal code "${channel.postalCode}"...`);
-    let zipInput = null;
-    const zipStrategies = [
-      // Strategy 1: Standard Amazon postal code input
-      () => page.locator('#GLUXZipUpdateInput'),
-      // Strategy 2: Codegen-based textbox with postal code label
-      () => page.getByRole('textbox', { name: /postal|zip|code|plz|postleitzahl|postcode|código|postleitzahl/i }).first(),
-      // Strategy 3: Any text input in the popup wrapper
-      () => page.locator('.a-popover-wrapper input[type="text"]').first(),
-      // Strategy 4: Any input (not just text) in popup — amazon.nl may use different type
-      () => page.locator('.a-popover-wrapper input:not([type="hidden"]):not([type="submit"]):not([type="checkbox"]):not([type="radio"])').first(),
-      // Strategy 5: Input inside a-popover-content (NL uses different container)
-      () => page.locator('[class*="a-popover"] input[type="text"]').first(),
-      // Strategy 6: Any visible input with placeholder containing postal/zip keywords
-      () => page.locator('input[placeholder*="post" i], input[placeholder*="zip" i], input[placeholder*="code" i], input[placeholder*="plz" i]').first(),
-      // Strategy 7: GLUX alternative IDs
-      () => page.locator('#GLUXZipConfirmationInput, #GLUXZipUpdateInput_0, #GLUXAddressInput').first(),
-      // Strategy 8: NL-specific — any visible input in modal/overlay
-      () => page.locator('[role="dialog"] input[type="text"], [role="dialog"] input:not([type="hidden"])').first(),
-      // Strategy 9: Nuclear option — any visible input after the popup opened
-      () => page.locator('.a-modal-scroller input[type="text"], .a-modal-scroller input:not([type="hidden"]):not([type="submit"])').first(),
-    ];
-
-    for (let si = 0; si < zipStrategies.length; si++) {
-      try {
-        const candidate = zipStrategies[si]();
-        if (await candidate.isVisible({ timeout: 1500 }).catch(() => false)) {
-          zipInput = candidate;
-          console.log(`  ✅ Postal code input found via strategy ${si + 1}`);
-          break;
+    let zipInput = page.locator('#GLUXZipUpdateInput');
+    if (!await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+      // Codegen fallback: getByRole textbox with postal code label
+      zipInput = page.getByRole('textbox', { name: /postal|zip|code|plz|postleitzahl|postcode|código/i }).first();
+      if (!await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+        // Last resort: any text input in the popup
+        zipInput = page.locator('.a-popover-wrapper input[type="text"]').first();
+        if (!await zipInput.isVisible({ timeout: 3000 }).catch(() => false)) {
+          throw new Error('No postal code input found in popup');
         }
-      } catch (e) { /* try next strategy */ }
-    }
-
-    if (!zipInput) {
-      // DEBUG: log what IS in the popup so we can fix it next time
-      try {
-        const popupHtml = await page.locator('.a-popover-wrapper, [role="dialog"], .a-modal-scroller').first().innerHTML({ timeout: 3000 });
-        const truncated = popupHtml.substring(0, 500);
-        console.log(`  🐛 DEBUG popup HTML: ${truncated}`);
-        await dbLog(`location-${channel.name}`, 'debug', `Popup HTML (500 chars): ${truncated}`);
-      } catch (e) {
-        console.log(`  🐛 DEBUG: Could not read popup HTML: ${e.message}`);
       }
-      throw new Error('No postal code input found in popup');
     }
 
     // Clear and fill postal code
@@ -1042,7 +1018,8 @@ async function scrapeAmazonMarket(browser, channelId) {
     }
 
     // Step 4: Scrape ALL mat variants via direct ASIN navigation
-    const allVariants = [...products.variants, ...(products.trays || [])];
+    // Include separateProducts (like Gift 1000 which has its own ASIN on DE/FR) and separateTrays (CA)
+    const allVariants = [...products.variants, ...(products.trays || []), ...(products.separateProducts || []), ...(products.separateTrays || [])];
     console.log(`\n  📦 Scraping ${allVariants.length} variants via direct ASIN navigation...`);
 
     for (let i = 0; i < allVariants.length; i++) {
