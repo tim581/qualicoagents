@@ -1,6 +1,6 @@
 /**
  * bol-cases-scrape.js — Bol.com Partner Portal Cases Scraper
- * Version: 1.0.0
+ * Version: 1.1.0 — standalone mode (no module.exports)
  * 
  * Scrapes open/new customer cases from bol.com partner portal
  * Uses stealth mode + Decodo residential proxy (NL) for anti-detection
@@ -8,8 +8,8 @@
  * Dependencies: playwright-extra, puppeteer-extra-plugin-stealth
  * Install: npm install playwright-extra puppeteer-extra-plugin-stealth
  * 
- * Called by playwright-task-executor.js via Browser_Tasks table
- * Result written back to Browser_Tasks.result as JSON
+ * Runs as standalone script via playwright-task-executor.js
+ * Writes result JSON to bol-cases-scrape-data.json for executor pickup
  */
 
 const { chromium } = require('playwright-extra');
@@ -40,8 +40,10 @@ const ENDPOINTS = {
 
 // Storage state path (cookies + localStorage from bol-partner-save-cookies.js)
 const STORAGE_STATE_PATH = path.join(__dirname, '..', 'bol-storage-state.json');
+// Output file — executor picks this up automatically
+const OUTPUT_PATH = path.join(__dirname, 'bol-cases-scrape-data.json');
 
-async function run(taskData = {}) {
+async function run() {
     const results = {
         success: false,
         scraped_at: new Date().toISOString(),
@@ -248,12 +250,27 @@ async function run(taskData = {}) {
     return results;
 }
 
-// Support both direct execution and module export (for playwright-task-executor)
-if (require.main === module) {
-    run().then(results => {
-        console.log(JSON.stringify(results, null, 2));
-        process.exit(results.success ? 0 : 1);
-    });
-}
-
-module.exports = { run };
+// ── STANDALONE EXECUTION ──────────────────────────────────────────────
+// No module.exports — executor detects this and runs with `node`
+run().then(results => {
+    // Write JSON output file for executor pickup
+    fs.writeFileSync(OUTPUT_PATH, JSON.stringify(results, null, 2));
+    console.log(`[bol-cases] Results written to ${OUTPUT_PATH}`);
+    
+    // Also log summary to stdout
+    console.log(`\n=== SUMMARY ===`);
+    console.log(`Success: ${results.success}`);
+    console.log(`Counts: ${JSON.stringify(results.counts)}`);
+    console.log(`Open cases: ${results.open_cases.length}`);
+    console.log(`New cases: ${results.new_cases.length}`);
+    console.log(`Details scraped: ${results.case_details.length}`);
+    console.log(`Errors: ${results.errors.length}`);
+    if (results.errors.length > 0) {
+        console.log(`Error details: ${results.errors.join('; ')}`);
+    }
+    
+    process.exit(results.success ? 0 : 1);
+}).catch(err => {
+    console.error(`[bol-cases] Unhandled error: ${err.message}`);
+    process.exit(1);
+});
