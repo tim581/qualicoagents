@@ -1,6 +1,6 @@
 /**
  * bol-cases-scrape.js — Bol.com Partner Portal Cases Scraper
- * Version: 1.1.0 — standalone mode (no module.exports)
+ * Version: 1.2.0 — standalone mode, fixed paths
  * 
  * Scrapes open/new customer cases from bol.com partner portal
  * Uses stealth mode + Decodo residential proxy (NL) for anti-detection
@@ -9,7 +9,11 @@
  * Install: npm install playwright-extra puppeteer-extra-plugin-stealth
  * 
  * Runs as standalone script via playwright-task-executor.js
- * Writes result JSON to bol-cases-scrape-data.json for executor pickup
+ * - Executor downloads this from GitHub to __dirname before running
+ * - Output JSON written to bol-cases-scrape-data.json in same dir
+ * - Storage state (cookies) expected at __dirname/bol-storage-state.json
+ * 
+ * Flow: cookies → stealth browser + proxy → partner.bol.com → internal API → JSON
  */
 
 const { chromium } = require('playwright-extra');
@@ -38,8 +42,9 @@ const ENDPOINTS = {
     templates: `${BOL_API_BASE}/templates`
 };
 
-// Storage state path (cookies + localStorage from bol-partner-save-cookies.js)
-const STORAGE_STATE_PATH = path.join(__dirname, '..', 'bol-storage-state.json');
+// IMPORTANT: executor downloads scripts to its own __dirname
+// Storage state (bol-storage-state.json) lives in same directory
+const STORAGE_STATE_PATH = path.join(__dirname, 'bol-storage-state.json');
 // Output file — executor picks this up automatically
 const OUTPUT_PATH = path.join(__dirname, 'bol-cases-scrape-data.json');
 
