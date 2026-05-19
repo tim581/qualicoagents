@@ -495,7 +495,41 @@ async function setDeliveryLocation(page, channel, channelId) {
       console.log(`  📍 Popup not immediately visible, waiting...`);
     }
 
-    // ── NO country dropdown change needed ──
+    // ── NL-specific flow: country dropdown instead of postal code ──
+    // Codegen (May 2026) showed amazon.nl uses a country chooser, NOT a postcode input.
+    // Flow: click "Choose" span → select "Netherlands" → click "Done"
+    if (channel.domain === 'amazon.nl') {
+      console.log(`  📍 NL flow: selecting Netherlands via country dropdown...`);
+      let nlDone = false;
+
+      // Try clicking the "Choose" span (country selector)
+      try {
+        const chooseSpan = page.locator('span').filter({ hasText: /^Choose$/ }).first();
+        if (await chooseSpan.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await chooseSpan.click();
+          await page.waitForTimeout(1000);
+          // Select Netherlands
+          const nlOption = page.getByRole('option', { name: 'Netherlands' }).first();
+          if (await nlOption.isVisible({ timeout: 3000 }).catch(() => false)) {
+            await nlOption.click();
+            await page.waitForTimeout(500);
+            console.log(`  ✅ Selected Netherlands via country dropdown`);
+            nlDone = true;
+          }
+        }
+      } catch (e) { console.log(`  ⚠️ NL country dropdown error: ${e.message}`); }
+
+      // Click Done
+      const doneBtn = page.getByRole('button', { name: 'Done' });
+      if (await doneBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await doneBtn.click();
+        console.log(`  ✅ Clicked Done for NL`);
+      }
+      if (!nlDone) throw new Error('NL country dropdown flow failed');
+      return; // Skip the postal code section below
+    }
+
+    // ── NO country dropdown change needed for other markets ──
     // Codegen proved: Amazon accepts any postcode regardless of which country shows.
     // The old selectOption() on #GLUXCountryListDropdown CRASHED because it's not a <select>.
     // Just skip it entirely.
