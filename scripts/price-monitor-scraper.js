@@ -497,35 +497,75 @@ async function setDeliveryLocation(page, channel, channelId) {
 
     // ── NL-specific flow: country dropdown instead of postal code ──
     // Codegen (May 2026) showed amazon.nl uses a country chooser, NOT a postcode input.
-    // Flow: click "Choose" span → select "Netherlands" → click "Done"
+    // Flow: click "Choose" span (nth=2) → select "Netherlands" option (nth=2) → click "Done"
+    // NOTE: .nth(2) is critical — there are 3 "Choose" spans and 3 "Netherlands" options on the page
     if (channel.domain === 'amazon.nl') {
       console.log(`  📍 NL flow: selecting Netherlands via country dropdown...`);
       let nlDone = false;
 
-      // Try clicking the "Choose" span (country selector)
+      // Strategy 1: codegen-exact — nth(2) for both Choose span and Netherlands option
       try {
-        const chooseSpan = page.locator('span').filter({ hasText: /^Choose$/ }).first();
-        if (await chooseSpan.isVisible({ timeout: 3000 }).catch(() => false)) {
-          await chooseSpan.click();
-          await page.waitForTimeout(1000);
-          // Select Netherlands
-          const nlOption = page.getByRole('option', { name: 'Netherlands' }).first();
-          if (await nlOption.isVisible({ timeout: 3000 }).catch(() => false)) {
-            await nlOption.click();
-            await page.waitForTimeout(500);
-            console.log(`  ✅ Selected Netherlands via country dropdown`);
-            nlDone = true;
+        // Log how many "Choose" spans exist for debugging
+        const chooseCount = await page.locator('span').filter({ hasText: /^Choose$/ }).count();
+        console.log(`  📍 NL: found ${chooseCount} "Choose" spans`);
+
+        // Try nth(2) first (codegen), then nth(1), then first()
+        for (const idx of [2, 1, 0]) {
+          const chooseSpan = page.locator('span').filter({ hasText: /^Choose$/ }).nth(idx);
+          if (await chooseSpan.isVisible({ timeout: 2000 }).catch(() => false)) {
+            console.log(`  📍 NL: clicking Choose span at index ${idx}`);
+            await chooseSpan.click();
+            await page.waitForTimeout(1000);
+
+            // Try nth(2), nth(1), nth(0) for the Netherlands option
+            for (const optIdx of [2, 1, 0]) {
+              const nlOption = page.getByRole('option', { name: 'Netherlands' }).nth(optIdx);
+              if (await nlOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+                await nlOption.click();
+                await page.waitForTimeout(500);
+                console.log(`  ✅ Selected Netherlands via country dropdown (span[${idx}], option[${optIdx}])`);
+                nlDone = true;
+                break;
+              }
+            }
+
+            // Also try native <select> with selectOption as fallback
+            if (!nlDone) {
+              try {
+                const selectEl = page.locator('select').nth(idx);
+                if (await selectEl.isVisible({ timeout: 1000 }).catch(() => false)) {
+                  await selectEl.selectOption({ label: 'Netherlands' });
+                  console.log(`  ✅ Selected Netherlands via <select> element`);
+                  nlDone = true;
+                }
+              } catch(e2) {}
+            }
+
+            if (nlDone) break;
           }
         }
       } catch (e) { console.log(`  ⚠️ NL country dropdown error: ${e.message}`); }
 
-      // Click Done
-      const doneBtn = page.getByRole('button', { name: 'Done' });
-      if (await doneBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-        await doneBtn.click();
-        console.log(`  ✅ Clicked Done for NL`);
+      // Strategy 2: if no "Choose" found, maybe location is already NL — check widget text
+      if (!nlDone) {
+        const widgetText = await page.locator('#nav-global-location-popover-link, #glow-ingress-block').textContent().catch(() => '');
+        if (/netherlands|nederland/i.test(widgetText)) {
+          console.log(`  ✅ NL: location already set to Netherlands — skipping`);
+          nlDone = true;
+        }
       }
-      if (!nlDone) throw new Error('NL country dropdown flow failed');
+
+      // Click Done/Apply
+      for (const btnName of ['Done', 'Klaar', 'Toepassen', 'Apply']) {
+        const doneBtn = page.getByRole('button', { name: btnName });
+        if (await doneBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await doneBtn.click();
+          console.log(`  ✅ Clicked "${btnName}" for NL`);
+          break;
+        }
+      }
+
+      if (!nlDone) throw new Error('NL country dropdown flow failed — no Choose span or Netherlands option found');
       return; // Skip the postal code section below
     }
 
