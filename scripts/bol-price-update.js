@@ -185,7 +185,8 @@ function formatPriceBol(price) {
     const page = await context.newPage();
 
     // ── 3. Navigate to product pricing page ──────────────────────────
-    const productUrl = `https://partner.bol.com/retailer/products/${ean}/offers/${offer_uid}/pricing`;
+    // Navigate to partner portal main page first — discover correct URL structure
+    const productUrl = `https://partner.bol.com/`;
     await dbLog('navigate', 'info', `Going to: ${productUrl}`);
 
     // ⚠️ ALTIJD 'domcontentloaded' — NOOIT 'networkidle' (SPAs hangen)
@@ -210,10 +211,20 @@ function formatPriceBol(price) {
       await dbLog('debug', 'warning', `Screenshot failed: ${e.message}`);
     }
 
-    // Log page title + first 2000 chars of body text for selector debugging
+    // Log page title + body text + ALL links for URL discovery
     const pageTitle = await page.title();
-    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '');
-    await dbLog('debug', 'info', `Title: ${pageTitle} | Body snippet: ${bodyText}`);
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 3000) || '');
+    await dbLog('debug', 'info', `Title: ${pageTitle} | URL: ${page.url()} | Body: ${bodyText}`);
+    
+    // Log all href links to discover correct URL structure
+    const allLinks = await page.evaluate(() => 
+      Array.from(document.querySelectorAll('a[href]'))
+        .map(a => a.href)
+        .filter(h => h.includes('partner.bol') || h.includes('/retailer'))
+        .slice(0, 50)
+        .join(' | ')
+    );
+    await dbLog('links', 'info', `All portal links: ${allLinks}`);
 
     // Wait for React to render form inputs (up to 15s)
     await dbLog('debug', 'info', 'Waiting for input elements (max 15s)...');
