@@ -263,12 +263,12 @@ function formatPriceBol(price) {
 
     await dbLog('page-loaded', 'success', `Logged in — URL: ${page.url()}`);
 
-    // ── 5. Navigate to offer pricing page ────────────────────────────
-    const offerUrl = `https://partner.bol.com/sdd/offers/${offer_uid}/price`;
-    await dbLog('navigate', 'info', `Going to offer pricing: ${offerUrl}`);
+    // ── 5. Navigate to product/offer page ──────────────────────────
+    const offerUrl = `https://partner.bol.com/sdd/assortment-new/product/${ean}?offerUid=${offer_uid}`;
+    await dbLog('navigate', 'info', `Going to product offer page: ${offerUrl}`);
     await page.goto(offerUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
     await page.waitForTimeout(3000);
-    await dbShot(page, 'offer-page', `Offer pricing page for ${offer_uid}`);
+    await dbShot(page, 'offer-page', `Product offer page for ${ean}`);
 
     // Log page state for debugging
     const offerPageUrl = page.url();
@@ -284,101 +284,73 @@ function formatPriceBol(price) {
 
     if (action === 'set') {
       // ── 4a. SET promotional price ──────────────────────────────────
+      // The product page shows "Prijs" section with:
+      //   Tijdelijke prijs | Huidig: € XX,XX | Nieuw: [input €]
+      // The "Nieuw" input is directly visible — no edit button needed.
 
-      // Look for "Prijs aanpassen" or "Wijzig" button
-      await dbLog('set-price', 'info', 'Looking for price edit button...');
-
-      const editButtons = [
-        page.getByText('Prijs aanpassen').first(),
-        page.getByText('Wijzig').first(),
-        page.getByText('Pas prijs aan').first(),
-        page.getByText('Bewerk').first(),
-        page.locator('[data-testid="edit-price-button"]').first(),
-      ];
-
-      let clicked = false;
-      for (const btn of editButtons) {
-        if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await dbLog('set-price', 'info', `Found button, clicking...`);
-          await btn.click();
-          await page.waitForTimeout(3000);
-          clicked = true;
-          break;
-        }
-      }
-
-      if (!clicked) {
-        await dbShot(page, 'no-edit-button', 'Could not find edit button');
-        await dbLog('set-price', 'warning', 'No edit button found — page may already be in edit mode');
-      }
-
-      await dbShot(page, 'after-edit-click', 'After clicking edit');
-
-      // Look for promotional price / tijdelijke prijs section
-      const promoToggle = [
-        page.getByText('Tijdelijke prijs').first(),
-        page.getByText('Tijdelijke actieprijs').first(),
-        page.getByText('Promotional price').first(),
-        page.locator('label:has-text("Tijdelijke")').first(),
-      ];
-
-      for (const toggle of promoToggle) {
-        if (await toggle.isVisible({ timeout: 2000 }).catch(() => false)) {
-          await dbLog('set-price', 'info', 'Found promotional price section');
-          await toggle.click();
-          await page.waitForTimeout(2000);
-          break;
-        }
-      }
-
-      await dbShot(page, 'promo-section', 'Promotional price section');
-
-      // Fill in the promotional price
       const priceStr = formatPriceBol(promotional_price);
-      const startStr = formatDateBol(start_date);
-      const endStr = formatDateBol(end_date);
+      await dbLog('set-price', 'info', `Setting price to: ${priceStr}`);
 
-      await dbLog('set-price', 'info', `Filling: price=${priceStr}, start=${startStr}, end=${endStr}`);
-
-      // Find price input fields — try various selectors
-      const priceInputs = await page.locator('input[type="text"], input[type="number"], input[inputmode="decimal"]').all();
-      await dbLog('set-price', 'info', `Found ${priceInputs.length} input fields on page`);
-
-      // Log each input's placeholder/label for debugging
-      for (let i = 0; i < priceInputs.length; i++) {
-        const ph = await priceInputs[i].getAttribute('placeholder').catch(() => '');
-        const name = await priceInputs[i].getAttribute('name').catch(() => '');
-        const ariaLabel = await priceInputs[i].getAttribute('aria-label').catch(() => '');
-        await dbLog('set-price', 'info', `Input ${i}: placeholder="${ph}" name="${name}" aria="${ariaLabel}"`);
+      // Scroll to Prijs section
+      const prijsHeader = page.getByText('Prijs', { exact: true }).first();
+      if (await prijsHeader.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await prijsHeader.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(1000);
       }
 
-      // Try to find specific fields by label/placeholder
-      const priceField = page.locator('input[name*="price"], input[placeholder*="prijs"], input[aria-label*="prijs"], input[aria-label*="price"]').first();
-      if (await priceField.isVisible({ timeout: 2000 }).catch(() => false)) {
-        await priceField.click({ clickCount: 3 }); // select all
+      await dbShot(page, 'prijs-section', 'Prijs section visible');
+
+      // Find the "Nieuw" input field next to "Tijdelijke prijs"
+      // It's an input with "€" prefix in the Nieuw column
+      const allInputs = await page.locator('input').all();
+      await dbLog('set-price', 'info', `Found ${allInputs.length} total inputs on page`);
+
+      // Log each input for debugging
+      for (let i = 0; i < Math.min(allInputs.length, 15); i++) {
+        const ph = await allInputs[i].getAttribute('placeholder').catch(() => '');
+        const name = await allInputs[i].getAttribute('name').catch(() => '');
+        const type = await allInputs[i].getAttribute('type').catch(() => '');
+        const val = await allInputs[i].inputValue().catch(() => '');
+        const ariaLabel = await allInputs[i].getAttribute('aria-label').catch(() => '');
+        await dbLog('set-price', 'info', `Input ${i}: type="${type}" name="${name}" placeholder="${ph}" value="${val}" aria="${ariaLabel}"`);
+      }
+
+      // Strategy: find the input in the "Nieuw" column of the Prijs table
+      // The input is near "Tijdelijke prijs" row, in the "Nieuw" column
+      // Try multiple selectors
+      let priceField = null;
+      
+      // Try 1: input near € symbol in Nieuw column
+      const euroInputs = await page.locator('input').all();
+      for (const input of euroInputs) {
+        const isVisible = await input.isVisible().catch(() => false);
+        if (!isVisible) continue;
+        // Check if this input is in the pricing section (near "Tijdelijke prijs" text)
+        const parent = await input.evaluate(el => {
+          // Walk up to find if we're in a price row
+          let node = el;
+          for (let i = 0; i < 10; i++) {
+            if (!node.parentElement) break;
+            node = node.parentElement;
+            if (node.textContent && node.textContent.includes('Tijdelijke prijs')) return 'prijs-row';
+          }
+          return '';
+        });
+        if (parent === 'prijs-row') {
+          priceField = input;
+          await dbLog('set-price', 'success', 'Found price input in Tijdelijke prijs row');
+          break;
+        }
+      }
+
+      if (priceField) {
+        await priceField.click({ clickCount: 3 });
+        await priceField.fill('');
         await priceField.type(priceStr, { delay: 50 });
         await dbLog('set-price', 'success', `Price filled: ${priceStr}`);
       } else {
-        await dbLog('set-price', 'warning', 'Could not find price field by name/placeholder — logging all inputs for manual review');
-      }
-
-      // Date fields
-      const dateInputs = await page.locator('input[type="date"], input[placeholder*="dd"], input[aria-label*="datum"], input[aria-label*="date"]').all();
-      await dbLog('set-price', 'info', `Found ${dateInputs.length} date-like inputs`);
-
-      for (let i = 0; i < dateInputs.length; i++) {
-        const ph = await dateInputs[i].getAttribute('placeholder').catch(() => '');
-        const ariaLabel = await dateInputs[i].getAttribute('aria-label').catch(() => '');
-        await dbLog('set-price', 'info', `Date input ${i}: placeholder="${ph}" aria="${ariaLabel}"`);
-      }
-
-      if (dateInputs.length >= 2) {
-        // First date = start, second = end
-        await dateInputs[0].click({ clickCount: 3 });
-        await dateInputs[0].type(startStr, { delay: 50 });
-        await dateInputs[1].click({ clickCount: 3 });
-        await dateInputs[1].type(endStr, { delay: 50 });
-        await dbLog('set-price', 'success', `Dates filled: ${startStr} → ${endStr}`);
+        await dbLog('set-price', 'error', 'Could not find price input in Tijdelijke prijs row');
+        await dbShot(page, 'no-price-input', 'Could not locate price input');
       }
 
       await dbShot(page, 'fields-filled', 'After filling all fields');
