@@ -155,16 +155,9 @@ function formatPriceBol(price) {
 
     await dbLog('init', 'info', `Action: ${action} | EAN: ${ean} | Price: €${promotional_price} | ${start_date} → ${end_date}`);
 
-    // ── 2. Launch stealth browser with cookies ───────────────────────
-    const storageStatePath = path.join(__dirname, 'bol-storage-state.json');
-    if (!fs.existsSync(storageStatePath)) {
-      throw new Error('bol-storage-state.json not found. Run cookie save script first.');
-    }
-    const storageState = JSON.parse(fs.readFileSync(storageStatePath, 'utf8'));
-
+    // ── 2. Launch stealth browser ─────────────────────────────────────
     await dbLog('browser', 'info', 'Launching stealth browser with proxy...');
 
-    // headless: false → Tim wil scripts zien tijdens debugging
     browser = await chromium.launch({
       headless: false,
       proxy: PROXY,
@@ -177,54 +170,111 @@ function formatPriceBol(price) {
       locale: 'nl-NL',
     });
 
-    // Load saved cookies
-    if (storageState.cookies && storageState.cookies.length > 0) {
-      await context.addCookies(storageState.cookies);
+    // Load saved cookies if available (cached session)
+    const storageStatePath = path.join(__dirname, 'bol-storage-state.json');
+    if (fs.existsSync(storageStatePath)) {
+      try {
+        const storageState = JSON.parse(fs.readFileSync(storageStatePath, 'utf8'));
+        if (storageState.cookies && storageState.cookies.length > 0) {
+          await context.addCookies(storageState.cookies);
+          await dbLog('cookies', 'info', `Loaded ${storageState.cookies.length} cookies from cache`);
+        }
+      } catch (e) {
+        await dbLog('cookies', 'warning', 'Failed to parse bol-storage-state.json — proceeding without');
+      }
+    } else {
+      await dbLog('cookies', 'info', 'No bol-storage-state.json found — will do form login');
     }
 
     const page = await context.newPage();
 
-    // ── 3. Navigate to product pricing page ──────────────────────────
-    // Navigate to partner portal main page first — discover correct URL structure
-    const productUrl = `https://partner.bol.com/`;
-    await dbLog('navigate', 'info', `Going to: ${productUrl}`);
+    // ── 3. Navigate to partner portal dashboard ───────────────────────
+    await dbLog('navigate', 'info', 'Going to: https://partner.bol.com/sdd/dashboard');
+    await page.goto('https://partner.bol.com/sdd/dashboard', { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(3000);
+    await dbShot(page, 'after-navigate', 'After dashboard navigation');
 
-    // ⚠️ ALTIJD 'domcontentloaded' — NOOIT 'networkidle' (SPAs hangen)
-    await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await page.waitForTimeout(5000);
+    // ── 4. Form login fallback if cookies expired/missing ─────────────
+    const currentUrl = page.url();
+    await dbLog('login-check', 'info', `Current URL: ${currentUrl}`);
 
-    await dbShot(page, 'page-loaded', 'Product pricing page');
+    if (!currentUrl.startsWith('https://partner.bol.com/sdd')) {
+      await dbLog('login', 'info', 'Not on partner portal — starting form login...');
 
-    // Check if we're logged in (redirect to login page = cookies expired)
-    if (page.url().includes('login') || page.url().includes('authorize')) {
-      throw new Error('Cookies expired — need to re-authenticate. Run bol-partner-save-cookies.js');
+      // Load credentials from Supabase Browser_Credentials
+      const credRes = await fetch(
+        `${SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.bol_seller&select=username,password`,
+        { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+      );
+      const credData = await credRes.json();
+      if (!credData || credData.length === 0) throw new Error('bol_seller credentials not found in Browser_Credentials');
+      const { username, password } = credData[0];
+      await dbLog('login', 'info', `Credentials loaded for: ${username}`);
+
+      // Navigate to login page
+      await page.goto('https://partner.bol.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2000);
+      await dbShot(page, 'login-page', 'Login page');
+
+      // Fill email
+      await page.waitForSelector('input[type="email"], input[name="username"], input[name="email"]', { timeout: 15000 });
+      await page.fill('input[type="email"], input[name="username"], input[name="email"]', username);
+      await dbLog('login', 'info', 'Email filled');
+
+      // Click Next / Volgende if present (two-step login)
+      try {
+        const nextBtn = page.locator('button:has-text("Volgende"), button:has-text("Next"), button[type="submit"]').first();
+        await nextBtn.click({ timeout: 5000 });
+        await page.waitForTimeout(2000);
+        await dbShot(page, 'login-after-email', 'After email step');
+      } catch (e) {
+        await dbLog('login', 'info', 'No next button — single-step form');
+      }
+
+      // Fill password
+      await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+      await page.fill('input[type="password"]', password);
+      await dbLog('login', 'info', 'Password filled');
+
+      // Submit
+      await page.click('button[type="submit"], button:has-text("Inloggen"), button:has-text("Log in")');
+      await dbLog('login', 'info', 'Submitted login form');
+
+      // Wait for partner portal
+      try {
+        await page.waitForURL('**/partner.bol.com/sdd/**', { timeout: 30000 });
+        await dbLog('login', 'success', `Logged in — URL: ${page.url()}`);
+      } catch (e) {
+        await dbShot(page, 'login-failed', 'Login failed or redirected');
+        throw new Error(`Form login failed — final URL: ${page.url()}`);
+      }
+
+      // Save cookies for next run
+      try {
+        const cookies = await context.cookies();
+        fs.writeFileSync(storageStatePath, JSON.stringify({ cookies }, null, 2));
+        await dbLog('cookies', 'success', `Saved ${cookies.length} cookies to bol-storage-state.json`);
+      } catch (e) {
+        await dbLog('cookies', 'warning', 'Could not save cookies: ' + e.message);
+      }
+    } else {
+      await dbLog('login', 'success', 'Already logged in via cached cookies ✅');
     }
 
-    await dbLog('page-loaded', 'success', `URL: ${page.url()}`);
+    await dbLog('page-loaded', 'success', `Logged in — URL: ${page.url()}`);
 
-    // ── Debug: save screenshot + log page content ─────────────────────
-    try {
-      const screenshotPath = 'C:\\Users\\Tim\\playwright-render-service\\debug-bol-pricing.png';
-      await page.screenshot({ path: screenshotPath, fullPage: true });
-      await dbLog('debug', 'info', `Screenshot saved to: ${screenshotPath}`);
-    } catch (e) {
-      await dbLog('debug', 'warning', `Screenshot failed: ${e.message}`);
-    }
+    // ── 5. Navigate to offer pricing page ────────────────────────────
+    const offerUrl = `https://partner.bol.com/sdd/offers/${offer_uid}/price`;
+    await dbLog('navigate', 'info', `Going to offer pricing: ${offerUrl}`);
+    await page.goto(offerUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+    await page.waitForTimeout(3000);
+    await dbShot(page, 'offer-page', `Offer pricing page for ${offer_uid}`);
 
-    // Log page title + body text + ALL links for URL discovery
-    const pageTitle = await page.title();
-    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 3000) || '');
-    await dbLog('debug', 'info', `Title: ${pageTitle} | URL: ${page.url()} | Body: ${bodyText}`);
-    
-    // Log all href links to discover correct URL structure
-    const allLinks = await page.evaluate(() => 
-      Array.from(document.querySelectorAll('a[href]'))
-        .map(a => a.href)
-        .filter(h => h.includes('partner.bol') || h.includes('/retailer'))
-        .slice(0, 50)
-        .join(' | ')
-    );
-    await dbLog('links', 'info', `All portal links: ${allLinks}`);
+    // Log page state for debugging
+    const offerPageUrl = page.url();
+    const offerTitle = await page.title();
+    const offerBody = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '');
+    await dbLog('offer-page-debug', 'info', `URL: ${offerPageUrl} | Title: ${offerTitle} | Body: ${offerBody.substring(0, 500)}`);
 
     // Wait for React to render form inputs (up to 15s)
     await dbLog('debug', 'info', 'Waiting for input elements (max 15s)...');
