@@ -317,29 +317,85 @@ function formatPriceBol(price) {
 
       // Strategy: find the input in the "Nieuw" column of the Prijs table
       // The input is near "Tijdelijke prijs" row, in the "Nieuw" column
-      // Try multiple selectors
+      // Target the BOTTOM "Tijdelijke prijs" SECTION (not the top summary table row).
+      // The page has two areas with "Tijdelijke prijs":
+      //   1. TOP: summary table row "Tijdelijke prijs | Huidig: €XX | Nieuw: [input]" — WRONG
+      //   2. BOTTOM: standalone section with heading "Tijdelijke prijs", its own price input + date fields — CORRECT
+      // Strategy: find the SECTION heading "Tijdelijke prijs" (h2/h3/h4 or section header),
+      // then find the first input AFTER that heading.
       let priceField = null;
-      
-      // Try 1: input near € symbol in Nieuw column
-      const euroInputs = await page.locator('input').all();
-      for (const input of euroInputs) {
-        const isVisible = await input.isVisible().catch(() => false);
-        if (!isVisible) continue;
-        // Check if this input is in the pricing section (near "Tijdelijke prijs" text)
-        const parent = await input.evaluate(el => {
-          // Walk up to find if we're in a price row
-          let node = el;
-          for (let i = 0; i < 10; i++) {
-            if (!node.parentElement) break;
-            node = node.parentElement;
-            if (node.textContent && node.textContent.includes('Tijdelijke prijs')) return 'prijs-row';
+
+      // Find the "Tijdelijke prijs" section heading (not table cell)
+      const sectionInput = await page.evaluate(() => {
+        // Find all elements that contain exactly "Tijdelijke prijs" as heading-like text
+        const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6, [class*="heading"], [class*="title"], [class*="header"], [class*="section"]');
+        for (const h of headings) {
+          if (h.textContent.trim() === 'Tijdelijke prijs' || h.textContent.trim().startsWith('Tijdelijke prijs')) {
+            // Found the section heading — now find the first input AFTER it in DOM order
+            const section = h.closest('section, div[class*="section"], div[class*="card"], div[class*="block"], div[class*="panel"]') || h.parentElement;
+            if (section) {
+              const inputs = section.querySelectorAll('input');
+              for (const inp of inputs) {
+                if (inp.offsetParent !== null && inp.type !== 'hidden') {
+                  return { found: true, method: 'section-heading' };
+                }
+              }
+            }
           }
-          return '';
-        });
-        if (parent === 'prijs-row') {
-          priceField = input;
-          await dbLog('set-price', 'success', 'Found price input in Tijdelijke prijs row');
-          break;
+        }
+        return { found: false };
+      });
+
+      if (sectionInput.found) {
+        // Re-locate: find the section heading, get parent section, get first visible input
+        const headingLocator = page.locator('h1, h2, h3, h4, h5, h6, [class*="heading"], [class*="title"], [class*="header"]').filter({ hasText: /^Tijdelijke prijs/ });
+        const headingCount = await headingLocator.count();
+        await dbLog('set-price', 'info', `Found ${headingCount} "Tijdelijke prijs" headings`);
+        
+        if (headingCount > 0) {
+          // Get the section container and find input within it
+          priceField = await headingLocator.first().locator('xpath=ancestor::section | ancestor::div[contains(@class,"section")] | ancestor::div[contains(@class,"card")] | ancestor::div[contains(@class,"block")] | ancestor::div[contains(@class,"panel")] | ..').locator('input:visible').first();
+          const isVis = await priceField.isVisible({ timeout: 3000 }).catch(() => false);
+          if (isVis) {
+            await dbLog('set-price', 'success', `Found price input via section heading method`);
+          } else {
+            priceField = null;
+          }
+        }
+      }
+
+      // Fallback: find by position — the Tijdelijke prijs input is the LAST visible price-like input
+      if (!priceField) {
+        await dbLog('set-price', 'info', 'Section heading method failed, trying positional fallback...');
+        const allInputs = await page.locator('input:visible').all();
+        // Log all visible inputs for debugging
+        for (let i = 0; i < Math.min(allInputs.length, 20); i++) {
+          const val = await allInputs[i].inputValue().catch(() => '');
+          const ph = await allInputs[i].getAttribute('placeholder').catch(() => '');
+          const type = await allInputs[i].getAttribute('type').catch(() => '');
+          const box = await allInputs[i].boundingBox().catch(() => null);
+          const y = box ? Math.round(box.y) : '?';
+          await dbLog('set-price', 'info', `Input ${i}: y=${y} type="${type}" val="${val}" ph="${ph}"`);
+        }
+        
+        // The "Tijdelijke prijs" section is BELOW the summary table.
+        // Find inputs that are in the lower part of the page (higher Y coordinate).
+        // The price input in the section typically has a value like "48,95" or is empty.
+        const inputsWithY = [];
+        for (const input of allInputs) {
+          const box = await input.boundingBox().catch(() => null);
+          if (box) inputsWithY.push({ input, y: box.y });
+        }
+        inputsWithY.sort((a, b) => a.y - b.y);
+        
+        // The bottom section's price input should be below the midpoint of all inputs
+        if (inputsWithY.length >= 2) {
+          const midY = inputsWithY[Math.floor(inputsWithY.length / 2)].y;
+          const bottomInputs = inputsWithY.filter(i => i.y >= midY);
+          if (bottomInputs.length > 0) {
+            priceField = bottomInputs[0].input;
+            await dbLog('set-price', 'success', `Using positional fallback — bottom input at y=${Math.round(bottomInputs[0].y)}`);
+          }
         }
       }
 
