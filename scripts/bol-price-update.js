@@ -185,7 +185,7 @@ function formatPriceBol(price) {
     const page = await context.newPage();
 
     // ── 3. Navigate to product pricing page ──────────────────────────
-    const productUrl = `https://partner.bol.com/retailer/products/${ean}/offers/offerUid=${offer_uid}/pricing`;
+    const productUrl = `https://partner.bol.com/retailer/products/${ean}/offers/${offer_uid}/pricing`;
     await dbLog('navigate', 'info', `Going to: ${productUrl}`);
 
     // ⚠️ ALTIJD 'domcontentloaded' — NOOIT 'networkidle' (SPAs hangen)
