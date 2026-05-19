@@ -1096,17 +1096,52 @@ async function scrapeBolcom() {
       let raw = null;
       
       // Strategy 1: Parse JSON-LD <script type="application/ld+json"> blocks
-      // Find the Product schema with the correct price
+      // CRITICAL: Bol.com uses ProductGroup (not Product) with hasVariant[] for multi-variant pages
+      // Each variant has its own URL containing the Bol product ID — match on that
+      const bolProductId = product.url.match(/\/(\d+)\/?$/)?.[1];
       const ldJsonBlocks = html.match(/<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi) || [];
       for (const block of ldJsonBlocks) {
         try {
           const jsonStr = block.replace(/<script[^>]*>|<\/script>/gi, '').trim();
           const data = JSON.parse(jsonStr);
           
-          // Handle both direct Product and @graph arrays
-          const items = Array.isArray(data['@graph']) ? data['@graph'] : [data];
+          // Handle both direct objects and @graph arrays
+          const items = Array.isArray(data['@graph']) ? data['@graph'] : (Array.isArray(data) ? data : [data]);
           for (const item of items) {
-            if (item['@type'] === 'Product' && item.offers) {
+            // Case 1: ProductGroup with hasVariant[] — match the correct variant by Bol product ID
+            if (item['@type'] === 'ProductGroup' && item.hasVariant) {
+              const variants = Array.isArray(item.hasVariant) ? item.hasVariant : [item.hasVariant];
+              console.log(`    🔍 ProductGroup found with ${variants.length} variants`);
+              
+              // Try to match variant by URL containing our Bol product ID
+              let matchedVariant = null;
+              if (bolProductId) {
+                matchedVariant = variants.find(v => v.url && v.url.includes(bolProductId));
+                if (matchedVariant) {
+                  console.log(`    ✅ Matched variant by product ID ${bolProductId}: ${matchedVariant.name || 'unnamed'}`);
+                } else {
+                  console.log(`    ⚠️ No variant URL matched product ID ${bolProductId} — using first variant`);
+                  matchedVariant = variants[0];
+                }
+              } else {
+                matchedVariant = variants[0];
+              }
+              
+              if (matchedVariant && matchedVariant.offers) {
+                const offers = Array.isArray(matchedVariant.offers) ? matchedVariant.offers : [matchedVariant.offers];
+                for (const offer of offers) {
+                  if (offer.price || offer.price === 0) {
+                    price = parseFloat(String(offer.price).replace(',', '.'));
+                    raw = `€${offer.price}`;
+                    console.log(`    💎 ProductGroup variant price: €${price}`);
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // Case 2: Direct Product (legacy/fallback)
+            if (!price && item['@type'] === 'Product' && item.offers) {
               const offers = Array.isArray(item.offers) ? item.offers : [item.offers];
               for (const offer of offers) {
                 if (offer.price || offer.price === 0) {
@@ -1151,6 +1186,7 @@ async function scrapeBolcom() {
       const inStock = hasOpVoorraad ? true : !hasNietLeverbaar;
 
       // Extract rating + review count from JSON-LD (same source as price)
+      // CRITICAL: Rating lives on the ProductGroup level (shared across all variants), not on individual variants
       let rating = null;
       let reviewCount = null;
       try {
@@ -1158,13 +1194,18 @@ async function scrapeBolcom() {
         for (const block of jsonLdBlocks) {
           const jsonStr = block.replace(/<\/?script[^>]*>/gi, '').trim();
           const parsed = JSON.parse(jsonStr);
-          const product = Array.isArray(parsed) ? parsed.find(p => p['@type'] === 'Product') : (parsed['@type'] === 'Product' ? parsed : null);
-          if (product && product.aggregateRating) {
-            const ar = product.aggregateRating;
-            if (ar.ratingValue) rating = parseFloat(String(ar.ratingValue).replace(',', '.'));
-            if (ar.reviewCount) reviewCount = parseInt(String(ar.reviewCount));
-            break;
+          const items = Array.isArray(parsed) ? parsed : (parsed['@graph'] ? parsed['@graph'] : [parsed]);
+          for (const item of items) {
+            // Check both ProductGroup and Product for aggregateRating
+            if ((item['@type'] === 'ProductGroup' || item['@type'] === 'Product') && item.aggregateRating) {
+              const ar = item.aggregateRating;
+              if (ar.ratingValue) rating = parseFloat(String(ar.ratingValue).replace(',', '.'));
+              if (ar.reviewCount) reviewCount = parseInt(String(ar.reviewCount));
+              console.log(`    ⭐ Rating from ${item['@type']}: ${rating} (${reviewCount} reviews)`);
+              break;
+            }
           }
+          if (rating) break;
         }
       } catch (e) {
         console.log(`    ⚠️ JSON-LD rating parse error: ${e.message}`);
