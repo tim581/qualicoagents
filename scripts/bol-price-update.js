@@ -33,7 +33,7 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const TASK_ID = process.env.BROWSER_TASK_ID;
 
 const PROXY = {
-  server: 'http://nl.decodo.com:10001',
+  server: 'http://gate.decodo.com:10001',
   username: 'spx615l7f1',
   password: 'BHrGlyvt9mRqv2=j62'
 };
