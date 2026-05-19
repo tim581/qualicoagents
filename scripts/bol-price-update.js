@@ -201,6 +201,26 @@ function formatPriceBol(price) {
 
     await dbLog('page-loaded', 'success', `URL: ${page.url()}`);
 
+    // ── Debug: save screenshot + log page content ─────────────────────
+    try {
+      const screenshotPath = 'C:\\Users\\Tim\\playwright-render-service\\debug-bol-pricing.png';
+      await page.screenshot({ path: screenshotPath, fullPage: true });
+      await dbLog('debug', 'info', `Screenshot saved to: ${screenshotPath}`);
+    } catch (e) {
+      await dbLog('debug', 'warning', `Screenshot failed: ${e.message}`);
+    }
+
+    // Log page title + first 2000 chars of body text for selector debugging
+    const pageTitle = await page.title();
+    const bodyText = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '');
+    await dbLog('debug', 'info', `Title: ${pageTitle} | Body snippet: ${bodyText}`);
+
+    // Wait for React to render form inputs (up to 15s)
+    await dbLog('debug', 'info', 'Waiting for input elements (max 15s)...');
+    await page.waitForSelector('input, textarea, [role="textbox"], [contenteditable]', { timeout: 15000 }).catch(async (e) => {
+      await dbLog('debug', 'warning', `No inputs appeared after 15s: ${e.message}`);
+    });
+
     if (action === 'set') {
       // ── 4a. SET promotional price ──────────────────────────────────
 
