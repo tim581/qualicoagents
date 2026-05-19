@@ -300,113 +300,45 @@ function formatPriceBol(price) {
 
       await dbShot(page, 'prijs-section', 'Prijs section visible');
 
-      // Find the "Nieuw" input field next to "Tijdelijke prijs"
-      // It's an input with "€" prefix in the Nieuw column
-      const allInputs = await page.locator('input').all();
-      await dbLog('set-price', 'info', `Found ${allInputs.length} total inputs on page`);
-
-      // Log each input for debugging
-      for (let i = 0; i < Math.min(allInputs.length, 15); i++) {
-        const ph = await allInputs[i].getAttribute('placeholder').catch(() => '');
-        const name = await allInputs[i].getAttribute('name').catch(() => '');
-        const type = await allInputs[i].getAttribute('type').catch(() => '');
-        const val = await allInputs[i].inputValue().catch(() => '');
-        const ariaLabel = await allInputs[i].getAttribute('aria-label').catch(() => '');
-        await dbLog('set-price', 'info', `Input ${i}: type="${type}" name="${name}" placeholder="${ph}" value="${val}" aria="${ariaLabel}"`);
-      }
-
-      // Strategy: find the input in the "Nieuw" column of the Prijs table
-      // The input is near "Tijdelijke prijs" row, in the "Nieuw" column
-      // Target the BOTTOM "Tijdelijke prijs" SECTION (not the top summary table row).
-      // The page has two areas with "Tijdelijke prijs":
-      //   1. TOP: summary table row "Tijdelijke prijs | Huidig: €XX | Nieuw: [input]" — WRONG
-      //   2. BOTTOM: standalone section with heading "Tijdelijke prijs", its own price input + date fields — CORRECT
-      // Strategy: find the SECTION heading "Tijdelijke prijs" (h2/h3/h4 or section header),
-      // then find the first input AFTER that heading.
-      let priceField = null;
-
-      // Find the "Tijdelijke prijs" section heading (not table cell)
-      const sectionInput = await page.evaluate(() => {
-        // Find all elements that contain exactly "Tijdelijke prijs" as heading-like text
-        const headings = document.querySelectorAll('h1, h2, h3, h4, h5, h6, [class*="heading"], [class*="title"], [class*="header"], [class*="section"]');
-        for (const h of headings) {
-          if (h.textContent.trim() === 'Tijdelijke prijs' || h.textContent.trim().startsWith('Tijdelijke prijs')) {
-            // Found the section heading — now find the first input AFTER it in DOM order
-            const section = h.closest('section, div[class*="section"], div[class*="card"], div[class*="block"], div[class*="panel"]') || h.parentElement;
-            if (section) {
-              const inputs = section.querySelectorAll('input');
-              for (const inp of inputs) {
-                if (inp.offsetParent !== null && inp.type !== 'hidden') {
-                  return { found: true, method: 'section-heading' };
-                }
-              }
-            }
-          }
-        }
-        return { found: false };
-      });
-
-      if (sectionInput.found) {
-        // Re-locate: find the section heading, get parent section, get first visible input
-        const headingLocator = page.locator('h1, h2, h3, h4, h5, h6, [class*="heading"], [class*="title"], [class*="header"]').filter({ hasText: /^Tijdelijke prijs/ });
-        const headingCount = await headingLocator.count();
-        await dbLog('set-price', 'info', `Found ${headingCount} "Tijdelijke prijs" headings`);
-        
-        if (headingCount > 0) {
-          // Get the section container and find input within it
-          priceField = await headingLocator.first().locator('xpath=ancestor::section | ancestor::div[contains(@class,"section")] | ancestor::div[contains(@class,"card")] | ancestor::div[contains(@class,"block")] | ancestor::div[contains(@class,"panel")] | ..').locator('input:visible').first();
-          const isVis = await priceField.isVisible({ timeout: 3000 }).catch(() => false);
-          if (isVis) {
-            await dbLog('set-price', 'success', `Found price input via section heading method`);
-          } else {
-            priceField = null;
-          }
-        }
-      }
-
-      // Fallback: find by position — the Tijdelijke prijs input is the LAST visible price-like input
-      if (!priceField) {
-        await dbLog('set-price', 'info', 'Section heading method failed, trying positional fallback...');
-        const allInputs = await page.locator('input:visible').all();
-        // Log all visible inputs for debugging
-        for (let i = 0; i < Math.min(allInputs.length, 20); i++) {
-          const val = await allInputs[i].inputValue().catch(() => '');
-          const ph = await allInputs[i].getAttribute('placeholder').catch(() => '');
-          const type = await allInputs[i].getAttribute('type').catch(() => '');
-          const box = await allInputs[i].boundingBox().catch(() => null);
-          const y = box ? Math.round(box.y) : '?';
-          await dbLog('set-price', 'info', `Input ${i}: y=${y} type="${type}" val="${val}" ph="${ph}"`);
-        }
-        
-        // The "Tijdelijke prijs" section is BELOW the summary table.
-        // Find inputs that are in the lower part of the page (higher Y coordinate).
-        // The price input in the section typically has a value like "48,95" or is empty.
-        const inputsWithY = [];
-        for (const input of allInputs) {
-          const box = await input.boundingBox().catch(() => null);
-          if (box) inputsWithY.push({ input, y: box.y });
-        }
-        inputsWithY.sort((a, b) => a.y - b.y);
-        
-        // The bottom section's price input should be below the midpoint of all inputs
-        if (inputsWithY.length >= 2) {
-          const midY = inputsWithY[Math.floor(inputsWithY.length / 2)].y;
-          const bottomInputs = inputsWithY.filter(i => i.y >= midY);
-          if (bottomInputs.length > 0) {
-            priceField = bottomInputs[0].input;
-            await dbLog('set-price', 'success', `Using positional fallback — bottom input at y=${Math.round(bottomInputs[0].y)}`);
-          }
-        }
-      }
-
-      if (priceField) {
+      // Direct selector: use the exact input name from Bol.com's React form
+      // Input 0: name="price" → TOP summary "Nieuw" field (WRONG)
+      // Input 2: name="promotions.0.price" → Tijdelijke prijs section (CORRECT)
+      // Input 3: name="promotions.0.dateRange" → Date range (already set)
+      const priceField = page.locator('input[name="promotions.0.price"]');
+      const dateField = page.locator('input[name="promotions.0.dateRange"]');
+      
+      if (await priceField.isVisible({ timeout: 5000 }).catch(() => false)) {
+        // Clear and fill the promotional price
         await priceField.click({ clickCount: 3 });
         await priceField.fill('');
         await priceField.type(priceStr, { delay: 50 });
-        await dbLog('set-price', 'success', `Price filled: ${priceStr}`);
+        await dbLog('set-price', 'success', `Promotional price filled: ${priceStr} (via promotions.0.price)`);
+        
+        // Check if date range needs to be set
+        const currentDateRange = await dateField.inputValue().catch(() => '');
+        await dbLog('set-price', 'info', `Current date range: "${currentDateRange}"`);
+        
+        // Only update date if it's different or empty
+        if (!currentDateRange || currentDateRange === 'Kies periode') {
+          await dbLog('set-price', 'info', 'Date range empty — clicking to set dates...');
+          await dateField.click();
+          await page.waitForTimeout(1000);
+          // Date picker interaction would go here if needed
+          await dbLog('set-price', 'warning', 'Date picker opened — manual date setting may be needed');
+        } else {
+          await dbLog('set-price', 'info', `Date range already set: ${currentDateRange}`);
+        }
       } else {
-        await dbLog('set-price', 'error', 'Could not find price input in Tijdelijke prijs row');
-        await dbShot(page, 'no-price-input', 'Could not locate price input');
+        await dbLog('set-price', 'error', 'promotions.0.price input NOT found — page structure may have changed');
+        // Log all inputs for debugging
+        const allInputs = await page.locator('input').all();
+        await dbLog('set-price', 'info', `Found ${allInputs.length} total inputs on page`);
+        for (let i = 0; i < Math.min(allInputs.length, 15); i++) {
+          const name = await allInputs[i].getAttribute('name').catch(() => '');
+          const val = await allInputs[i].inputValue().catch(() => '');
+          await dbLog('set-price', 'info', `Input ${i}: name="${name}" value="${val}"`);
+        }
+        await dbShot(page, 'no-promo-input', 'promotions.0.price not found');
       }
 
       await dbShot(page, 'fields-filled', 'After filling all fields');
@@ -442,11 +374,23 @@ function formatPriceBol(price) {
 
       await dbShot(page, 'after-save', 'After save attempt');
 
-      // Check for error banners
-      const errorBanner = page.locator('.error, [role="alert"], .notification--error, [data-testid="error"]').first();
+      // Check for error banners (ignore empty alerts like chatbot widgets)
+      const errorBanner = page.locator('.notification--error, [data-testid="error"], .error-message').first();
       if (await errorBanner.isVisible({ timeout: 2000 }).catch(() => false)) {
-        const errText = await errorBanner.textContent().catch(() => 'Unknown error');
-        throw new Error(`Bol.com error after save: ${errText}`);
+        const errText = (await errorBanner.textContent().catch(() => '')).trim();
+        if (errText && errText.length > 3) {
+          throw new Error(`Bol.com error after save: ${errText}`);
+        }
+        await dbLog('save', 'info', `Ignored empty/irrelevant error element`);
+      }
+
+      // Check for success indicators
+      const successBanner = page.locator('.notification--success, [data-testid="success"]').first();
+      if (await successBanner.isVisible({ timeout: 3000 }).catch(() => false)) {
+        const successText = await successBanner.textContent().catch(() => '');
+        await dbLog('save', 'success', `Save confirmed: ${successText.trim()}`);
+      } else {
+        await dbLog('save', 'info', 'No explicit success banner — save may still have succeeded');
       }
 
       const result = {
