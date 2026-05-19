@@ -1,123 +1,172 @@
 /**
- * bol-price-update.js
- * ====================
- * Sets or updates a "Tijdelijke prijs" (promotional price) on Bol.com Partner Portal.
- * Built on top of bol-seller-template.js (stealth + cookies + Decodo proxy).
+ * bol-price-update.js  v1.0 — Sets/removes "Tijdelijke prijs" on Bol.com Partner Portal
  *
- * INPUT (via Browser_Tasks.actions JSON):
- * {
- *   "ean": "9300000117610237",          // Bol product ID (EAN or bol product ID)
- *   "offer_uid": "4ab15dc1-...",        // Offer UUID from Bol
- *   "promotional_price": 48.95,         // New promotional price in EUR
- *   "start_date": "2026-05-19",         // Start date (YYYY-MM-DD)
- *   "end_date": "2026-09-30",           // End date (YYYY-MM-DD)
- *   "action": "set" | "remove"          // "set" = create/update promo, "remove" = delete promo
- * }
+ * USAGE:
+ * INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, credentials_key, status)
+ * VALUES ('tasklet', 'bol-price-update', 'https://partner.bol.com', '[
+ *   {"ean":"9300000117610237","offer_uid":"4ab15dc1-f68f-4d87-894b-b26d298c3afa",
+ *    "promotional_price":48.95,"start_date":"2026-05-19","end_date":"2026-09-30","action":"set"}
+ * ]'::jsonb, 'bol_seller', 'pending');
  *
- * OUTPUT (written to Browser_Tasks.result):
- * {
- *   "success": true/false,
- *   "data": { "old_price": ..., "new_price": ..., "period": ... },
- *   "error": null | "error message"
- * }
- *
- * Version: 1.0.0
+ * actions[0] fields:
+ *   ean              - Bol product ID
+ *   offer_uid        - Offer UUID from Bol
+ *   promotional_price - Price in EUR (for action "set")
+ *   start_date       - YYYY-MM-DD (for action "set")
+ *   end_date         - YYYY-MM-DD (for action "set")
+ *   action           - "set" or "remove"
  */
+
+'use strict';
+require('dotenv').config();
 
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { createClient } = require('@supabase/supabase-js');
+chromium.use(StealthPlugin());
+
 const path = require('path');
 const fs = require('fs');
 
-chromium.use(StealthPlugin());
+// ── CONFIG ────────────────────────────────────────────────────────────
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const TASK_ID = process.env.BROWSER_TASK_ID;
 
-// ─── Config ───────────────────────────────────────────────────────────────────
 const PROXY = {
   server: 'http://nl.decodo.com:10001',
   username: 'spx615l7f1',
   password: 'BHrGlyvt9mRqv2=j62'
 };
 
-const SUPABASE_URL = 'https://zlteahycfmpiaxdbnlvr.supabase.co';
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const TASK_ID = process.env.BROWSER_TASK_ID;
+const RUN_ID = `bolprice_${Date.now()}`;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// ── SELF-DEBUGGING: LOG NAAR SUPABASE ─────────────────────────────────
+async function dbLog(step, status, message) {
+  const short = (message || '').toString().substring(0, 3000);
+  console.log(`  [DB:${status}] ${step}: ${short.substring(0, 120)}`);
+  try {
+    await fetch(`${SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ run_id: RUN_ID, step, status, message: short }),
+    });
+  } catch (e) { /* nooit de main flow breken */ }
+}
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+async function dbShot(page, step, label) {
+  try {
+    const buf = await page.screenshot({ fullPage: false });
+    const b64 = buf.toString('base64').substring(0, 400000);
+    await fetch(`${SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ run_id: RUN_ID, step, status: 'screenshot', message: label, screenshot: b64 }),
+    });
+  } catch (e) { /* nooit de main flow breken */ }
+}
 
-/**
- * Format date from YYYY-MM-DD to DD-MM-YYYY (Bol.com format)
- */
+// ── HELPERS ────────────────────────────────────────────────────────────
+
+/** Load task from Supabase */
+async function loadTask() {
+  if (!TASK_ID) return null;
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/Browser_Tasks?id=eq.${TASK_ID}&select=actions,credentials_key`,
+    {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+      },
+    }
+  );
+  const data = await res.json();
+  if (!data || data.length === 0) throw new Error(`Task ${TASK_ID} not found`);
+  return data[0];
+}
+
+/** Write result back to Browser_Tasks */
+async function writeResult(status, result, errorMessage) {
+  if (!TASK_ID) return;
+  const body = {
+    status,
+    result: typeof result === 'string' ? result : JSON.stringify(result),
+    completed_at: new Date().toISOString(),
+  };
+  if (errorMessage) body.error_message = errorMessage.substring(0, 3000);
+  await fetch(
+    `${SUPABASE_URL}/rest/v1/Browser_Tasks?id=eq.${TASK_ID}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify(body),
+    }
+  );
+}
+
+/** Format date from YYYY-MM-DD to DD-MM-YYYY (Bol.com format) */
 function formatDateBol(isoDate) {
   const [y, m, d] = isoDate.split('-');
   return `${d}-${m}-${y}`;
 }
 
-/**
- * Format price to Dutch locale string (e.g. 48.95 → "48,95")
- */
+/** Format price to Dutch locale (48.95 → "48,95") */
 function formatPriceBol(price) {
   return price.toFixed(2).replace('.', ',');
 }
 
-/**
- * Wait and retry helper
- */
-async function waitAndRetry(fn, retries = 3, delay = 2000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await fn();
-    } catch (e) {
-      if (i === retries - 1) throw e;
-      console.log(`[price-update] Retry ${i + 1}/${retries}...`);
-      await new Promise(r => setTimeout(r, delay));
-    }
-  }
-}
-
-// ─── Main ─────────────────────────────────────────────────────────────────────
+// ── MAIN ───────────────────────────────────────────────────────────────
 (async () => {
   let browser;
-  const result = { success: false, data: null, error: null };
 
   try {
-    // ── 1. Load task parameters ───────────────────────────────────────────
-    let taskParams;
-    if (TASK_ID) {
-      const { data: task, error } = await supabase
-        .from('Browser_Tasks')
-        .select('actions')
-        .eq('id', TASK_ID)
-        .single();
-      if (error) throw new Error(`Failed to load task: ${error.message}`);
-      taskParams = typeof task.actions === 'string' ? JSON.parse(task.actions) : task.actions;
+    // ── 1. Load task parameters ──────────────────────────────────────
+    const task = await loadTask();
+    let params;
+    if (task && task.actions) {
+      const actions = typeof task.actions === 'string' ? JSON.parse(task.actions) : task.actions;
+      params = Array.isArray(actions) ? actions[0] : actions;
     } else {
-      // Allow running standalone with env vars for testing
-      taskParams = JSON.parse(process.env.TASK_PARAMS || '{}');
+      params = JSON.parse(process.env.TASK_PARAMS || '{}');
     }
 
-    const { ean, offer_uid, promotional_price, start_date, end_date, action = 'set' } = taskParams;
+    const { ean, offer_uid, promotional_price, start_date, end_date, action = 'set' } = params;
 
     if (!ean || !offer_uid) {
       throw new Error('Missing required params: ean, offer_uid');
     }
     if (action === 'set' && (!promotional_price || !start_date || !end_date)) {
-      throw new Error('For action "set": promotional_price, start_date, end_date are required');
+      throw new Error('For action "set": promotional_price, start_date, end_date required');
     }
 
-    console.log(`[price-update] Action: ${action} | Product: ${ean} | Price: €${promotional_price} | Period: ${start_date} → ${end_date}`);
+    await dbLog('init', 'info', `Action: ${action} | EAN: ${ean} | Price: €${promotional_price} | ${start_date} → ${end_date}`);
 
-    // ── 2. Launch stealth browser ─────────────────────────────────────────
+    // ── 2. Launch stealth browser with cookies ───────────────────────
     const storageStatePath = path.join(__dirname, 'bol-storage-state.json');
     if (!fs.existsSync(storageStatePath)) {
-      throw new Error('bol-storage-state.json not found. Run convert-cookies.js first.');
+      throw new Error('bol-storage-state.json not found. Run cookie save script first.');
     }
     const storageState = JSON.parse(fs.readFileSync(storageStatePath, 'utf8'));
 
+    await dbLog('browser', 'info', 'Launching stealth browser with proxy...');
+
+    // headless: false → Tim wil scripts zien tijdens debugging
     browser = await chromium.launch({
-      headless: true,
+      headless: false,
       proxy: PROXY,
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
@@ -128,261 +177,224 @@ async function waitAndRetry(fn, retries = 3, delay = 2000) {
       locale: 'nl-NL',
     });
 
+    // Load saved cookies
     if (storageState.cookies && storageState.cookies.length > 0) {
       await context.addCookies(storageState.cookies);
     }
 
     const page = await context.newPage();
 
-    // ── 3. Navigate to product pricing page ───────────────────────────────
-    const productUrl = `https://partner.bol.com/sdd/assortment-new/product/${ean}/?offerUid=${offer_uid}`;
-    console.log(`[price-update] Navigating to: ${productUrl}`);
+    // ── 3. Navigate to product pricing page ──────────────────────────
+    const productUrl = `https://partner.bol.com/retailer/products/${ean}/offers/offerUid=${offer_uid}/pricing`;
+    await dbLog('navigate', 'info', `Going to: ${productUrl}`);
 
-    await page.goto(productUrl, { waitUntil: 'networkidle', timeout: 30000 });
+    // ⚠️ ALTIJD 'domcontentloaded' — NOOIT 'networkidle' (SPAs hangen)
+    await page.goto(productUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+    await page.waitForTimeout(5000);
 
-    // Check login
-    const currentUrl = page.url();
-    if (currentUrl.includes('login') || currentUrl.includes('accounts.bol.com')) {
-      throw new Error('Not logged in — cookies expired. Refresh bol-storage-state.json.');
+    await dbShot(page, 'page-loaded', 'Product pricing page');
+
+    // Check if we're logged in (redirect to login page = cookies expired)
+    if (page.url().includes('login') || page.url().includes('authorize')) {
+      throw new Error('Cookies expired — need to re-authenticate. Run bol-partner-save-cookies.js');
     }
-    console.log('[price-update] Logged in ✅');
 
-    // Wait for pricing section to load
-    await page.waitForTimeout(3000);
+    await dbLog('page-loaded', 'success', `URL: ${page.url()}`);
 
-    // ── 4. Scroll to "Tijdelijke prijs" section ──────────────────────────
-    const tijdelijkePrijsHeader = page.locator('text=Tijdelijke prijs').first();
-    await tijdelijkePrijsHeader.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(1000);
+    if (action === 'set') {
+      // ── 4a. SET promotional price ──────────────────────────────────
 
-    // ── 5. Handle action ──────────────────────────────────────────────────
-    if (action === 'remove') {
-      // ── REMOVE: Click the delete (trash) button ──────────────────────
-      console.log('[price-update] Removing existing promotional price...');
-      
-      const deleteBtn = page.locator('[data-testid="delete-promotional-price"], button:has(svg[data-testid="DeleteIcon"]), .tijdelijke-prijs button[aria-label*="verwijder" i]').first();
-      
-      // Fallback: look for trash icon near "Tijdelijke prijs" section
-      if (!(await deleteBtn.isVisible().catch(() => false))) {
-        // Try the trash icon button that's visible in the UI
-        const trashBtn = page.locator('section:has-text("Tijdelijke prijs") button:last-of-type').first();
-        if (await trashBtn.isVisible().catch(() => false)) {
-          await trashBtn.click();
-        } else {
-          throw new Error('Could not find delete button for promotional price');
+      // Look for "Prijs aanpassen" or "Wijzig" button
+      await dbLog('set-price', 'info', 'Looking for price edit button...');
+
+      const editButtons = [
+        page.getByText('Prijs aanpassen').first(),
+        page.getByText('Wijzig').first(),
+        page.getByText('Pas prijs aan').first(),
+        page.getByText('Bewerk').first(),
+        page.locator('[data-testid="edit-price-button"]').first(),
+      ];
+
+      let clicked = false;
+      for (const btn of editButtons) {
+        if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await dbLog('set-price', 'info', `Found button, clicking...`);
+          await btn.click();
+          await page.waitForTimeout(3000);
+          clicked = true;
+          break;
         }
+      }
+
+      if (!clicked) {
+        await dbShot(page, 'no-edit-button', 'Could not find edit button');
+        await dbLog('set-price', 'warning', 'No edit button found — page may already be in edit mode');
+      }
+
+      await dbShot(page, 'after-edit-click', 'After clicking edit');
+
+      // Look for promotional price / tijdelijke prijs section
+      const promoToggle = [
+        page.getByText('Tijdelijke prijs').first(),
+        page.getByText('Tijdelijke actieprijs').first(),
+        page.getByText('Promotional price').first(),
+        page.locator('label:has-text("Tijdelijke")').first(),
+      ];
+
+      for (const toggle of promoToggle) {
+        if (await toggle.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await dbLog('set-price', 'info', 'Found promotional price section');
+          await toggle.click();
+          await page.waitForTimeout(2000);
+          break;
+        }
+      }
+
+      await dbShot(page, 'promo-section', 'Promotional price section');
+
+      // Fill in the promotional price
+      const priceStr = formatPriceBol(promotional_price);
+      const startStr = formatDateBol(start_date);
+      const endStr = formatDateBol(end_date);
+
+      await dbLog('set-price', 'info', `Filling: price=${priceStr}, start=${startStr}, end=${endStr}`);
+
+      // Find price input fields — try various selectors
+      const priceInputs = await page.locator('input[type="text"], input[type="number"], input[inputmode="decimal"]').all();
+      await dbLog('set-price', 'info', `Found ${priceInputs.length} input fields on page`);
+
+      // Log each input's placeholder/label for debugging
+      for (let i = 0; i < priceInputs.length; i++) {
+        const ph = await priceInputs[i].getAttribute('placeholder').catch(() => '');
+        const name = await priceInputs[i].getAttribute('name').catch(() => '');
+        const ariaLabel = await priceInputs[i].getAttribute('aria-label').catch(() => '');
+        await dbLog('set-price', 'info', `Input ${i}: placeholder="${ph}" name="${name}" aria="${ariaLabel}"`);
+      }
+
+      // Try to find specific fields by label/placeholder
+      const priceField = page.locator('input[name*="price"], input[placeholder*="prijs"], input[aria-label*="prijs"], input[aria-label*="price"]').first();
+      if (await priceField.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await priceField.click({ clickCount: 3 }); // select all
+        await priceField.type(priceStr, { delay: 50 });
+        await dbLog('set-price', 'success', `Price filled: ${priceStr}`);
       } else {
-        await deleteBtn.click();
+        await dbLog('set-price', 'warning', 'Could not find price field by name/placeholder — logging all inputs for manual review');
       }
 
-      // Confirm deletion if dialog appears
-      await page.waitForTimeout(1000);
-      const confirmBtn = page.locator('button:has-text("Bevestigen"), button:has-text("Verwijderen"), button:has-text("Ja")').first();
-      if (await confirmBtn.isVisible().catch(() => false)) {
-        await confirmBtn.click();
+      // Date fields
+      const dateInputs = await page.locator('input[type="date"], input[placeholder*="dd"], input[aria-label*="datum"], input[aria-label*="date"]').all();
+      await dbLog('set-price', 'info', `Found ${dateInputs.length} date-like inputs`);
+
+      for (let i = 0; i < dateInputs.length; i++) {
+        const ph = await dateInputs[i].getAttribute('placeholder').catch(() => '');
+        const ariaLabel = await dateInputs[i].getAttribute('aria-label').catch(() => '');
+        await dbLog('set-price', 'info', `Date input ${i}: placeholder="${ph}" aria="${ariaLabel}"`);
       }
 
-      // Wait for save and look for the save/submit button
-      await page.waitForTimeout(1000);
-      await clickSaveIfExists(page);
-
-      result.success = true;
-      result.data = { action: 'removed', ean, offer_uid };
-      console.log('[price-update] Promotional price removed ✅');
-
-    } else {
-      // ── SET: Create or update promotional price ──────────────────────
-      console.log('[price-update] Setting promotional price...');
-
-      // Check if there's already a promotional price row
-      const existingPriceInput = page.locator('section:has-text("Tijdelijke prijs") input[type="text"], section:has-text("Tijdelijke prijs") input[type="number"]').first();
-      const addButton = page.locator('text=Tijdelijke prijs toevoegen').first();
-
-      let priceInput;
-
-      if (await existingPriceInput.isVisible().catch(() => false)) {
-        // Existing promo — update the price field
-        console.log('[price-update] Found existing promotional price — updating...');
-        priceInput = existingPriceInput;
-      } else if (await addButton.isVisible().catch(() => false)) {
-        // No existing promo — click "Tijdelijke prijs toevoegen"
-        console.log('[price-update] No existing promo — adding new...');
-        await addButton.click();
-        await page.waitForTimeout(2000);
-        priceInput = page.locator('section:has-text("Tijdelijke prijs") input[type="text"], section:has-text("Tijdelijke prijs") input[type="number"]').first();
-      } else {
-        throw new Error('Could not find promotional price section or add button');
+      if (dateInputs.length >= 2) {
+        // First date = start, second = end
+        await dateInputs[0].click({ clickCount: 3 });
+        await dateInputs[0].type(startStr, { delay: 50 });
+        await dateInputs[1].click({ clickCount: 3 });
+        await dateInputs[1].type(endStr, { delay: 50 });
+        await dbLog('set-price', 'success', `Dates filled: ${startStr} → ${endStr}`);
       }
 
-      // ── Fill in the price ────────────────────────────────────────────
-      // Read old price first
-      const oldValue = await priceInput.inputValue().catch(() => '');
-      console.log(`[price-update] Old price value: ${oldValue}`);
+      await dbShot(page, 'fields-filled', 'After filling all fields');
 
-      // Clear and type new price
-      await priceInput.click({ clickCount: 3 }); // Select all
-      await page.waitForTimeout(200);
-      await priceInput.fill(formatPriceBol(promotional_price));
-      await page.waitForTimeout(500);
-      // Tab out to trigger validation
-      await priceInput.press('Tab');
-      await page.waitForTimeout(500);
+      // Click save
+      await dbLog('save', 'info', 'Looking for save button...');
+      const saveButtons = [
+        page.getByText('Opslaan').first(),
+        page.getByText('Wijzigingen opslaan').first(),
+        page.getByText('Bevestigen').first(),
+        page.getByText('Prijzen opslaan').first(),
+        page.locator('button[type="submit"]').first(),
+        page.locator('[data-testid="save-button"]').first(),
+      ];
 
-      // ── Fill in the dates ────────────────────────────────────────────
-      // Find the date/period element — it could be a date picker or text input
-      const periodSection = page.locator('section:has-text("Tijdelijke prijs")');
-      
-      // Try to find date inputs or the period edit button (calendar icon)
-      const calendarBtn = periodSection.locator('button:has(svg), [aria-label*="datum" i], [aria-label*="kalender" i], [data-testid*="calendar"], [data-testid*="date"]').first();
-      
-      if (await calendarBtn.isVisible().catch(() => false)) {
-        console.log('[price-update] Found calendar button — clicking...');
-        await calendarBtn.click();
-        await page.waitForTimeout(1000);
-
-        // Fill start and end date in the date picker
-        const dateInputs = page.locator('input[type="date"], input[placeholder*="dd"], input[aria-label*="datum" i]');
-        const dateCount = await dateInputs.count();
-        
-        if (dateCount >= 2) {
-          // Start date
-          await dateInputs.nth(0).click({ clickCount: 3 });
-          await dateInputs.nth(0).fill(formatDateBol(start_date));
-          await page.waitForTimeout(300);
-          
-          // End date
-          await dateInputs.nth(1).click({ clickCount: 3 });
-          await dateInputs.nth(1).fill(formatDateBol(end_date));
-          await page.waitForTimeout(300);
-        } else {
-          // Single date range input
-          const dateInput = dateInputs.first();
-          if (await dateInput.isVisible().catch(() => false)) {
-            await dateInput.click({ clickCount: 3 });
-            await dateInput.fill(`${formatDateBol(start_date)} - ${formatDateBol(end_date)}`);
-          }
-        }
-
-        // Confirm date selection if there's a confirm button in the picker
-        const dateConfirmBtn = page.locator('.date-picker button:has-text("Bevestig"), .date-picker button:has-text("OK"), [role="dialog"] button:has-text("Bevestig")').first();
-        if (await dateConfirmBtn.isVisible().catch(() => false)) {
-          await dateConfirmBtn.click();
-        }
-      } else {
-        console.log('[price-update] No calendar button found — dates may already be set or use different UI');
-        // Try direct text input for dates
-        const allInputs = await periodSection.locator('input').all();
-        console.log(`[price-update] Found ${allInputs.length} inputs in section`);
-        
-        // If there are date-like inputs beyond the price input
-        for (let i = 1; i < allInputs.length; i++) {
-          const placeholder = await allInputs[i].getAttribute('placeholder').catch(() => '');
-          const type = await allInputs[i].getAttribute('type').catch(() => '');
-          console.log(`[price-update] Input ${i}: type=${type} placeholder=${placeholder}`);
+      let saved = false;
+      for (const btn of saveButtons) {
+        if (await btn.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await btn.click();
+          await page.waitForTimeout(5000);
+          saved = true;
+          await dbLog('save', 'success', 'Clicked save button');
+          break;
         }
       }
 
-      await page.waitForTimeout(1000);
+      if (!saved) {
+        // Fallback: press Enter
+        await page.keyboard.press('Enter');
+        await page.waitForTimeout(3000);
+        await dbLog('save', 'warning', 'No save button found — pressed Enter');
+      }
 
-      // ── Click Save ───────────────────────────────────────────────────
-      await clickSaveIfExists(page);
+      await dbShot(page, 'after-save', 'After save attempt');
 
-      // ── Take screenshot for verification ─────────────────────────────
-      const screenshotPath = path.join(__dirname, `price-update-${ean}-${Date.now()}.png`);
-      await page.screenshot({ path: screenshotPath, fullPage: false });
-      console.log(`[price-update] Screenshot saved: ${screenshotPath}`);
+      // Check for error banners
+      const errorBanner = page.locator('.error, [role="alert"], .notification--error, [data-testid="error"]').first();
+      if (await errorBanner.isVisible({ timeout: 2000 }).catch(() => false)) {
+        const errText = await errorBanner.textContent().catch(() => 'Unknown error');
+        throw new Error(`Bol.com error after save: ${errText}`);
+      }
 
-      // ── Verify: re-read the price section ────────────────────────────
-      await page.waitForTimeout(2000);
-      
-      // Check for success indicators
-      const statusBadge = periodSection.locator('text=Actief').first();
-      const isActive = await statusBadge.isVisible().catch(() => false);
-
-      result.success = true;
-      result.data = {
-        action: 'set',
-        ean,
-        offer_uid,
-        old_price: oldValue,
-        new_price: formatPriceBol(promotional_price),
-        period: `${start_date} → ${end_date}`,
-        verified_active: isActive,
-        screenshot: screenshotPath
+      const result = {
+        success: true,
+        data: { ean, offer_uid, promotional_price, start_date, end_date, action: 'set' }
       };
-      console.log(`[price-update] Price set: €${formatPriceBol(promotional_price)} (${start_date} → ${end_date}) ${isActive ? '✅ Actief' : '⚠️ Status unknown'}`);
+
+      await writeResult('done', result, null);
+      await dbLog('complete', 'success', JSON.stringify(result));
+
+    } else if (action === 'remove') {
+      // ── 4b. REMOVE promotional price ───────────────────────────────
+      await dbLog('remove-price', 'info', 'Looking for remove/delete promo button...');
+
+      const removeButtons = [
+        page.getByText('Verwijderen').first(),
+        page.getByText('Actieprijs verwijderen').first(),
+        page.getByText('Tijdelijke prijs verwijderen').first(),
+        page.locator('[data-testid="remove-promotion"]').first(),
+      ];
+
+      let removed = false;
+      for (const btn of removeButtons) {
+        if (await btn.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await btn.click();
+          await page.waitForTimeout(3000);
+          removed = true;
+          await dbLog('remove-price', 'success', 'Clicked remove button');
+          break;
+        }
+      }
+
+      if (!removed) {
+        await dbShot(page, 'no-remove-button', 'Could not find remove button');
+        throw new Error('Could not find remove promo button');
+      }
+
+      // Confirm removal if dialog appears
+      const confirmBtn = page.getByText('Bevestigen').first();
+      if (await confirmBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await confirmBtn.click();
+        await page.waitForTimeout(3000);
+      }
+
+      await dbShot(page, 'after-remove', 'After removing promo');
+
+      const result = { success: true, data: { ean, offer_uid, action: 'remove' } };
+      await writeResult('done', result, null);
+      await dbLog('complete', 'success', JSON.stringify(result));
     }
 
   } catch (err) {
-    console.error('[price-update] Error:', err.message);
-    result.error = err.message;
-
-    // Try to take error screenshot
-    try {
-      if (browser) {
-        const pages = browser.contexts()[0]?.pages();
-        if (pages && pages.length > 0) {
-          await pages[0].screenshot({ path: path.join(__dirname, `price-update-error-${Date.now()}.png`) });
-        }
-      }
-    } catch (_) {}
-
+    console.error('❌ Fatal:', err.message);
+    await dbLog('fatal', 'error', err.message + '\n' + (err.stack || ''));
+    await writeResult('failed', null, err.message);
   } finally {
     if (browser) await browser.close();
-
-    // Write result back to Browser_Tasks
-    if (TASK_ID) {
-      await supabase
-        .from('Browser_Tasks')
-        .update({
-          status: result.success ? 'completed' : 'failed',
-          result: result,
-          error_message: result.error,
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', TASK_ID);
-    }
-
-    console.log('[price-update] Done:', JSON.stringify(result, null, 2));
-    process.exit(result.success ? 0 : 1);
+    await new Promise(r => setTimeout(r, 2000)); // logs flushen
   }
 })();
-
-// ─── Helper: Find and click the save button ───────────────────────────────────
-async function clickSaveIfExists(page) {
-  // Try various save button selectors (Bol.com uses different button styles)
-  const saveSelectors = [
-    'button:has-text("Opslaan")',
-    'button:has-text("Wijzigingen opslaan")',
-    'button:has-text("Bevestigen")',
-    'button:has-text("Prijzen opslaan")',
-    'button[type="submit"]',
-    '[data-testid="save-button"]',
-    '[data-testid="submit-button"]',
-  ];
-
-  for (const selector of saveSelectors) {
-    const btn = page.locator(selector).first();
-    if (await btn.isVisible().catch(() => false)) {
-      console.log(`[price-update] Found save button: ${selector}`);
-      await btn.click();
-      await page.waitForTimeout(3000);
-
-      // Check for error messages after save
-      const errorMsg = page.locator('.error, [role="alert"], .notification--error').first();
-      if (await errorMsg.isVisible().catch(() => false)) {
-        const errorText = await errorMsg.textContent().catch(() => 'Unknown error');
-        console.warn(`[price-update] Warning after save: ${errorText}`);
-      }
-      return true;
-    }
-  }
-
-  console.log('[price-update] No save button found — page may auto-save or use RSC actions');
-  
-  // Fallback: press Enter to submit
-  await page.keyboard.press('Enter');
-  await page.waitForTimeout(2000);
-  
-  return false;
-}
