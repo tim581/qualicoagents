@@ -232,37 +232,50 @@ function formatPriceBol(price) {
 
       await dbShot(page, 'sso-filled', 'SSO form filled — about to submit');
 
-      // Submit via Enter key (most reliable — avoids button selector issues)
-      await page.keyboard.press('Enter');
-      await dbLog('sso', 'info', 'Enter pressed — waiting for redirect away from login.bol.com...');
+      // Submit — press Enter directly on the password field (ensures focus is correct)
+      await passwordField.click();
+      await page.waitForTimeout(300);
+      await dbShot(page, 'sso-before-submit', 'SSO form filled, about to submit via Enter on password field');
 
-      // Wait for navigation AWAY from login.bol.com (catches any redirect target)
+      // Use waitForNavigation (more reliable than waitForFunction for page transitions)
       try {
-        await page.waitForFunction(
-          () => !window.location.href.includes('login.bol.com'),
-          { timeout: 30000, polling: 500 }
-        );
-        await dbLog('sso', 'success', `SSO redirect succeeded — URL: ${page.url()}`);
-        await dbShot(page, 'after-sso-redirect', 'After SSO redirect');
+        const [nav] = await Promise.all([
+          page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
+          passwordField.press('Enter'),
+        ]);
+        await dbLog('sso', 'success', `Enter nav succeeded — URL: ${page.url()}`);
+        await dbShot(page, 'after-sso-redirect', 'After SSO redirect via Enter');
       } catch (e) {
-        await dbShot(page, 'sso-stuck', 'SSO redirect did not happen');
-        // Last resort: try clicking the submit button too
-        await dbLog('sso', 'warning', `waitForFunction timeout — trying button click fallback...`);
+        await dbLog('sso', 'warning', `Enter nav failed (${e.message}) — trying button click...`);
+        await dbShot(page, 'sso-enter-failed', 'After Enter failed');
+
+        // Fallback: click submit button + waitForNavigation
         try {
-          const submitBtn = page.locator('button[type="submit"], input[type="submit"], button:has-text("Inloggen")').first();
-          if (await submitBtn.isVisible({ timeout: 3000 })) {
-            await submitBtn.click();
-            await dbLog('sso', 'info', 'Submit button clicked');
-            await page.waitForFunction(
-              () => !window.location.href.includes('login.bol.com'),
-              { timeout: 20000, polling: 500 }
-            );
-            await dbLog('sso', 'success', `Button click worked — URL: ${page.url()}`);
+          const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
+          const btnVisible = await submitBtn.isVisible({ timeout: 5000 }).catch(() => false);
+          if (btnVisible) {
+            const [nav2] = await Promise.all([
+              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
+              submitBtn.click(),
+            ]);
+            await dbLog('sso', 'success', `Button nav succeeded — URL: ${page.url()}`);
+            await dbShot(page, 'after-sso-btn', 'After SSO button redirect');
+          } else {
+            await dbShot(page, 'sso-no-button', 'Submit button not visible');
+            throw new Error(`No submit button visible — URL: ${page.url()}`);
           }
         } catch (e2) {
-          await dbShot(page, 'sso-both-failed', 'Both Enter + button click failed');
-          throw new Error(`SSO login failed after Enter + button — URL: ${page.url()} | Error: ${e2.message}`);
+          await dbShot(page, 'sso-both-failed', 'Both submit methods failed');
+          const currentUrl = page.url();
+          await dbLog('sso', 'error', `SSO failed — URL: ${currentUrl} | ${e2.message}`);
+          throw new Error(`SSO login failed — URL: ${currentUrl} | Error: ${e2.message}`);
         }
+      }
+
+      // Verify we actually left login page
+      if (page.url().includes('login.bol.com')) {
+        await dbShot(page, 'sso-still-on-login', 'Navigation happened but still on login page — wrong credentials or CAPTCHA?');
+        throw new Error(`SSO redirect completed but still on login page — possible wrong creds or CAPTCHA: ${page.url()}`);
       }
 
       // Save fresh cookies
