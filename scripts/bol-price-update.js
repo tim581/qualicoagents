@@ -1,5 +1,5 @@
 /**
- * bol-price-update.js  v1.0 — Sets/removes "Tijdelijke prijs" on Bol.com Partner Portal
+ * bol-price-update.js  v1.1 — Sets/removes "Tijdelijke prijs" on Bol.com Partner Portal
  *
  * USAGE:
  * INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, credentials_key, status)
@@ -275,6 +275,69 @@ function formatPriceBol(price) {
     const offerTitle = await page.title();
     const offerBody = await page.evaluate(() => document.body?.innerText?.slice(0, 2000) || '');
     await dbLog('offer-page-debug', 'info', `URL: ${offerPageUrl} | Title: ${offerTitle} | Body: ${offerBody.substring(0, 500)}`);
+
+    // ── 5b. Handle SSO login redirect on offer page ────────────────────
+    // Bol sometimes redirects the offer URL to login.bol.com/wsp/login (SSO)
+    // even when dashboard cookies work fine. Detect and handle separately.
+    if (page.url().includes('login.bol.com')) {
+      await dbLog('sso-redirect', 'info', 'Offer page redirected to SSO login — re-authenticating...');
+      await dbShot(page, 'sso-login-page', 'SSO login page');
+
+      // Load credentials from Supabase
+      const credRes2 = await fetch(
+        `${SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.bol_seller&select=username,password`,
+        { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
+      );
+      const credData2 = await credRes2.json();
+      if (!credData2 || credData2.length === 0) throw new Error('bol_seller credentials not found in Browser_Credentials');
+      const ssoUser = credData2[0].username;
+      const ssoPass = credData2[0].password;
+
+      // SSO form uses j_username / j_password
+      try {
+        await page.waitForSelector('input[name="j_username"]', { timeout: 10000 });
+        await page.fill('input[name="j_username"]', ssoUser);
+        await page.fill('input[name="j_password"]', ssoPass);
+        await dbLog('sso-redirect', 'info', `SSO fields filled for: ${ssoUser}`);
+      } catch (e) {
+        // Fallback: try generic email/password selectors
+        await dbLog('sso-redirect', 'warning', `j_username not found (${e.message}) — trying generic selectors`);
+        await page.waitForSelector('input[type="email"], input[name="username"]', { timeout: 10000 });
+        await page.fill('input[type="email"], input[name="username"]', ssoUser);
+        await page.fill('input[type="password"]', ssoPass);
+        await dbLog('sso-redirect', 'info', 'Generic selectors filled');
+      }
+
+      // Submit
+      const ssoBtn = page.locator('button[type="submit"], input[type="submit"]').first();
+      await ssoBtn.click();
+      await dbLog('sso-redirect', 'info', 'SSO form submitted — waiting for redirect...');
+
+      // Wait for redirect back to partner.bol.com
+      try {
+        await page.waitForURL('**/partner.bol.com/**', { timeout: 30000 });
+        await dbLog('sso-redirect', 'success', `Re-authenticated — now at: ${page.url()}`);
+      } catch (e) {
+        await dbShot(page, 'sso-failed', 'SSO login did not redirect back');
+        throw new Error(`SSO login failed — final URL: ${page.url()}`);
+      }
+
+      // Save fresh cookies
+      try {
+        const freshCookies = await context.cookies();
+        fs.writeFileSync(storageStatePath, JSON.stringify({ cookies: freshCookies }, null, 2));
+        await dbLog('sso-redirect', 'success', `Saved ${freshCookies.length} fresh cookies to bol-storage-state.json`);
+      } catch (e) {
+        await dbLog('sso-redirect', 'warning', 'Could not save cookies: ' + e.message);
+      }
+
+      // Re-navigate to the offer page now that we are authenticated
+      await dbLog('navigate', 'info', `Re-navigating to offer page after SSO login: ${offerUrl}`);
+      await page.goto(offerUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(3000);
+      await dbShot(page, 'offer-page-reloaded', `Offer page after re-auth for EAN ${ean}`);
+      await dbLog('offer-page-reloaded', 'info', `URL after re-nav: ${page.url()}`);
+    }
 
     // Wait for React to render form inputs (up to 15s)
     await dbLog('debug', 'info', 'Waiting for input elements (max 15s)...');
