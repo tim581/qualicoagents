@@ -277,65 +277,88 @@ function formatPriceBol(price) {
     await dbLog('offer-page-debug', 'info', `URL: ${offerPageUrl} | Title: ${offerTitle} | Body: ${offerBody.substring(0, 500)}`);
 
     // ── 5b. Handle SSO login redirect on offer page ────────────────────
-    // Bol sometimes redirects the offer URL to login.bol.com/wsp/login (SSO)
-    // even when dashboard cookies work fine. Detect and handle separately.
+    // Bol sometimes redirects the offer page URL to login.bol.com/wsp/login
+    // even when dashboard cookies are valid (dashboard and offer sessions are separate).
+    // Fix: clear stale cookies, do a full fresh login via partner.bol.com root,
+    // then re-navigate to the offer page.
     if (page.url().includes('login.bol.com')) {
-      await dbLog('sso-redirect', 'info', 'Offer page redirected to SSO login — re-authenticating...');
-      await dbShot(page, 'sso-login-page', 'SSO login page');
+      await dbLog('sso-redirect', 'info', 'Offer page triggered SSO redirect — clearing stale cookies and doing full re-login...');
+      await dbShot(page, 'sso-redirect-detected', 'SSO redirect page');
 
-      // Load credentials from Supabase
+      // Clear stale cookies (they only cover dashboard, not offer pages)
+      await context.clearCookies();
+      try { fs.unlinkSync(storageStatePath); } catch (e) { /* ignore if not found */ }
+      await dbLog('sso-redirect', 'info', 'Stale cookies cleared');
+
+      // Load credentials
       const credRes2 = await fetch(
         `${SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.bol_seller&select=username,password`,
         { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
       );
       const credData2 = await credRes2.json();
       if (!credData2 || credData2.length === 0) throw new Error('bol_seller credentials not found in Browser_Credentials');
-      const ssoUser = credData2[0].username;
-      const ssoPass = credData2[0].password;
+      const reUsername = credData2[0].username;
+      const rePassword = credData2[0].password;
 
-      // SSO form uses j_username / j_password
+      // Navigate to partner.bol.com root to start fresh login
+      await page.goto('https://partner.bol.com/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2000);
+      await dbShot(page, 'fresh-login-start', 'Fresh login page');
+      await dbLog('sso-redirect', 'info', `Login page URL: ${page.url()}`);
+
+      // Fill email/username — try multiple selectors
+      await page.waitForSelector(
+        'input[type="email"], input[name="username"], input[name="email"], input[name="j_username"]',
+        { timeout: 15000 }
+      );
+      const emailField = page.locator(
+        'input[type="email"], input[name="username"], input[name="email"], input[name="j_username"]'
+      ).first();
+      await emailField.fill(reUsername);
+      await dbLog('sso-redirect', 'info', `Email filled: ${reUsername}`);
+
+      // Click Next / Volgende if present (some Bol flows are two-step)
       try {
-        await page.waitForSelector('input[name="j_username"]', { timeout: 10000 });
-        await page.fill('input[name="j_username"]', ssoUser);
-        await page.fill('input[name="j_password"]', ssoPass);
-        await dbLog('sso-redirect', 'info', `SSO fields filled for: ${ssoUser}`);
-      } catch (e) {
-        // Fallback: try generic email/password selectors
-        await dbLog('sso-redirect', 'warning', `j_username not found (${e.message}) — trying generic selectors`);
-        await page.waitForSelector('input[type="email"], input[name="username"]', { timeout: 10000 });
-        await page.fill('input[type="email"], input[name="username"]', ssoUser);
-        await page.fill('input[type="password"]', ssoPass);
-        await dbLog('sso-redirect', 'info', 'Generic selectors filled');
-      }
+        const nextBtn = page.locator('button:has-text("Volgende"), button:has-text("Next")').first();
+        if (await nextBtn.isVisible({ timeout: 3000 })) {
+          await nextBtn.click();
+          await page.waitForTimeout(2000);
+          await dbLog('sso-redirect', 'info', 'Clicked Next/Volgende');
+        }
+      } catch (e) { /* single-step form */ }
+
+      // Fill password
+      await page.waitForSelector('input[type="password"]', { timeout: 15000 });
+      await page.fill('input[type="password"]', rePassword);
+      await dbLog('sso-redirect', 'info', 'Password filled');
 
       // Submit
-      const ssoBtn = page.locator('button[type="submit"], input[type="submit"]').first();
-      await ssoBtn.click();
-      await dbLog('sso-redirect', 'info', 'SSO form submitted — waiting for redirect...');
+      await page.click('button[type="submit"], button:has-text("Inloggen"), button:has-text("Log in")');
+      await dbLog('sso-redirect', 'info', 'Login form submitted — waiting for redirect...');
 
-      // Wait for redirect back to partner.bol.com
+      // Wait for partner portal (full login)
       try {
-        await page.waitForURL('**/partner.bol.com/**', { timeout: 30000 });
-        await dbLog('sso-redirect', 'success', `Re-authenticated — now at: ${page.url()}`);
+        await page.waitForURL('**/partner.bol.com/sdd/**', { timeout: 30000 });
+        await dbLog('sso-redirect', 'success', `Full re-login successful — URL: ${page.url()}`);
       } catch (e) {
-        await dbShot(page, 'sso-failed', 'SSO login did not redirect back');
-        throw new Error(`SSO login failed — final URL: ${page.url()}`);
+        await dbShot(page, 're-login-failed', 'Full re-login failed');
+        throw new Error(`Full re-login failed — final URL: ${page.url()}`);
       }
 
-      // Save fresh cookies
+      // Save fresh full-session cookies
       try {
         const freshCookies = await context.cookies();
         fs.writeFileSync(storageStatePath, JSON.stringify({ cookies: freshCookies }, null, 2));
-        await dbLog('sso-redirect', 'success', `Saved ${freshCookies.length} fresh cookies to bol-storage-state.json`);
+        await dbLog('sso-redirect', 'success', `Saved ${freshCookies.length} fresh full-session cookies`);
       } catch (e) {
         await dbLog('sso-redirect', 'warning', 'Could not save cookies: ' + e.message);
       }
 
-      // Re-navigate to the offer page now that we are authenticated
-      await dbLog('navigate', 'info', `Re-navigating to offer page after SSO login: ${offerUrl}`);
+      // Re-navigate to the offer page now that we have a full session
+      await dbLog('navigate', 'info', `Re-navigating to offer page after full re-login: ${offerUrl}`);
       await page.goto(offerUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       await page.waitForTimeout(3000);
-      await dbShot(page, 'offer-page-reloaded', `Offer page after re-auth for EAN ${ean}`);
+      await dbShot(page, 'offer-page-reloaded', `Offer page after re-login for EAN ${ean}`);
       await dbLog('offer-page-reloaded', 'info', `URL after re-nav: ${page.url()}`);
     }
 
