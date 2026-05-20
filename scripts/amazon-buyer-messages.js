@@ -1,63 +1,98 @@
 /**
- * amazon-buyer-messages.js v1.0.0
+ * amazon-buyer-messages.js  v2.0.0
  * Standalone script — scrapes buyer messages from Amazon Seller Central
- * 
+ *
  * Uses:
  *   - playwright-extra + stealth plugin (headless detection bypass)
  *   - Decodo NL residential proxy (IP trust + geo)
  *   - amazon-storage-state.json (real session cookies, no 2FA)
- * 
+ *   - dbLog + dbShot → Flieber_Debug_Log in Supabase (remote debugging)
+ *
  * Strategy:
  *   1. Intercept all XHR/fetch calls to capture Amazon's internal API responses
- *   2. Navigate to messaging inbox (React SPA — needs networkidle wait)
+ *   2. Navigate to messaging inbox (React SPA — domcontentloaded + settle)
  *   3. DOM scrape as secondary extraction
- *   4. Debug screenshot + HTML dump always written (for selector tuning)
- *   5. Results written to amazon-messages-data.json
- * 
+ *   4. Debug screenshots + logs always pushed to Supabase
+ *   5. Results written to Browser_Tasks.result
+ *
  * Dependencies: playwright-extra, puppeteer-extra-plugin-stealth
  * Install: npm install playwright-extra puppeteer-extra-plugin-stealth
- * 
+ *
  * Runs standalone via playwright-task-executor.js
  * Storage state expected at: __dirname/amazon-storage-state.json
- * Output written to: __dirname/amazon-messages-data.json
  */
 
 'use strict';
 
+require('dotenv').config();
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const path = require('path');
 const fs = require('fs');
 
-// Stealth — blocks headless detection, WebDriver flag, plugin enumeration, etc.
+// Stealth — blocks headless detection, WebDriver flag, plugin enumeration
 chromium.use(StealthPlugin());
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-// Decodo NL residential proxy — same as bol.com scraper
-// NL proxy works fine for Amazon EU marketplaces (same seller account)
 const PROXY_CONFIG = {
     server: 'http://nl.decodo.com:10001',
     username: 'spx615l7f1',
     password: 'BHrGlyvt9mRqv2=j62'
 };
 
-// Marketplace to scrape — change to .de / .nl / .fr if needed
-// Cookies must have been exported from this same marketplace session
 const AMAZON_BASE = 'https://sellercentral.amazon.co.uk';
 const INBOX_URL = `${AMAZON_BASE}/messaging/inbox`;
 
-// Files — executor downloads scripts to its own __dirname
 const STORAGE_STATE_PATH = path.join(__dirname, 'amazon-storage-state.json');
-const OUTPUT_PATH = path.join(__dirname, 'amazon-messages-data.json');
-const DEBUG_SCREENSHOT_PATH = path.join(__dirname, 'amazon-messages-debug.png');
-const DEBUG_HTML_PATH = path.join(__dirname, 'amazon-inbox-debug.html');
+
+// ── SELF-DEBUGGING: SUPABASE LOG ──────────────────────────────────────────────
+
+const RUN_ID = `amz_msg_${Date.now()}`;
+console.log(`🔍 Debug run ID: ${RUN_ID}`);
+console.log(`   → Query: SELECT * FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}'\n`);
+
+async function dbLog(step, status, message) {
+    const short = (message || '').toString().substring(0, 3000);
+    console.log(`  [DB:${status}] ${step}: ${short.substring(0, 120)}`);
+    try {
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
+            method: 'POST',
+            headers: {
+                'apikey': process.env.SUPABASE_KEY,
+                'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal',
+            },
+            body: JSON.stringify({ run_id: RUN_ID, step, status, message: short }),
+        });
+    } catch (e) { /* never break the main flow */ }
+}
+
+async function dbShot(page, step, label) {
+    try {
+        const buf = await page.screenshot({ fullPage: true });
+        const b64 = buf.toString('base64').substring(0, 400000);
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/Flieber_Debug_Log`, {
+            method: 'POST',
+            headers: {
+                'apikey': process.env.SUPABASE_KEY,
+                'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'return=minimal',
+            },
+            body: JSON.stringify({ run_id: RUN_ID, step, status: 'screenshot', message: label, screenshot: b64 }),
+        });
+        console.log(`  📸 Screenshot → ${step} (${label})`);
+    } catch (e) { /* never break the main flow */ }
+}
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-async function run() {
+(async () => {
     const results = {
         success: false,
+        run_id: RUN_ID,
         scraped_at: new Date().toISOString(),
         marketplace: 'amazon.co.uk',
         messages: [],
@@ -69,14 +104,16 @@ async function run() {
 
     let browser;
     try {
-        // Verify cookies exist
+        // ── Verify cookies exist ────────────────────────────────────────────
         if (!fs.existsSync(STORAGE_STATE_PATH)) {
             throw new Error(`Cookie file not found: ${STORAGE_STATE_PATH}. Run convert-amazon-cookies.js first.`);
         }
+        await dbLog('init', 'info', `Cookie file found. Starting stealth browser with Decodo NL proxy...`);
 
-        console.log('[amazon-messages] Launching stealth browser with Decodo NL proxy...');
+        // ── Launch stealth browser ──────────────────────────────────────────
+        // headless: false — Tim wants to watch during debugging
         browser = await chromium.launch({
-            headless: true,
+            headless: false,
             args: [
                 '--disable-blink-features=AutomationControlled',
                 '--disable-features=IsolateOrigins,site-per-process',
@@ -87,15 +124,16 @@ async function run() {
                 '--disable-gpu',
                 '--window-size=1920,1080',
                 '--lang=en-GB,en',
-                // Prevent automation detection via navigator.webdriver
                 '--disable-automation',
             ]
         });
 
-        console.log('[amazon-messages] Loading amazon-storage-state.json...');
+        await dbLog('browser', 'success', 'Stealth browser launched');
+
+        // ── Create context with cookies + proxy ─────────────────────────────
+        const storageState = JSON.parse(fs.readFileSync(STORAGE_STATE_PATH, 'utf-8'));
+
         const context = await browser.newContext({
-            storageState: STORAGE_STATE_PATH,
-            // Match the real browser profile from when cookies were exported
             viewport: { width: 1920, height: 1080 },
             locale: 'en-GB',
             timezoneId: 'Europe/London',
@@ -116,49 +154,55 @@ async function run() {
             }
         });
 
-        // ── Network Interception ─────────────────────────────────────────────
-        // Amazon SC messaging is a React SPA — real data comes via XHR/fetch
-        // Capture all JSON API responses for analysis (even if DOM selectors fail)
+        // Add cookies from storage state
+        if (storageState.cookies && storageState.cookies.length > 0) {
+            await context.addCookies(storageState.cookies);
+            await dbLog('cookies', 'success', `Loaded ${storageState.cookies.length} cookies from storage state`);
+        } else {
+            throw new Error('No cookies found in amazon-storage-state.json');
+        }
+
+        // ── Network Interception ────────────────────────────────────────────
+        // Capture ALL JSON responses — Amazon might load data via internal APIs
         context.on('response', async (response) => {
             const url = response.url();
             const contentType = response.headers()['content-type'] || '';
-            
-            // Capture messaging-related API calls
+
             const isRelevant = (
                 url.includes('/messaging/') ||
-                url.includes('/voicemail/') ||
                 url.includes('/buyer-seller-messaging/') ||
                 url.includes('/myi/communications/') ||
-                url.includes('/gc/messaging/')
-            ) && contentType.includes('application/json');
+                url.includes('/gc/messaging/') ||
+                url.includes('/communication')
+            ) && contentType.includes('json');
 
             if (isRelevant) {
                 try {
                     const json = await response.json();
                     results.api_endpoints_captured.push(url);
                     results.api_data_raw.push({ url, status: response.status(), data: json });
-                    console.log(`[amazon-messages] ✓ API captured: ${url} (${response.status()})`);
-                } catch (e) {
-                    // Not parseable JSON — ignore
-                }
+                    await dbLog('api-intercept', 'info', `Captured: ${url} (${response.status()})`);
+                } catch (e) { /* not JSON */ }
             }
         });
 
         const page = await context.newPage();
 
-        // ── Navigate to Inbox ────────────────────────────────────────────────
-        console.log(`[amazon-messages] Navigating to ${INBOX_URL}...`);
+        // ── Navigate to Inbox ───────────────────────────────────────────────
+        await dbLog('navigate', 'info', `Going to ${INBOX_URL}...`);
+
+        // ⚠️ CRITICAL: domcontentloaded, NOT networkidle — SPA will hang forever with networkidle
         await page.goto(INBOX_URL, {
-            waitUntil: 'networkidle',  // Wait for React SPA + XHR to settle
+            waitUntil: 'domcontentloaded',
             timeout: 60000
         });
 
-        // Extra wait for dynamic content
-        await page.waitForTimeout(5000);
+        // Settle wait for React SPA to render
+        await page.waitForTimeout(8000);
 
-        // Check login status
+        // ── Check login status ──────────────────────────────────────────────
         const currentUrl = page.url();
-        console.log(`[amazon-messages] Current URL: ${currentUrl}`);
+        await dbLog('url-check', 'info', `Current URL: ${currentUrl}`);
 
         if (
             currentUrl.includes('/ap/signin') ||
@@ -166,28 +210,89 @@ async function run() {
             currentUrl.includes('login') ||
             currentUrl.includes('auth-page')
         ) {
-            throw new Error('Session expired — redirected to login. Re-export cookies via Cookie-Editor from amazon seller central.');
+            await dbShot(page, 'login-redirect', 'Redirected to login — cookies expired');
+            throw new Error('Session expired — redirected to login. Re-export cookies via Cookie-Editor from Amazon Seller Central.');
         }
 
-        // Detect marketplace switch prompt (Amazon sometimes asks when switching)
-        const hasSwitchPrompt = await page.$('[id*="switch"], [class*="switch-account"], [data-testid*="switch"]');
-        if (hasSwitchPrompt) {
-            console.log('[amazon-messages] ⚠️ Marketplace switch prompt detected — staying on current marketplace');
+        await dbLog('login-check', 'success', 'Still logged in — no redirect to login page');
+
+        // ── First screenshot: what does the page look like? ─────────────────
+        await dbShot(page, 'inbox-loaded', 'Page after initial load + 8s settle');
+
+        // ── Log page title and key elements ─────────────────────────────────
+        const pageTitle = await page.title();
+        await dbLog('page-info', 'info', `Title: "${pageTitle}"`);
+
+        // Log what major elements exist on the page (helps identify real selectors)
+        const pageStructure = await page.evaluate(() => {
+            const info = {
+                title: document.title,
+                bodyClasses: document.body.className,
+                iframes: Array.from(document.querySelectorAll('iframe')).map(f => ({ src: f.src, id: f.id })),
+                mainContainers: [],
+                allIds: [],
+                interestingClasses: []
+            };
+
+            // Find main structural elements
+            const mainEls = document.querySelectorAll('main, [role="main"], #main, .main, [id*="content"], [id*="messaging"], [id*="inbox"], [class*="messaging"], [class*="inbox"], [class*="message"]');
+            mainEls.forEach(el => {
+                info.mainContainers.push({
+                    tag: el.tagName,
+                    id: el.id,
+                    class: el.className?.toString().substring(0, 200),
+                    childCount: el.children.length,
+                    text: el.textContent?.substring(0, 100)
+                });
+            });
+
+            // All IDs on the page (useful for discovering Amazon's structure)
+            document.querySelectorAll('[id]').forEach(el => {
+                if (el.id) info.allIds.push(el.id);
+            });
+
+            // Classes containing message/inbox/thread keywords
+            document.querySelectorAll('*').forEach(el => {
+                const cls = el.className?.toString() || '';
+                if (cls.match(/messag|inbox|thread|conversation|communi/i)) {
+                    info.interestingClasses.push({
+                        tag: el.tagName,
+                        class: cls.substring(0, 200),
+                        childCount: el.children.length
+                    });
+                }
+            });
+
+            return info;
+        });
+
+        // Log structure in chunks (SQL truncates at ~600 chars)
+        await dbLog('structure-ids', 'info', `IDs on page: ${JSON.stringify(pageStructure.allIds).substring(0, 2500)}`);
+        await dbLog('structure-containers', 'info', `Main containers: ${JSON.stringify(pageStructure.mainContainers).substring(0, 2500)}`);
+        await dbLog('structure-classes', 'info', `Message-related classes: ${JSON.stringify(pageStructure.interestingClasses).substring(0, 2500)}`);
+        await dbLog('structure-iframes', 'info', `Iframes: ${JSON.stringify(pageStructure.iframes).substring(0, 2500)}`);
+
+        // ── Check if messaging is inside an iframe ──────────────────────────
+        // Amazon SC sometimes loads modules in iframes
+        const iframes = page.frames();
+        await dbLog('frames', 'info', `Page has ${iframes.length} frames: ${iframes.map(f => f.url()).join(', ').substring(0, 2500)}`);
+
+        // Try to find messaging content in any frame
+        let messagingFrame = page;
+        for (const frame of iframes) {
+            const frameUrl = frame.url();
+            if (frameUrl.includes('messaging') || frameUrl.includes('communication')) {
+                messagingFrame = frame;
+                await dbLog('iframe-found', 'info', `Found messaging iframe: ${frameUrl}`);
+                await page.waitForTimeout(3000); // let iframe content settle
+                break;
+            }
         }
 
-        // ── Debug Artifacts ──────────────────────────────────────────────────
-        // Always save screenshot + HTML — essential for tuning selectors
-        console.log('[amazon-messages] Saving debug screenshot + HTML...');
-        await page.screenshot({ path: DEBUG_SCREENSHOT_PATH, fullPage: true });
-        const pageHtml = await page.content();
-        fs.writeFileSync(DEBUG_HTML_PATH, pageHtml);
-        console.log(`[amazon-messages] Debug files saved: ${DEBUG_SCREENSHOT_PATH}`);
+        // ── DOM Extraction ──────────────────────────────────────────────────
+        await dbLog('dom-extract', 'info', 'Starting DOM extraction with broad selectors...');
 
-        // ── DOM Extraction ───────────────────────────────────────────────────
-        // Amazon messaging inbox selectors — may need tuning after first run
-        // If messages = 0, check amazon-inbox-debug.html for real class names
-        console.log('[amazon-messages] Extracting messages from DOM...');
-        const messages = await page.evaluate(() => {
+        const messages = await messagingFrame.evaluate(() => {
             const msgs = [];
 
             // Broad selector net — Amazon changes class names frequently
@@ -201,21 +306,48 @@ async function run() {
                 '[data-testid*="inbox-item"]',
                 'tr[class*="message"]',
                 'li[class*="message"]',
-                'div[class*="Message"][class*="item"]'
+                'div[class*="Message"][class*="item"]',
+                // Table-based layouts
+                'table tbody tr',
+                // Generic list items that might contain messages
+                '[class*="list"] [class*="item"]',
+                '[class*="thread"] [class*="item"]',
             ];
 
             let rows = [];
+            let matchedSelector = 'none';
             for (const sel of candidateSelectors) {
                 const found = document.querySelectorAll(sel);
                 if (found.length > 0) {
                     rows = Array.from(found);
-                    console.log(`Found ${rows.length} rows with selector: ${sel}`);
+                    matchedSelector = sel;
                     break;
                 }
             }
 
+            // If no specific selector matched, try getting all visible text blocks
+            if (rows.length === 0) {
+                // Fallback: get the main content area text
+                const mainContent = document.querySelector('main, [role="main"], #main-content, [id*="content"]');
+                if (mainContent) {
+                    return {
+                        matchedSelector: 'fallback-main-text',
+                        rowCount: 0,
+                        messages: [],
+                        fallbackText: mainContent.textContent?.substring(0, 3000) || 'empty'
+                    };
+                }
+                return {
+                    matchedSelector: 'none',
+                    rowCount: 0,
+                    messages: [],
+                    fallbackText: document.body.textContent?.substring(0, 3000) || 'empty'
+                };
+            }
+
             rows.forEach((row, i) => {
-                // Try to find key data points — broad attribute matching
+                if (i >= 50) return; // cap at 50 messages
+
                 const getText = (selectors) => {
                     for (const s of selectors) {
                         const el = row.querySelector(s);
@@ -234,12 +366,10 @@ async function run() {
                 const date = getText(['[class*="date"]', '[class*="time"]', 'time', '[class*="received"]']);
                 const orderId = getText(['[class*="order"]', '[class*="asin"]']);
                 const preview = getText(['[class*="preview"]', '[class*="excerpt"]', '[class*="body"]', 'p']);
-                const isUnread = row.getAttribute('data-read') === 'false' 
+                const isUnread = row.getAttribute('data-read') === 'false'
                     || row.classList.toString().includes('unread')
                     || !!row.querySelector('[class*="unread"]');
                 const href = getHref();
-
-                // Extract order ID from URL if not found in DOM
                 const orderFromHref = href?.match(/[A-Z0-9]{3}-[0-9]{7}-[0-9]{7}/)?.[0] || null;
 
                 msgs.push({
@@ -250,45 +380,63 @@ async function run() {
                     orderId: orderId || orderFromHref,
                     preview,
                     isUnread,
-                    href
+                    href,
+                    rawText: row.textContent?.substring(0, 300) || null
                 });
             });
 
-            return msgs;
+            return {
+                matchedSelector,
+                rowCount: rows.length,
+                messages: msgs
+            };
         });
 
-        results.messages = messages.filter(m => m.subject || m.sender || m.href);
-        results.unread_count = results.messages.filter(m => m.isUnread).length;
+        await dbLog('dom-result', 'info', `Selector: "${messages.matchedSelector}", rows: ${messages.rowCount}`);
 
-        console.log(`[amazon-messages] DOM extraction: ${results.messages.length} messages (${results.unread_count} unread)`);
-
-        if (results.messages.length === 0 && results.api_data_raw.length === 0) {
-            results.errors.push(
-                'No messages found via DOM or API interception. ' +
-                'Check amazon-messages-debug.png + amazon-inbox-debug.html for real selectors. ' +
-                'Possible causes: wrong marketplace URL, page loaded differently, or inbox is empty.'
-            );
+        if (messages.fallbackText) {
+            // Log fallback text in chunks
+            const text = messages.fallbackText;
+            for (let i = 0; i < text.length; i += 2500) {
+                await dbLog('fallback-text', 'info', `chunk ${Math.floor(i/2500)}: ${text.substring(i, i + 2500)}`);
+            }
         }
 
+        if (messages.messages) {
+            results.messages = messages.messages.filter(m => m.subject || m.sender || m.href || m.rawText);
+            results.unread_count = results.messages.filter(m => m.isUnread).length;
+            await dbLog('messages-found', 'info', `${results.messages.length} messages extracted (${results.unread_count} unread)`);
+
+            // Log first few messages for debugging
+            for (let i = 0; i < Math.min(results.messages.length, 5); i++) {
+                await dbLog(`message-${i}`, 'info', JSON.stringify(results.messages[i]).substring(0, 2500));
+            }
+        }
+
+        // ── Log captured API data ───────────────────────────────────────────
+        if (results.api_endpoints_captured.length > 0) {
+            await dbLog('api-summary', 'info', `Captured ${results.api_endpoints_captured.length} API endpoints: ${results.api_endpoints_captured.join(', ').substring(0, 2500)}`);
+        } else {
+            await dbLog('api-summary', 'warning', 'No messaging API endpoints captured via network interception');
+        }
+
+        // ── Final screenshot ────────────────────────────────────────────────
+        await dbShot(page, 'final', 'Final page state before close');
+
         results.success = true;
+        await dbLog('complete', 'success', `Done! ${results.messages.length} messages, ${results.api_endpoints_captured.length} APIs captured`);
 
     } catch (err) {
         console.error(`[amazon-messages] FATAL: ${err.message}`);
         results.errors.push(err.message);
         results.success = false;
+        await dbLog('fatal', 'error', err.message);
     } finally {
         if (browser) await browser.close();
+        // Give logs time to flush
+        await new Promise(r => setTimeout(r, 3000));
     }
 
-    // Write results JSON
-    fs.writeFileSync(OUTPUT_PATH, JSON.stringify(results, null, 2));
-    console.log(`[amazon-messages] Results → ${OUTPUT_PATH}`);
-    console.log(`[amazon-messages] Summary: success=${results.success}, messages=${results.messages.length}, apis_captured=${results.api_endpoints_captured.length}`);
-
+    // Return results (executor writes this to Browser_Tasks.result)
     return results;
-}
-
-run().catch(err => {
-    console.error('[amazon-messages] Unhandled error:', err);
-    process.exit(1);
-});
+})();
