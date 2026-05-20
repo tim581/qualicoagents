@@ -232,51 +232,38 @@ function formatPriceBol(price) {
 
       await dbShot(page, 'sso-filled', 'SSO form filled — about to submit');
 
-      // Submit — press Enter directly on the password field (ensures focus is correct)
+      // Submit — press Enter directly on password field (ensures correct focus)
       await passwordField.click();
-      await page.waitForTimeout(300);
-      await dbShot(page, 'sso-before-submit', 'SSO form filled, about to submit via Enter on password field');
+      await page.waitForTimeout(500);
+      await dbShot(page, 'sso-before-submit', 'SSO form filled — about to press Enter on password field');
+      await passwordField.press('Enter');
+      await dbLog('sso', 'info', 'Enter pressed on password field — sleeping 12s for redirect...');
 
-      // Use waitForNavigation (more reliable than waitForFunction for page transitions)
-      try {
-        const [nav] = await Promise.all([
-          page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
-          passwordField.press('Enter'),
-        ]);
-        await dbLog('sso', 'success', `Enter nav succeeded — URL: ${page.url()}`);
-        await dbShot(page, 'after-sso-redirect', 'After SSO redirect via Enter');
-      } catch (e) {
-        await dbLog('sso', 'warning', `Enter nav failed (${e.message}) — trying button click...`);
-        await dbShot(page, 'sso-enter-failed', 'After Enter failed');
+      // Use fixed sleep (NOT affected by Playwright global timeout settings)
+      await page.waitForTimeout(12000);
+      await dbShot(page, 'after-sso-sleep', `URL after 12s: ${page.url()}`);
+      await dbLog('sso', 'info', `URL after 12s sleep: ${page.url()}`);
 
-        // Fallback: click submit button + waitForNavigation
-        try {
-          const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
-          const btnVisible = await submitBtn.isVisible({ timeout: 5000 }).catch(() => false);
-          if (btnVisible) {
-            const [nav2] = await Promise.all([
-              page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: 20000 }),
-              submitBtn.click(),
-            ]);
-            await dbLog('sso', 'success', `Button nav succeeded — URL: ${page.url()}`);
-            await dbShot(page, 'after-sso-btn', 'After SSO button redirect');
-          } else {
-            await dbShot(page, 'sso-no-button', 'Submit button not visible');
-            throw new Error(`No submit button visible — URL: ${page.url()}`);
-          }
-        } catch (e2) {
-          await dbShot(page, 'sso-both-failed', 'Both submit methods failed');
-          const currentUrl = page.url();
-          await dbLog('sso', 'error', `SSO failed — URL: ${currentUrl} | ${e2.message}`);
-          throw new Error(`SSO login failed — URL: ${currentUrl} | Error: ${e2.message}`);
+      if (page.url().includes('login.bol.com')) {
+        // Still on login — try button click as last resort
+        await dbLog('sso', 'warning', 'Still on login after Enter — trying submit button...');
+        const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
+        const btnVisible = await submitBtn.isVisible().catch(() => false);
+        if (btnVisible) {
+          await submitBtn.click();
+          await dbLog('sso', 'info', 'Submit button clicked — sleeping 12s...');
+          await page.waitForTimeout(12000);
+          await dbShot(page, 'after-btn-sleep', `URL after button+sleep: ${page.url()}`);
         }
       }
 
-      // Verify we actually left login page
+      // Final URL check
       if (page.url().includes('login.bol.com')) {
-        await dbShot(page, 'sso-still-on-login', 'Navigation happened but still on login page — wrong credentials or CAPTCHA?');
-        throw new Error(`SSO redirect completed but still on login page — possible wrong creds or CAPTCHA: ${page.url()}`);
+        await dbShot(page, 'sso-failed', 'Both methods failed — still on login page');
+        throw new Error(`SSO login failed — still on login.bol.com after all attempts. URL: ${page.url()}`);
       }
+
+      await dbLog('sso', 'success', `SSO login succeeded — URL: ${page.url()}`);
 
       // Save fresh cookies
       try {
