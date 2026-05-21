@@ -1,0 +1,358 @@
+{
+  "sidebar_name": "💰 CFO",
+  "internal_name": "CFO",
+  "chat_url": "https://app.tasklet.ai",
+  "one_liner": "CFO agent managing Qualico's full P&L, cashflow, margins, exit modeling, and financial reporting pipeline across Amazon EU/US/CA, BOL.COM, and Webshop channels.",
+  "category": "Finance & Accounting",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "advanced",
+    "recommended_max": "genius",
+    "notes": "Expert for routine P&L updates, scraping, and data pipelines. Genius needed for complex exit modeling, cashflow debugging, or building new financial modules from scratch. Advanced sufficient for simple lookups."
+  },
+
+  "capabilities": [
+    "Automated bi-weekly P&L actuals pipeline (Sellerboard scrape → Supabase → cascade refresh)",
+    "BOL.COM monthly invoice processing and P&L ingestion",
+    "Cashflow forecasting with seasonal safety factors",
+    "P&L forecast engine with auto-cascade (PostgreSQL triggers)",
+    "Exit/valuation modeling (DCF, multiples, drag-along, cap table)",
+    "Margin analysis across 20+ product-channel combinations",
+    "TACOS (Total Advertising Cost of Sales) tracking per channel",
+    "Balance sheet management and indirect cash flow statements",
+    "Google Sheets financial report generation and sync",
+    "Notion dashboard and briefing updates",
+    "Bank presentation and investor memo PDF generation",
+    "Price monitoring across BOL.COM products",
+    "COGS landed cost tracking (ocean vs rail vs air)",
+    "Vercel platform deployment management",
+    "GitHub PR creation for qualico-platform frontend modules",
+    "Multi-marketplace Amazon financial data aggregation (DE, US, CA, UK, FR, ES, IT, NL)",
+    "Automated sanity checks (CM% range, sign integrity, cashflow positivity)",
+    "3PL warehousing cost analysis and seasonal modeling"
+  ],
+
+  "routing_keywords": ["P&L", "profit", "loss", "revenue", "cashflow", "cash flow", "margin", "TACOS", "PPC", "advertising", "exit", "valuation", "EBITDA", "balance sheet", "forecast", "budget", "COGS", "overhead", "sellerboard", "BOL", "Amazon", "financial", "accounting", "invoice", "net revenue", "gross revenue", "contribution margin", "cap table", "shareholders", "DCF", "multiples", "bank presentation", "investor", "3PL", "warehousing", "pricing"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Financial data lookups",
+      "example_queries": ["What's our YTD revenue?", "Show me April TACOS", "What's the CM% for Amazon DE?", "Current cash balance?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "P&L pipeline and data ingestion",
+      "example_queries": ["Run the Sellerboard scrape", "Update BOL actuals", "Refresh the P&L forecast", "Load January actuals"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "biweekly-pl-pipeline.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Reporting and document generation",
+      "example_queries": ["Generate the bank presentation", "Update the investor P&L", "Rebuild the MA P&L Excel", "Create the management plan PDF"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "rebuild_bank_pres_v2.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (>20K)"
+    },
+    {
+      "query_type": "Exit modeling and valuation",
+      "example_queries": ["Run exit scenario at 4x EBITDA", "What's the drag-along impact?", "Update cap table with new shares", "Model the debt schedule"],
+      "intelligence_needed": "genius",
+      "handles_subagent": "exit-module-supabase.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Platform frontend development",
+      "example_queries": ["Fix the cashflow chart colors", "Add 2027 selector to balance sheet", "Build the advertising dashboard module", "Update the PL module layout"],
+      "intelligence_needed": "genius",
+      "handles_subagent": "build-pl-module.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (>20K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "sellerboard-scraper-v11.md",
+      "purpose": "Scrapes Sellerboard via browser automation to extract Amazon sales data across all marketplaces (EU+US+CA). Handles account switching and date range selection.",
+      "task_types": ["web_scraping", "data_lookup"],
+      "query_patterns": ["Scrape Sellerboard", "Get latest Amazon sales data"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Computer Use (Chromium)"],
+        "tables": ["Sellerboard_Exports"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "sellerboard-pl-updater.md",
+      "purpose": "Transforms raw Sellerboard export data into P&L line items and upserts them into P&L_Masterdata. Maps Sellerboard columns to P&L categories with correct sign conventions.",
+      "task_types": ["data_lookup", "calculation", "api_call"],
+      "query_patterns": ["Update P&L from Sellerboard", "Load Amazon actuals"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Sellerboard_Exports", "P&L_Masterdata"],
+        "other_subagents": ["sellerboard-scraper-v11.md"],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "biweekly-pl-pipeline.md",
+      "purpose": "Orchestrates the full bi-weekly P&L pipeline: Sellerboard scrape → PL update → BOL update → verification → email on failure. Master coordinator for all actuals ingestion.",
+      "task_types": ["api_call", "notification", "calculation"],
+      "query_patterns": ["Run full P&L pipeline", "Update all actuals"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Supabase", "Computer Use", "Gmail"],
+        "tables": ["P&L_Masterdata", "Sellerboard_Exports", "pl_month_status"],
+        "other_subagents": ["sellerboard-scraper-v11.md", "sellerboard-pl-updater.md", "bol-pl-automation.md"],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "bol-pl-automation.md",
+      "purpose": "Fetches BOL.COM invoice data via Airtable API and loads it into P&L_Masterdata with explicit sign conventions (costs negative). Handles partial month detection.",
+      "task_types": ["api_call", "calculation"],
+      "query_patterns": ["Update BOL actuals", "Process BOL invoices"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Supabase", "Airtable"],
+        "tables": ["P&L_Masterdata"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "update_notion_dashboard.md",
+      "purpose": "Updates the Notion financial dashboard with latest P&L metrics, KPIs, and status indicators.",
+      "task_types": ["api_call", "formatting"],
+      "query_patterns": ["Update Notion dashboard", "Refresh Notion KPIs"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Notion", "Supabase"],
+        "tables": ["P&L_Masterdata"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Dashboard updates, briefing pages, financial KPI tracking",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
+    },
+    {
+      "service": "Airtable",
+      "connection_id": "conn_jr26b33r1azf9ys1nh4p",
+      "what_for": "BOL.COM invoice data, 3PL costs, margin data ingestion",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Shortwave",
+      "connection_id": "conn_60gywx06q9armya5206j",
+      "what_for": "Email drafting for financial reports and notifications",
+      "tools_activated": ["shortwave_create_new_draft"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "MA P&L Excel management, financial document storage, Google Sheets reporting",
+      "tools_activated": ["google_drive_search_documents", "google_drive_create_spreadsheet", "google_drive_get_spreadsheet", "google_drive_update_spreadsheet", "google_drive_upload_file", "google_drive_download_file", "google_drive_move_file", "google_drive_create_folder", "google_drive_list_drives"]
+    },
+    {
+      "service": "Computer Use",
+      "connection_id": "conn_htp1rsc9jwmzgrwgkdwf",
+      "what_for": "Sellerboard browser automation scraping",
+      "tools_activated": ["computer", "copy_file_from_computer"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Single source of truth for all financial data — P&L, cashflow, margins, exit modeling, balance sheet",
+      "tools_activated": ["list_tables", "execute_sql", "list_projects"]
+    },
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Searching financial emails, creating draft reports, failure notifications",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_create_draft"]
+    },
+    {
+      "service": "Vercel",
+      "connection_id": "conn_kd02nc5yrb4xv2w8vd7z",
+      "what_for": "Deploying qualico-platform frontend, managing deployments",
+      "tools_activated": ["vercel_token_auth-list-deployments", "vercel_token_auth-create-deployment", "vercel_token_auth-cancel-deployment"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "PRs for qualico-platform frontend modules, code updates, qualicoagents automation repo",
+      "tools_activated": ["github_list_repositories", "github_get_repository", "github_list_pull_requests", "github_get_pull_request", "github_get_file_content", "github_download_file", "github_create_pull_request", "github_push_to_branch"]
+    },
+    {
+      "service": "Exa AI Search",
+      "connection_id": "conn_mn2jr6h8am06yhamtgxh",
+      "what_for": "Web research for financial benchmarking and market data",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Tavily AI Search",
+      "connection_id": "conn_sz4v59nwy6b2kfp81agh",
+      "what_for": "Deep web research for regulatory and market intelligence",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Flieber",
+      "connection_id": "conn_fd23b5bmt3kdzfa2kz07",
+      "what_for": "Inventory management, purchase orders, replenishment recommendations",
+      "tools_activated": ["remote_http_call"]
+    }
+  ],
+
+  "triggers": [
+    {
+      "type": "webhook",
+      "description": "Receives inter-agent messages from Multi Agent Hub",
+      "frequency": "on-demand",
+      "trigger_id": "wti_s9e61r83287vkrwmvzz2"
+    },
+    {
+      "type": "schedule",
+      "description": "BOL P&L monthly update on the 15th at 10:00 CET",
+      "frequency": "monthly",
+      "trigger_id": "cti_cfsdwkgpj8hd05drr1tv"
+    },
+    {
+      "type": "schedule",
+      "description": "BOL P&L catch-up on the 1st at 10:00 CET for partial months",
+      "frequency": "monthly",
+      "trigger_id": "cti_b5k20g1ft9tan3z4v5ms"
+    },
+    {
+      "type": "schedule",
+      "description": "Bi-weekly P&L actuals pipeline (Sellerboard scrape + BOL + verify) every 2 weeks Monday 7:00 CET",
+      "frequency": "bi-weekly",
+      "trigger_id": "cti_pt5z8jqt4dcjzbma8c1g"
+    }
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": true,
+    "webhook_url": null,
+    "notes": "Webhook URL managed by Tasklet platform. Used for inter-agent communication via Multi Agent Hub."
+  },
+
+  "key_rules": [
+    "TACOS denominator = Gross Revenue everywhere (PPC ÷ Gross Revenue). Never Net Revenue.",
+    "Per-ASIN data is IGNORED — unreliable. Flat TACOS per channel only.",
+    "Never invent product names — always query Puzzlup_Product_Info (status=Selling).",
+    "2025 overhead stored as annual total in month=0 — pro-rate YTD: (ytd_months/12) × annual_total.",
+    "Supabase = single source of truth — never keep financial numbers in memory.",
+    "After every data change: run full sanity checks — CM% range, sign integrity, cashflow positivity.",
+    "ALL percentage fields stored in percentage form (e.g. 14.7 not 0.147). Every calculation MUST divide by 100.0.",
+    "P&L_Masterdata has actuals protection trigger; bypass with SET LOCAL app.bypass_actuals_protection = 'true'.",
+    "refresh_cashflow_from_pl() MUST always be called without arguments (year arg was misinterpreted as safety multiplier).",
+    "pl_monthly view: if actuals lack Net Revenue for a marketplace+month, fall back to forecast entirely — no mixing.",
+    "Costs in P&L_Masterdata must be NEGATIVE (sign convention).",
+    "complete_actual_months whitelist: only sellerboard_actual and bol_api count as real actuals."
+  ],
+
+  "input_format": {
+    "accepts": "Natural language financial queries, data update requests, report generation commands, pipeline execution triggers",
+    "example_queries": [
+      "What's our YTD revenue for 2026?",
+      "Run the full P&L pipeline",
+      "Show me TACOS by channel for April",
+      "Update the bank presentation with latest numbers",
+      "What's our exit valuation at 5x EBITDA?",
+      "Check the cashflow forecast for Q3",
+      "Build a new advertising dashboard module",
+      "What are our margins on MAT 1000 in France?",
+      "Refresh the Notion dashboard",
+      "Deploy the latest platform changes to Vercel"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Financial data tables, P&L reports, Excel/PDF documents, Supabase query results, instant app dashboards, GitHub PRs, deployment confirmations, sanity check reports",
+    "response_time": "medium",
+    "typical_token_usage": "high"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Multi Agent Hub",
+      "how": "Receives routed financial queries via webhook trigger",
+      "direction": "They call me"
+    }
+  ],
+
+  "databases_tables": [
+    {"table": "P&L_Masterdata", "access": "read+write", "what_for": "Core P&L actuals and forecast data for all channels and months"},
+    {"table": "Shared_Knowledge", "access": "read+write", "what_for": "Business rules, configuration, and shared context"},
+    {"table": "puzzlup_margins", "access": "read+write", "what_for": "Product margin data by channel and marketplace"},
+    {"table": "puzzlup_sales_actuals", "access": "read", "what_for": "Historical sales actuals for forecasting"},
+    {"table": "Sellerboard_Exports", "access": "read+write", "what_for": "Raw Sellerboard scrape data staging"},
+    {"table": "pl_month_status", "access": "read+write", "what_for": "Tracks which months have actuals vs forecast per channel"},
+    {"table": "cash_safety_seasonal", "access": "read+write", "what_for": "Seasonal safety factors for cashflow forecasting"},
+    {"table": "cashflow_data", "access": "read+write", "what_for": "Monthly cashflow forecast and actuals"},
+    {"table": "exit_config", "access": "read+write", "what_for": "Exit scenario configuration parameters"},
+    {"table": "shareholders", "access": "read+write", "what_for": "Cap table and shareholder information"},
+    {"table": "exit_scenarios", "access": "read+write", "what_for": "Exit valuation scenario outputs"},
+    {"table": "exit_debt", "access": "read+write", "what_for": "Debt schedule for exit modeling"},
+    {"table": "cap_table", "access": "read+write", "what_for": "Equity cap table management"},
+    {"table": "COGS_Landed", "access": "read+write", "what_for": "Landed cost tracking (ocean/rail/air)"},
+    {"table": "balance_sheet_data", "access": "read+write", "what_for": "Balance sheet line items"},
+    {"table": "indirect_cf_data", "access": "read+write", "what_for": "Indirect cash flow statement data"},
+    {"table": "Puzzlup_Product_Info", "access": "read", "what_for": "Product catalog — never invent names, always query"},
+    {"table": "Agents_Overview", "access": "write", "what_for": "Agent DNA self-registration"}
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualico-platform", "what_for": "Vercel-deployed Next.js financial dashboard frontend"},
+    {"repo": "tim581/qualicoagents", "what_for": "Automation scripts and agent configuration"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/AGENT_BRIEFING_MINIMAL.md", "what": "Minimal agent briefing with key rules and context"},
+    {"path": "/agent/home/tacos_update_sql.sql", "what": "Pending TACOS channel update SQL awaiting approval"},
+    {"path": "/agent/subagents/biweekly-pl-pipeline.md", "what": "Master orchestrator for bi-weekly P&L pipeline"},
+    {"path": "/agent/subagents/sellerboard-scraper-v11.md", "what": "Sellerboard browser automation scraper v11"},
+    {"path": "/agent/subagents/sellerboard-pl-updater.md", "what": "Sellerboard to P&L_Masterdata transformer"},
+    {"path": "/agent/subagents/bol-pl-automation.md", "what": "BOL.COM invoice to P&L automation"}
+  ],
+
+  "known_issues": [
+    "MAT 1000 COGS normalization pending — rail €1.80 vs ocean €0.43/unit difference unresolved",
+    "BOL April actuals — invoice data expected ~May 19, may still be pending",
+    "Remaining tray margin gaps for BE/NL channels need filling or deactivation",
+    "TACOS channel update SQL pending approval",
+    "Exit simulator drag-along threshold (60% vs 80%) and €400K @ 8%/yr unresolved",
+    "Open PRs: #45 (Cash Safety UI), #47 (PPC %), #48 (2027 BS/ICF selectors), #50 (advertising dashboard)",
+    "-€129K balance sheet imbalance awaiting Crowe 2025 jaarafsluiting",
+    "Forecast revision needed for ES/IT/NL/BE (ads stopped)"
+  ]
+}
