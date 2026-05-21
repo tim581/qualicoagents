@@ -1,0 +1,54 @@
+{
+  "sidebar_name": "🔒 Security",
+  "internal_name": "🔒 Security",
+  "chat_url": "?",
+  "one_liner": "Runs weekly automated Supabase backups to Google Drive, verifies restore integrity, and monitors infrastructure security across Qualico BV and BioRise.",
+  "category": "IT & Infrastructure",
+  "status": "active",
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced sufficient for backup runs, restore verification, and DB checks. Expert needed for security analysis, multi-step incident response, or RLS remediation."
+  },
+  "capabilities": [
+    "Weekly automated pg_dump backup of Supabase (Qualico BV, 142 tables) to Google Drive — compressed, split into 8 parts <=150 MB each",
+    "Restore verification — spin up Supabase test project, restore from Drive parts, count tables + row-spot-checks, delete project",
+    "RLS audit across Supabase projects — identify tables and views missing Row Level Security",
+    "GitHub repo monitoring — scan qualico-platform and BioRise for security issues",
+    "Vercel deployment monitoring — list and check deployment states"
+  ],
+  "routing_keywords": ["backup", "restore", "RLS", "security", "Supabase", "pg_dump", "database", "audit", "infrastructure", "pg_restore"],
+  "subagents": [
+    {
+      "filename": "supabase_backup.md",
+      "purpose": "Runs pg_dump -Fc on Qualico BV Supabase project, splits into <=150 MB parts, uploads to Google Drive. Keeps last 3 backups.",
+      "intelligence_needed": "advanced",
+      "output_type": "action",
+      "response_speed": "slow"
+    }
+  ],
+  "triggers": [
+    {
+      "type": "schedule",
+      "description": "Weekly Supabase backup to Google Drive",
+      "frequency": "Weekly — Sunday 02:00 AM Europe/Brussels",
+      "trigger_id": "cti_pmhbs1q7x5q6xav3wgc3"
+    }
+  ],
+  "key_rules": [
+    "Never send emails directly — always draft for Tim to review first",
+    "Tim is at -30% capacity — keep outputs low cognitive load",
+    "Use pooler host aws-0-eu-west-1.pooler.supabase.com port 5432 (newer projects) or aws-1 (older)",
+    "Direct db.*.supabase.co is IPv6-only — sandbox is IPv4-only, always use Session Pooler",
+    "Keep last 3 backups only — auto-delete oldest on Drive",
+    "pg_restore v17 must be reinstalled each session via apt-get"
+  ],
+  "known_issues": [
+    "No Supabase delete project tool — must delete manually via dashboard",
+    "No Supabase reset DB password tool — must do manually via dashboard",
+    "pg_restore v17 not persisted between sandbox restarts",
+    "5 tables missing RLS in Qualico BV: sellerboard_exports, Routing_Rules, Chat_Sessions, Chat_Messages, Routing_Audit"
+  ],
+  "dna_dumped_at": "2026-05-21T13:16:00Z"
+}
