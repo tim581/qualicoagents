@@ -1,0 +1,346 @@
+{
+  "sidebar_name": "Legal Agent",
+  "internal_name": "Legal Agent",
+  "chat_url": "?",
+  "one_liner": "Manages Qualico's legal document database, parses and uploads contracts to Supabase, and provides AI-powered analysis of legal agreements for due diligence and M&A exit preparation.",
+  "category": "Legal & Compliance",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced handles most contract analysis and database queries. Expert needed for complex multi-document cross-referencing, M&A benchmarking, or building new subagents."
+  },
+
+  "capabilities": [
+    "Parse and upload legal contracts (PDF/DOCX) to Supabase with full text extraction",
+    "Recursively scan Google Drive legal folders and load all documents",
+    "Analyse and summarise contracts: key terms, costs, obligations, deadlines",
+    "Benchmark contract terms against market standards (M&A, advisory, employment)",
+    "Query Supabase Legal_Documents, Subsidy_Contracts, Tax_Compliance_Docs, Insurance_Documents",
+    "Manage and fix insurance document database (55 docs, AG Insurance, DAS, Ethias)",
+    "Draft NDA templates for M&A dataroom",
+    "Create and maintain ESOP review documents in Google Docs",
+    "Push legal agent briefings and DNA to GitHub (tim581/qualicoagents)",
+    "Process network listener events from agent_requests table in Supabase",
+    "Respond to inter-agent requests via Supabase agent_requests table",
+    "Identify missing/duplicate documents across Drive and Supabase",
+    "Perform cost audits (3PL pricing, advisory fee benchmarking)",
+    "Create Asana tasks for legal follow-up items (exit prep project)"
+  ],
+
+  "routing_keywords": [
+    "contract", "agreement", "legal", "NDA", "SHA", "SSHA", "term sheet",
+    "ESOP", "vesting", "shareholder", "loan", "subsidy", "KMO", "KONNEKTO",
+    "insurance", "verzekering", "AG Insurance", "gewaarborgd inkomen",
+    "compliance", "UBO", "RSZ", "FODFIN", "Xerius", "tax",
+    "M&A", "exit", "Deal Advisor", "due diligence", "dataroom",
+    "dienstenovereenkomst", "overeenkomst", "investering", "aandeelhouders",
+    "termsheet", "leningcontract", "SAFE", "CAPI", "founder agreement",
+    "board resolution", "statuten", "notarial", "CLA", "SLA",
+    "exclusiviteit", "success fee", "honorarium", "juridisch"
+  ],
+
+  "routing_matrix": [
+    {
+      "query_type": "Contract lookup / document query",
+      "example_queries": [
+        "Wat staat er in het SHA 2023?",
+        "Welke investeerders hebben een term sheet getekend?",
+        "Toon me alle subsidiecontracten"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Contract upload & parse new document",
+      "example_queries": [
+        "Laad dit contract in Supabase",
+        "Parse en analyseer dit PDF contract",
+        "Nieuw contract uploaden naar de database"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "upload-dealadvisor-contract.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Contract analysis & market benchmarking",
+      "example_queries": [
+        "Vergelijk deze overeenkomst met marktstandaarden",
+        "Wat zijn de risico's in dit contract?",
+        "Analyseer de success fee structuur vs. Lehman formula"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Full legal database scan & recursive Drive loading",
+      "example_queries": [
+        "Scan alle juridische mappen en laad nieuwe documenten",
+        "Volledig uitkammen van Drive voor ontbrekende contracten",
+        "Update de volledige legal document database"
+      ],
+      "intelligence_needed": "expert",
+      "handles_subagent": "recursive-complete-loader.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Network listener / inter-agent communication",
+      "example_queries": [
+        "Check agent requests",
+        "Verwerk inkomende verzoeken van andere agents",
+        "Fetch Active Broadcast Directives"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "network-listener.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "network-listener.md",
+      "purpose": "Checks Supabase agent_requests table for answered requests addressed to Legal Agent. Fetches Active Broadcast Directives from Notion and processes inter-agent messages. Designed to run on a schedule (9:00, 13:00, 17:00 Brussels time Mon-Fri).",
+      "task_types": ["data_lookup", "api_call", "notification"],
+      "query_patterns": ["Check agent requests", "Process network events", "Fetch broadcast directives"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase", "Notion"],
+        "tables": ["agent_requests", "agents"],
+        "other_subagents": [],
+        "external_agents": ["Research Agent", "Finance Agent", "Operations Agent"]
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "recursive-complete-loader.md",
+      "purpose": "Performs true recursive scanning of all Google Drive legal folders (Funding, Governance, Subsidies, Tax/Compliance, Steekproef). Downloads and extracts full text from all PDFs/DOCX and inserts into Supabase Legal_Documents, Subsidy_Contracts, and Tax_Compliance_Docs tables. Skips duplicates.",
+      "task_types": ["file_processing", "api_call", "data_lookup"],
+      "query_patterns": ["Scan alle juridische mappen", "Laad ontbrekende documenten", "Recursive Drive scan"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Drive", "Supabase"],
+        "tables": ["Legal_Documents", "Subsidy_Contracts", "Tax_Compliance_Docs"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "legal-doc-parser-v2.md",
+      "purpose": "Parses individual legal documents from Google Drive (PDF/DOCX), extracts metadata and full content, and prepares structured insert payloads for Supabase.",
+      "task_types": ["file_processing", "analysis", "formatting"],
+      "query_patterns": ["Parse dit document", "Extraheer inhoud van contract"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Drive"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "upload-dealadvisor-contract.md",
+      "purpose": "Uploads a specific new contract (Deal Advisor dienstenovereenkomst) to Supabase Legal_Documents table with full content extraction from a local PDF file.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": ["Upload nieuw contract", "Voeg contract toe aan database"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Legal_Documents"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "fix-download-error.md",
+      "purpose": "Fixes the Vragenlijst GI Voorstel_Ondertekend.pdf document in Insurance_Documents table by re-extracting text from the downloaded PDF and updating the parsed_content and status fields in Supabase.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": ["Fix download error insurance", "Herstel ontbrekende content"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Insurance_Documents"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "submit-audit-response.md",
+      "purpose": "Submits the Legal Agent audit response to Supabase Agent_Audit_Status table and pushes the agent briefing to GitHub.",
+      "task_types": ["api_call", "report_generation"],
+      "query_patterns": ["Submit audit", "Push briefing to GitHub"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase", "GitHub"],
+        "tables": ["Agent_Audit_Status"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Read Active Broadcast Directives, Legal Agent briefing page, ESOP Review page, Dataroom Section 08",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Read/write Legal_Documents, Subsidy_Contracts, Tax_Compliance_Docs, Insurance_Documents, agent_requests tables",
+      "tools_activated": ["list_tables", "execute_sql"]
+    },
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Search emails, draft and send legal correspondence (Mace, Forceget, Karlien)",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Scan legal folders, download contracts (PDF/DOCX), create/update Google Docs for NDA and ESOP review",
+      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_download_file", "google_drive_create_document", "google_drive_append_text_to_document", "google_drive_create_folder", "google_drive_create_spreadsheet", "google_drive_get_spreadsheet", "google_drive_update_spreadsheet", "google_drive_move_file"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push agent briefings and DNA files to tim581/qualicoagents repository",
+      "tools_activated": ["github_push_to_branch"]
+    }
+  ],
+
+  "triggers": [],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "No webhook configured. Network listener previously ran on schedule trigger but currently inactive."
+  },
+
+  "key_rules": [
+    "Full content is a must — all documents must have full_content/parsed_content extracted, never metadata-only",
+    "TRUE recursive scanning required — must descend into ALL subfolders, shallow scans are not acceptable",
+    "Skip non-binding documents: pitch decks, financial models, unsigned templates, payslip archives, equity spreadsheets",
+    "Load only binding legal contracts: SHA, term sheets, SAFEs, loan agreements, ESOPs, founder agreements, CLAs, board resolutions, subsidy contracts, tax compliance docs",
+    "No duplicates — always check existing records before inserting new ones",
+    "Qualico BV (BE 0761.774.850) is the primary legal entity; Tim Huybrechts is the founder/CEO",
+    "M&A exit is the primary strategic context — all legal work should support due diligence readiness",
+    "Deal Advisor contract signed 8 May 2026 — 5.5% success fee, 24-month tail, full exclusivity",
+    "ESOP review completed March 2026 — open items tracked in Asana exit prep project",
+    "Insurance_Documents: 55 docs (AG Insurance, DAS, Ethias) — all 55 now have full parsed_content"
+  ],
+
+  "input_format": {
+    "accepts": "Legal contract files (PDF/DOCX uploads), natural language queries about contracts, Drive folder links, Supabase query requests, inter-agent requests via agent_requests table",
+    "example_queries": [
+      "Parse dit contract en upload het naar Supabase",
+      "Wat zijn de key terms in de Deal Advisor overeenkomst?",
+      "Vergelijk onze success fee structuur met marktstandaarden",
+      "Welke documenten zitten er in de Legal_Documents tabel?",
+      "Hoelang duurt de exclusiviteit in dit contract?"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Structured contract analyses (markdown tables), Supabase database records with full_content, Google Drive documents (NDA, ESOP review), GitHub files (briefings, DNA), Asana tasks, Gmail drafts",
+    "response_time": "medium",
+    "typical_token_usage": "medium"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Research Agent",
+      "how": "Research Agent submitted request #14 asking for NDA template — Legal Agent was created in response",
+      "direction": "They call me"
+    },
+    {
+      "agent": "Finance Agent",
+      "how": "Shares Supabase infrastructure; Legal Agent also performed 3PL cost audit and pricing analysis at user request",
+      "direction": "Bidirectional"
+    },
+    {
+      "agent": "Operations Agent",
+      "how": "3PL contract and pricing work overlaps with operations; Legal Agent reviewed 3PL agreements",
+      "direction": "Bidirectional"
+    }
+  ],
+
+  "databases_tables": [
+    {
+      "table": "Legal_Documents",
+      "access": "read+write",
+      "what_for": "68 binding legal contracts (SHA, term sheets, SAFEs, founder agreements, CLAs, board resolutions, employment contracts) with full text content"
+    },
+    {
+      "table": "Subsidy_Contracts",
+      "access": "read+write",
+      "what_for": "12 subsidy agreements (KMO GS, IP KMO SUBSIDIE, KONNEKTO, Flanders grants) with full text content"
+    },
+    {
+      "table": "Tax_Compliance_Docs",
+      "access": "read+write",
+      "what_for": "23 tax and compliance documents (UBO registers, RSZ attestations, FODFIN, Xerius, GPSR) with full text content"
+    },
+    {
+      "table": "Insurance_Documents",
+      "access": "read+write",
+      "what_for": "55 insurance documents (AG Insurance GI, D&O, USA liability, DAS, Ethias) — all with parsed_content"
+    },
+    {
+      "table": "agent_requests",
+      "access": "read+write",
+      "what_for": "Inter-agent communication — reads requests addressed to Legal Agent, writes responses"
+    }
+  ],
+
+  "github_repos": [
+    {
+      "repo": "tim581/qualicoagents",
+      "what_for": "Stores agent briefing at agents/legal-agent.md and DNA at agents/legal-agent/dna.json"
+    }
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/subagents/network-listener.md", "what": "Network listener subagent for inter-agent communication"},
+    {"path": "/agent/subagents/recursive-complete-loader.md", "what": "True recursive Drive scanner and Supabase loader"},
+    {"path": "/agent/subagents/legal-doc-parser-v2.md", "what": "Legal document parser v2"},
+    {"path": "/agent/subagents/upload-dealadvisor-contract.md", "what": "Deal Advisor contract uploader"},
+    {"path": "/agent/subagents/fix-download-error.md", "what": "Insurance document content fixer"},
+    {"path": "/agent/subagents/submit-audit-response.md", "what": "Agent audit submission subagent"},
+    {"path": "/agent/home/3PL_Cost_Audit_Invoice_Analysis.md", "what": "Complete 3PL cost audit report (6 issues, $4,736-$27,750 annual exposure)"},
+    {"path": "/agent/home/RECURSIVE_LOAD_REPORT.md", "what": "Report on comprehensive recursive legal document load"},
+    {"path": "/agent/home/DISCOVERY_REPORT.md", "what": "Full Drive discovery report (300+ documents scanned)"},
+    {"path": "/agent/home/vragenlijst_gi_voorstel.pdf", "what": "Downloaded AG Insurance GI questionnaire PDF (now fixed in Supabase)"},
+    {"path": "/agent/home/dna.json", "what": "This agent DNA file"}
+  ],
+
+  "known_issues": [
+    "No active network listener trigger — was previously configured but shows 0 active triggers. May need to be re-created.",
+    "Agent_Audit_Status Supabase insert from previous session may have had an error — not verified",
+    "chat_url not captured — browser URL not accessible programmatically",
+    "Many legacy loader subagents in /agent/subagents/ from iterative development — could be cleaned up",
+    "/agent/home/ contains many intermediate SQL/JSON/Python files from document loading iterations — cleanup recommended"
+  ]
+}
