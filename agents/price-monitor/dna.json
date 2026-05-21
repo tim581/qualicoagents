@@ -1,0 +1,119 @@
+{
+  "sidebar_name": "📊 Price Monitor",
+  "internal_name": "📊 Price Monitor",
+  "chat_url": "?",
+  "one_liner": "Monitors Buy Box ownership, prices, and stock across 11 Puzzlup sales channels (10 Amazon markets + Bol.com + Webshop) — scrapes every 6 hours via Playwright on Tim's PC, updates margins, logs price changes, and cross-references inventory.",
+  "category": "eCommerce & Product",
+  "status": "active",
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced is sufficient for routine scrape cycles and data lookups. Expert needed when building/fixing platform app code (Next.js), debugging Playwright scraper logic, or designing new DB schema."
+  },
+  "capabilities": [
+    "Trigger Playwright price scraper on Tim's PC via Browser_Tasks queue in Supabase",
+    "Poll and validate scrape results across 11 channels (DE, FR, UK, US, CA, NL, BE, IT, ES, Bol.com, Webshop)",
+    "Update puzzlup_margins.price_incl_vat_local with latest scraped prices after each run",
+    "Auto-log price changes (up/down) to puzzlup_pricing_adjustments table",
+    "Cross-reference Inventory_Levels to auto-flip OOS/in-stock status per product",
+    "Monitor Buy Box ownership — flag when Puzzlup/Qualico loses the Buy Box",
+    "Detect and report currency mismatches, suppressed listings, and rating drops",
+    "Maintain price history and traceability for all 11 channels",
+    "Push all pricing data to Supabase after each scrape run",
+    "Read broadcast directives from Supabase Shared_Knowledge (network-listener)",
+    "Perform gap analysis — show TO LAUNCH opportunities across all channels",
+    "Push scraper script updates to GitHub (tim581/qualicoagents)"
+  ],
+  "routing_keywords": ["price", "buy box", "buybox", "scrape", "puzzlup", "amazon", "bol.com", "webshop", "monitor", "listing", "stock", "OOS", "out of stock", "FBA", "margin", "pricing", "channel", "variant", "ASIN", "EUR", "GBP", "USD", "CAD", "playwright", "scraper"],
+  "triggers": [
+    {
+      "type": "schedule",
+      "description": "Price & Buy Box monitoring cycle — inserts Browser_Task into Supabase for Tim's PC Playwright executor to scrape all 11 channels, then validates results, updates margins, logs price changes, and cross-references inventory",
+      "frequency": "Every 6 hours: 00:00, 06:00, 12:00, 18:00 Brussels time, every day",
+      "trigger_id": "cti_0fcmw3tch80yhnqwzmw7"
+    }
+  ],
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "No webhook trigger configured. All automation runs on schedule."
+  },
+  "key_rules": [
+    "NO Slack alerts — Tim explicitly removed all Slack notifications",
+    "NO Airtable updates — disabled per Tim",
+    "DO NOT upload files to Google Drive",
+    "Prices stored in local currency: UK=GBP, US=USD, CA=CAD, EUR markets=EUR",
+    "Always use live ECB rates from frankfurter.app — never fixed rates",
+    "AMZ DE = reference catalog for ALL markets — if a product is in DE but not another channel, it is a gap",
+    "ECO mats = EU-only — NEVER show ECO as a gap for UK, US, CA",
+    "White/Blanc/Creme trays = DISCONTINUED — never scrape or show",
+    "Skip products marked Shipped internationally or Import Fees Deposit Included",
+    "Only scrape FBM where there is NO FBA for that product/market combo",
+    "Webshop and Bol.com: buybox_seller = D2C — no Buy Box checks needed",
+    "ALL gaps shown as TO LAUNCH (blue) — NOT LISTED no longer used",
+    "Before scrape: snapshot prices; after scrape: compare and log changes to puzzlup_pricing_adjustments",
+    "Health thresholds: Issue=BB lost OR OOS OR rating<4.0; Warning=BB suppressed OR price>40% avg OR rating<4.5",
+    "Protocol v3.0: every workflow run READ Shared_Knowledge → DO work → WRITE findings back"
+  ],
+  "subagents": [
+    {
+      "filename": "scrape-puzzlup-prices.md",
+      "purpose": "Main price monitoring pipeline (v9.1). Cleans up old Browser_Tasks, inserts a new price-scrape task for Tim's PC Playwright executor, polls for completion, validates results, updates puzzlup_margins, logs price changes to puzzlup_pricing_adjustments, and cross-references Inventory_Levels for OOS flips.",
+      "task_types": ["api_call", "data_lookup", "calculation", "notification"],
+      "intelligence_needed": "advanced",
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "Reads broadcast directives from Supabase Shared_Knowledge and updates the agent last_seen timestamp. Runs 3x/day as a lightweight heartbeat and directive check.",
+      "task_types": ["data_lookup", "api_call"],
+      "intelligence_needed": "basic",
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "extract-asins.md",
+      "purpose": "Utility subagent for extracting ASINs from Amazon product pages or URLs. Used during catalog setup and when adding new products to monitoring.",
+      "task_types": ["web_scraping", "data_lookup"],
+      "intelligence_needed": "advanced",
+      "output_type": "data",
+      "response_speed": "medium"
+    }
+  ],
+  "connections": [
+    {"service": "Supabase", "connection_id": "conn_xmaq9bngsgw6e19jxcjn", "what_for": "Primary data store — read/write all pricing, monitoring, margin, inventory, and agent state tables"},
+    {"service": "GitHub", "connection_id": "conn_rf4te6wqncg18hn7dn13", "what_for": "Push scraper script updates to tim581/qualicoagents; read/write platform app code in tim581/qualico-platform"},
+    {"service": "Remote Computer (Tim's PC)", "connection_id": "conn_x0vpfebk2ye7mdnwaa2g", "what_for": "Playwright codegen sessions for scraper debugging; direct PC access for troubleshooting"},
+    {"service": "Vercel", "connection_id": "conn_kd02nc5yrb4xv2w8vd7z", "what_for": "Check deployment status of qualico-platform.vercel.app"},
+    {"service": "Notion", "connection_id": "conn_1ykn33de2j69hkpfvg5r", "what_for": "Read/write reports, analyses, and Active Broadcast Directives"},
+    {"service": "Slack", "connection_id": "conn_4syh5zxa3g8xm552sp6r", "what_for": "DISABLED — Slack alerts removed per Tim's instruction"},
+    {"service": "Google Drive", "connection_id": "conn_zhj70cc89xscszt6ktwj", "what_for": "Available but DO NOT upload files here per Tim's instruction"},
+    {"service": "Airtable", "connection_id": "conn_jr26b33r1azf9ys1nh4p", "what_for": "NOT used — Airtable updates disabled per Tim's instruction"}
+  ],
+  "databases_tables": [
+    {"table": "amazon_monitor_fba_puzzlup", "access": "read+write", "what_for": "Primary scrape target — stores FBA prices, Buy Box seller, rating, stock status per product per channel"},
+    {"table": "puzzlup_margins", "access": "read+write", "what_for": "Updated with latest scraped prices after each run (price_incl_vat_local column)"},
+    {"table": "puzzlup_pricing_adjustments", "access": "read+write", "what_for": "Auto-logs price changes (up/down) for traceability and chart data in platform app"},
+    {"table": "Inventory_Levels", "access": "read", "what_for": "Cross-referenced after each scrape to auto-flip OOS/in-stock status"},
+    {"table": "Browser_Tasks", "access": "read+write", "what_for": "Task queue — insert price-scrape tasks for Tim's PC Playwright executor"},
+    {"table": "Price_Monitor_Debug_Log", "access": "write", "what_for": "Debug logging for each scrape pipeline run"},
+    {"table": "Shared_Knowledge", "access": "read+write", "what_for": "READ broadcast directives at start; WRITE findings after work (Protocol v3.0)"},
+    {"table": "Agent_Briefings", "access": "read+write", "what_for": "Agent briefing documentation — updated after each chat session"},
+    {"table": "price_snapshot", "access": "read+write", "what_for": "Local agent memory table — pre-scrape price snapshots for change detection"}
+  ],
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Playwright scraper script (price-monitor-scraper.js) and task executor (playwright-task-executor.js)"},
+    {"repo": "tim581/qualico-platform", "what_for": "Platform app (Next.js) — Listing Monitor and Pricing Adjustments modules"}
+  ],
+  "known_issues": [
+    "FR seller detection returns UNKNOWN — Amazon FR uses Vendu par not Sold by; fix still needed",
+    "CA Sorting Trays (separate ASINs) only partially scraping — 2 of 4 variants found",
+    "Webshop section shows ?? ?? country badge in Listing Monitor — channel 36 join failing client-side",
+    "5000 Gift mat not yet listed on Webshop — pending Tim decision to launch",
+    "Gift 1000 ASINs unknown for NL, BE, IT, ES markets",
+    "Luxe 1500 has 52 units in FBA CA but not listed — pending Tim launch decision",
+    "Agent Briefing needs update to v3.6 (currently at v3.5)"
+  ]
+}
