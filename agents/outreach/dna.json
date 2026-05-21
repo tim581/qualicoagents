@@ -1,0 +1,381 @@
+{
+  "sidebar_name": "🤝 Outreach",
+  "internal_name": "🤝 Outreach",
+  "chat_url": null,
+  "one_liner": "AI-powered GTM system that finds, enriches, and contacts M&A acquisition targets for Qualico — plus handles friend's Gulf job hunting outreach",
+  "category": "Marketing & Sales",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "genius",
+    "recommended_min": "advanced",
+    "recommended_max": "genius",
+    "notes": "Advanced for simple lookups/status checks. Expert for enrichment pipelines and Excel building. Genius for complex multi-step lead research, website scraping, and strategic analysis."
+  },
+
+  "capabilities": [
+    "Find and curate M&A acquisition targets (aggregators, toy companies, PE-backed firms)",
+    "Enrich companies via Apollo.io (revenue, employees, phone, LinkedIn)",
+    "Find decision-maker contacts with verified emails using Apollo people enrichment",
+    "Domain search and email verification via Hunter.io API",
+    "Manage full M&A pipeline in Supabase (ma_targets, ma_contacts, ma_outreach_log)",
+    "Build professionally formatted Excel reports with conditional formatting, PE highlights, tier coloring",
+    "Upload/manage Excel files on Google Drive (delete old → upload new)",
+    "PE-backed company research and identification",
+    "Tier-based lead segmentation (TOP/GOOD/OK/WEAK)",
+    "M&A broker identification and outreach timing strategy",
+    "Cold outreach playbook creation (6-touch multi-channel sequences)",
+    "Email deliverability setup guidance (SPF, DKIM, DMARC)",
+    "Gulf region job hunting research — company discovery, contact finding, event calendars",
+    "Belgian network mapping for Gulf business (ABLCC, FIT, embassies)",
+    "Amazon puzzle seller identification across US, DE, UK, FR, CA marketplaces",
+    "Vapi AI caller configuration for outbound M&A calls",
+    "Apollo email sequence strategy and setup",
+    "Valuation benchmarking (asset sale vs studio sale, strategic vs aggregator multiples)",
+    "Inter-agent webhook communication"
+  ],
+
+  "routing_keywords": ["outreach", "M&A", "acquisition", "leads", "contacts", "enrichment", "Apollo", "Hunter", "email", "cold outreach", "pipeline", "targets", "PE", "private equity", "toy companies", "puzzles", "Qualico", "Puzzlup", "broker", "sequence", "Vapi", "AI caller", "Gulf", "job hunting", "Bram", "Excel", "Supabase", "decision maker"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Pipeline status checks",
+      "example_queries": ["How many contacts do we have?", "What's the M&A pipeline status?", "Show me TOP tier companies"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Company/contact enrichment",
+      "example_queries": ["Enrich these 10 companies via Apollo", "Find decision makers at Ravensburger", "Search Hunter.io for contacts at masdar.ae"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "apollo_enrichment_v2.md or hunter_bulk_search.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Full pipeline operations",
+      "example_queries": ["Build the M&A master Excel with all data", "Find 3 contacts per company for all TOP tier targets", "Research PE ownership for all 225 companies"],
+      "intelligence_needed": "genius",
+      "handles_subagent": "find_ma_contacts.md, build_enriched_excel.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    },
+    {
+      "query_type": "Gulf job hunting research",
+      "example_queries": ["Find more leads for Bram using Hunter.io", "Add contacts for Gulf companies", "Build enriched Excel for friend's job search"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "find_new_gulf_contacts.md, enrich_gulf_contacts.md, hunter_bulk_search.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Outreach strategy and sequences",
+      "example_queries": ["Set up email sequences for TOP tier", "Configure Vapi AI caller", "What's the outreach timing for brokers?"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "apollo_enrichment_v2.md",
+      "purpose": "Enriches companies via Apollo people-enrichment API. Takes company name + domain, returns revenue, employees, phone, LinkedIn, email patterns.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Enrich this company via Apollo", "Get revenue/employees for these companies"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Apollo.io"], "tables": ["ma_targets"], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "find_ma_contacts.md",
+      "purpose": "Finds decision-maker contacts at M&A target companies using web search + Apollo enrichment. Targets CEO/VP/Director based on company size.",
+      "task_types": ["web_scraping", "api_call", "data_lookup"],
+      "query_patterns": ["Find 3 contacts at each company", "Who are the decision makers at Ravensburger?"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Apollo.io"], "tables": ["ma_contacts"], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "hunter_bulk_search.md",
+      "purpose": "Runs bulk Hunter.io domain searches across multiple companies, saves results as JSON. Filters for strategy/M&A/corporate development contacts.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Search Hunter.io for contacts at these domains", "Find emails at masdar.ae"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Hunter.io"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "hunter_verify_emails.md",
+      "purpose": "Verifies email addresses via Hunter.io email-verifier API. Returns deliverable/risky/undeliverable status with confidence score.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Verify these emails via Hunter.io", "Check if these contacts have valid emails"],
+      "intelligence_needed": "basic",
+      "dependencies": {"connections": ["Hunter.io"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "find_new_gulf_contacts.md",
+      "purpose": "Finds strategy/M&A/corporate development contacts at Gulf companies for friend's job hunting research using web search + Apollo.",
+      "task_types": ["web_scraping", "api_call"],
+      "query_patterns": ["Find contacts at Gulf companies for Bram", "Add strategy contacts for ACWA Power"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Apollo.io"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "enrich_gulf_contacts.md",
+      "purpose": "Enriches Gulf company contacts via Apollo people-enrichment, finding verified emails and LinkedIn profiles for job hunting outreach.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Enrich Bram's contacts via Apollo", "Get emails for Gulf contacts"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Apollo.io"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "build_enriched_excel.md",
+      "purpose": "Builds professionally formatted Excel files with conditional formatting, tier colors, PE highlights, zebra striping, frozen headers, auto-filters.",
+      "task_types": ["file_processing", "formatting"],
+      "query_patterns": ["Build the M&A master Excel", "Rebuild Excel with latest data"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Google Drive"], "tables": ["ma_targets", "ma_contacts"], "other_subagents": [], "external_agents": []},
+      "output_type": "file",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "supabase_batch_insert.md",
+      "purpose": "Batch inserts companies or contacts into Supabase ma_targets/ma_contacts tables with proper column mapping and conflict handling.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Insert these companies into Supabase", "Add contacts to ma_contacts"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Supabase"], "tables": ["ma_targets", "ma_contacts"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "lead-researcher.md",
+      "purpose": "Deep web research on potential acquisition targets — scrapes websites, evaluates product fit, assesses strategic value for Qualico M&A.",
+      "task_types": ["web_scraping", "analysis"],
+      "query_patterns": ["Research these companies for M&A fit", "Evaluate website and products of these targets"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": [], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "report",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "amazon_puzzle_seller_scraper.md",
+      "purpose": "Scrapes Amazon marketplaces (US, DE, UK, FR, CA) for top puzzle sellers by review count, identifies brand names and seller profiles.",
+      "task_types": ["web_scraping"],
+      "query_patterns": ["Find top Amazon puzzle sellers", "Scrape Amazon DE for puzzle brands"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": [], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "ma_outreach_researcher.md",
+      "purpose": "Researches M&A cold outreach best practices, email templates, sequence strategies, and deliverability requirements.",
+      "task_types": ["web_scraping", "analysis"],
+      "query_patterns": ["Research M&A outreach best practices", "Build cold email playbook"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": [], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "DEPRECATED. Was used for inter-agent network directive listening. Deleted per Directive #28.",
+      "task_types": ["notification"],
+      "query_patterns": [],
+      "intelligence_needed": "basic",
+      "dependencies": {"connections": ["Supabase"], "tables": ["Shared_Knowledge"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "find_target_contacts.md",
+      "purpose": "Finds 3 strategy/M&A contacts per company using web search, then enriches via Apollo for verified emails.",
+      "task_types": ["web_scraping", "api_call"],
+      "query_patterns": ["Find contacts for these target companies", "Get 3 contacts per company"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Apollo.io"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "title_contact_finder.md",
+      "purpose": "Finds specific contacts by title pattern at given companies (e.g., VP Strategy at all Gulf energy companies).",
+      "task_types": ["web_scraping", "api_call"],
+      "query_patterns": ["Find VP Strategy at these companies", "Who is the CSO at ACWA Power?"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Apollo.io"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
+      "response_speed": "medium"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Apollo.io",
+      "connection_id": "conn_dc078ynk6c45wc65sj64",
+      "what_for": "Lead enrichment (revenue, employees, phone, LinkedIn), people enrichment (verified emails), contact search",
+      "tools_activated": ["search-contacts", "search-accounts", "people-enrichment", "create-contact", "create-update-contact", "update-contact-stage", "search-sequences", "add-contacts-to-sequence", "create-account"]
+    },
+    {
+      "service": "HubSpot",
+      "connection_id": "conn_3wekcw22t82kee7e6v1h",
+      "what_for": "DEPRECATED — replaced by Supabase. Legacy CRM data still exists.",
+      "tools_activated": ["hubspot_search_objects", "hubspot_batch_create_objects", "hubspot_batch_update_objects", "hubspot_list_objects", "hubspot_get_schemas", "hubspot_batch_create_associations", "hubspot_get_lists", "hubspot_update_list_memberships", "hubspot_create_list"]
+    },
+    {
+      "service": "Vapi",
+      "connection_id": "conn_tgtbws67kftsm3cw6v2c",
+      "what_for": "AI phone caller for M&A outreach — configure assistant, trigger outbound calls",
+      "tools_activated": ["vapi-update-assistant-settings", "vapi-create-call"]
+    },
+    {
+      "service": "Shortwave",
+      "connection_id": "conn_nqnymtm2dsh3dfd0b57p",
+      "what_for": "Email drafting via tim@qualico.be",
+      "tools_activated": ["shortwave_create_new_draft"]
+    },
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Email search and thread retrieval for tim@qualico.be",
+      "tools_activated": ["gmail_search_threads"]
+    },
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Agent briefing page, shared knowledge base, operating system documentation",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page", "notion-query-data-sources"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Single source of truth for M&A pipeline — ma_targets (225 companies), ma_contacts (65+ contacts), ma_outreach_log, shared agent brain",
+      "tools_activated": ["list_tables", "execute_sql"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Upload/manage Excel reports — M&A master pipeline + friend's Gulf job hunting file",
+      "tools_activated": ["google_drive_search_documents", "google_drive_upload_file"]
+    },
+    {
+      "service": "Hunter.io",
+      "connection_id": "conn_mb1r3qd7cqhnf7qj32db",
+      "what_for": "Domain search (find all emails at a company), email finder, email verification. Secondary enrichment source alongside Apollo.",
+      "tools_activated": ["remote_http_call"]
+    }
+  ],
+
+  "triggers": [
+    {
+      "type": "webhook",
+      "description": "Receives inter-agent messages from other Qualico Tasklet agents for cross-agent coordination",
+      "frequency": "on-demand",
+      "trigger_id": "wti_hjn3x9kcnc4s0syn2a8n"
+    }
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": true,
+    "webhook_url": null,
+    "notes": "Webhook URL not directly exposed in trigger config. Used for inter-agent communication within Qualico multi-agent network."
+  },
+
+  "key_rules": [
+    "NEVER fabricate data — emails, phones, revenue, names, URLs, titles. Liever geen data dan foute data.",
+    "Always verify contacts via Apollo/Hunter before inserting into Supabase or Excel",
+    "Excel: always DELETE old Drive version before uploading new one. Leave other Drive files untouched.",
+    "Excel formatting: PE-backed = red highlight, TOP tier = green, brokers = orange, zebra stripes, frozen headers, auto-filters",
+    "Contact targeting varies by company size: Large = VP Corp Dev, Medium = Division Head, Small = CEO/Founder, PE = Operating Partner, Aggregators = VP Acquisitions",
+    "PE-backed companies are highest priority — faster decision-making, higher acquisition appetite",
+    "6-touch outreach sequence over 30 days. TOP tier gets all 6 + Tim's custom first line. WEAK tier gets 3 emails only.",
+    "Never use markdown tables in emails — use bullet lists with bold labels",
+    "Skip Chinese Amazon sellers with no web presence",
+    "Supabase is single source of truth — HubSpot deprecated",
+    "Friend's Excel: only ADD columns/tabs, never change existing data. Strict quality filtering.",
+    "DNS records (SPF, DKIM, DMARC) must be configured before any email outreach"
+  ],
+
+  "input_format": {
+    "accepts": "Natural language requests about M&A lead generation, company research, contact finding, pipeline management, Excel reporting, outreach strategy, Gulf job hunting research",
+    "example_queries": [
+      "Find 3 contacts per company for all TOP tier M&A targets",
+      "Enrich these 10 companies via Apollo and update Supabase",
+      "Build the M&A master Excel with all enrichment data and upload to Drive",
+      "Use Hunter.io to find more leads for Bram at Gulf energy companies",
+      "What's our current pipeline status — how many contacts, how many with emails?",
+      "Research PE ownership for these companies",
+      "Set up the Vapi AI caller for outbound M&A calls",
+      "Create Apollo email sequences for TOP tier targets"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Supabase database updates, formatted Excel files, Google Drive uploads, email drafts, pipeline status reports, enrichment data, contact lists with verified emails",
+    "response_time": "slow",
+    "typical_token_usage": "very_high"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Qualico multi-agent network",
+      "how": "Receives inter-agent messages via webhook trigger. Reads/writes shared Supabase tables (Shared_Knowledge, agents, agent_requests). Previously participated in broadcast directive system (now deprecated).",
+      "direction": "Bidirectional"
+    }
+  ],
+
+  "databases_tables": [
+    {"table": "ma_targets", "access": "read+write", "what_for": "225 M&A acquisition target companies with tier, category, enrichment data (revenue, employees, phone, LinkedIn, PE status)"},
+    {"table": "ma_contacts", "access": "read+write", "what_for": "65+ decision-maker contacts linked to target companies with name, title, verified email, LinkedIn"},
+    {"table": "ma_outreach_log", "access": "read+write", "what_for": "Tracking all outreach touchpoints — emails, calls, LinkedIn, meetings, responses"},
+    {"table": "Shared_Knowledge", "access": "read+write", "what_for": "Cross-agent shared findings and intelligence"},
+    {"table": "shared_skills", "access": "read", "what_for": "Reusable protocols shared across agents"},
+    {"table": "agents", "access": "read+write", "what_for": "Agent directory — this agent is id=34"},
+    {"table": "agent_requests", "access": "read+write", "what_for": "Questions/requests requiring Tim's input"},
+    {"table": "Agents_Overview", "access": "write", "what_for": "DNA dump self-assessment storage"}
+  ],
+
+  "github_repos": [],
+
+  "files_and_paths": [
+    {"path": "/agent/home/2026_Outreach_ENRICHED.xlsx", "what": "Friend's Gulf job hunting Excel — 343 contacts, 11 sheets, Hunter.io data"},
+    {"path": "/agent/home/Qualico_MA_Pipeline_MASTER.xlsx", "what": "M&A master Excel — 225 companies, 38+ contacts, needs rebuild with latest Supabase data"},
+    {"path": "/agent/home/categorized_leads.json", "what": "All 77 original leads categorized by tier (TOP/GOOD/OK/WEAK)"},
+    {"path": "/agent/home/amazon_puzzle_sellers_final.json", "what": "65 Amazon puzzle sellers across 5 marketplaces"},
+    {"path": "/agent/home/toy_companies_final.json", "what": "76 top global toy companies"},
+    {"path": "/agent/home/all_new_contacts_for_hubspot.json", "what": "37 verified decision-maker contacts (legacy, pre-Supabase)"},
+    {"path": "/agent/home/qualico_ma_outreach_playbook.md", "what": "Complete 6-touch M&A cold outreach playbook"},
+    {"path": "/agent/home/comprehensive_pe_analysis.md", "what": "PE ownership analysis across all 244 companies"},
+    {"path": "/agent/home/Qualico_M&A_Lead_Generation_Briefing.pdf", "what": "Investor briefing PDF"},
+    {"path": "/agent/home/lead_research_summary.md", "what": "Full research on original 77 acquisition targets"},
+    {"path": "/agent/home/qualico_top20_acquisition_report.md", "what": "Deep website research on top 20 targets"},
+    {"path": "/agent/home/ma_brokers_identified.md", "what": "3 M&A broker intermediaries documented"},
+    {"path": "/agent/home/MASTER_EXCEL_GUIDE.md", "what": "Sheet-by-sheet guide for M&A Excel structure"}
+  ],
+
+  "known_issues": [
+    "43/45 TOP+GOOD M&A companies still missing decision-maker contacts in Supabase",
+    "M&A Master Excel needs full rebuild with latest Supabase enrichment data",
+    "Hunter.io free credits exhausted (0 searches, 0 verifications remaining) — needs upgrade for more",
+    "Apollo free trial — phone reveal requires webhook, not available",
+    "DNS records (SPF, DKIM, DMARC) not yet configured — blocks email outreach",
+    "Twilio Belgian/Dutch phone number not yet purchased — blocks Vapi AI calls",
+    "Friend's enriched Excel not yet uploaded to Google Drive",
+    "HubSpot connection still active but deprecated — should be cleaned up eventually",
+    "Several legacy subagents (hubspot-*.md) are now obsolete after Supabase migration"
+  ]
+}
