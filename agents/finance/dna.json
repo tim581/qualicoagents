@@ -1,0 +1,380 @@
+{
+  "sidebar_name": "💵 Finance",
+  "internal_name": "Finance",
+  "chat_url": "https://tasklet.ai/chat/personal-finance-management",
+  "one_liner": "Professional personal P&L system with AI investment portfolio management, transaction categorization, and market-linked analytics",
+  "category": "Finance & Accounting",
+  "status": "active",
+  
+  "intelligence": {
+    "current_level": "basic",
+    "recommended_min": "basic",
+    "recommended_max": "expert",
+    "notes": "Basic sufficient for portfolio updates, transaction entry, and routine reporting. Expert needed for complex variance analysis, formula architecture, and investment thesis modeling."
+  },
+
+  "capabilities": [
+    "Parse and categorize bank transactions (KBC CSV format)",
+    "Parse and categorize credit card statements (PDF extraction)",
+    "Maintain 9-tab P&L system with 1,160+ formulas",
+    "Generate variance analysis between forecast and actuals",
+    "Track investment portfolio across 6 holdings",
+    "Create financial dashboards with real-time calculations",
+    "Analyze AI investment thesis (MSFT, GOOG, semiconductors, data centers)",
+    "Update Balance Sheet with live portfolio values",
+    "Create and manage subagents for recurring tasks",
+    "Push agent self-documentation to Supabase and GitHub",
+    "Manage Google Sheets formulas and data integrity",
+    "Generate sector analysis and portfolio theme analysis"
+  ],
+
+  "routing_keywords": [
+    "budget", "P&L", "profit", "forecast", "actuals", "variance", "portfolio", 
+    "investments", "expenses", "income", "finance", "transactions", "ETF", "stocks",
+    "balance sheet", "dashboard", "categories", "spending", "holdings", "AI thesis"
+  ],
+
+  "routing_matrix": [
+    {
+      "query_type": "Portfolio updates & holdings",
+      "example_queries": [
+        "I bought GOOG, update my portfolio",
+        "Here's a screenshot of my portfolio, update the Investments tab",
+        "I sold RCRS and bought V9N",
+        "Update my holdings with current market values"
+      ],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Transaction parsing & categorization",
+      "example_queries": [
+        "Upload my bank statement for March",
+        "I have a PDF of my credit card statement",
+        "Parse this CSV and categorize transactions",
+        "Update Actuals tab with March transactions"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "populate-pnl-sheet.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (5-10K)"
+    },
+    {
+      "query_type": "P&L analysis & variance reporting",
+      "example_queries": [
+        "Show me my spending vs forecast",
+        "Generate variance analysis for Q1",
+        "Why is my dining spending over budget?",
+        "What are my major expense categories?"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    },
+    {
+      "query_type": "Complex modeling & formula architecture",
+      "example_queries": [
+        "Rebuild the variance formulas",
+        "Fix the Dashboard calculations",
+        "Create a new forecast tab for 2027",
+        "Redesign the Balance Sheet structure"
+      ],
+      "intelligence_needed": "expert",
+      "handles_subagent": "fix_pnl_formulas.md or update_sheet_formulas.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (10-20K)"
+    },
+    {
+      "query_type": "Investment thesis & market analysis",
+      "example_queries": [
+        "Is my portfolio aligned with the AI thesis?",
+        "Should I reallocate to V9N?",
+        "Analyze my semiconductor exposure",
+        "What's the investment case for MSFT vs GOOG?"
+      ],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "high"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "populate-pnl-sheet.md",
+      "purpose": "Parse bank statements (KBC CSV) and credit card PDFs, categorize transactions, update Google Sheet Actuals tabs for both 2025 and 2026",
+      "task_types": ["file_processing", "data_lookup", "calculation"],
+      "query_patterns": ["Upload bank statement", "Parse CSV", "Credit card PDF", "Update Actuals"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Sheets (Qualico)"],
+        "tables": ["pnl_config"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "fix_pnl_formulas.md",
+      "purpose": "Repair broken or missing formulas in P&L tabs, validate formula chains between Dashboard/Balance Sheet/Actuals/Variance tabs",
+      "task_types": ["calculation", "data_lookup", "analysis"],
+      "query_patterns": ["Fix formulas", "Broken calculations", "Variance not updating"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Google Sheets (Qualico)"],
+        "tables": ["pnl_config"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "format_full_workbook.md",
+      "purpose": "Apply professional formatting (colors, fonts, borders, conditional formatting) to entire P&L workbook",
+      "task_types": ["formatting", "report_generation"],
+      "query_patterns": ["Format the sheet", "Make it look professional", "Visual polish"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Sheets (Qualico)"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "format_investments_tab.md",
+      "purpose": "Apply visual formatting to Investments tab: colors, bold headers, borders, readability optimization for portfolio tracking",
+      "task_types": ["formatting", "report_generation"],
+      "query_patterns": ["Format Investments tab", "Make it easier to read", "Visual structure"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Sheets (Qualico)"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "slack-finance-reminder.md",
+      "purpose": "Send outcome-focused, benefit-driven Slack reminders for weekly finance review (Saturday 11am) and monthly bank statement uploads (5th at 10am)",
+      "task_types": ["notification", "message"],
+      "query_patterns": ["Weekly reminder", "Monthly reminder", "Send Slack"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Slack"],
+        "tables": ["pnl_config"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "message",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "submit-audit-response.md",
+      "purpose": "Post agent audit data (triggers, integrations, subagents, GitHub readiness) to Supabase agent_audits table",
+      "task_types": ["data_lookup", "api_call", "report_generation"],
+      "query_patterns": ["Submit audit", "Report status", "Agent self-assessment"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["agent_audits"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "update_sheet_formulas.md",
+      "purpose": "Update specific formulas in P&L tabs without rebuilding entire sheet; surgical formula replacements",
+      "task_types": ["calculation", "analysis"],
+      "query_patterns": ["Update formula", "Change calculation", "Fix specific cell"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Google Sheets (Qualico)"],
+        "tables": ["pnl_config"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "write-notion-briefing.md",
+      "purpose": "Update Notion briefing page with agent configuration, capabilities, and recent changes for portability across platforms",
+      "task_types": ["report_generation", "data_lookup"],
+      "query_patterns": ["Update briefing", "Document changes", "Notion sync"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Notion (Privé)"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "INACTIVE - Deleted per Directive #28 Kill Switch. Previously polled Supabase for agent requests and broadcast directives.",
+      "task_types": [],
+      "query_patterns": [],
+      "intelligence_needed": "basic",
+      "dependencies": {},
+      "output_type": "action",
+      "response_speed": "fast"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Google Sheets (Qualico)",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Live P&L system with 9 tabs, 1,160+ formulas; primary deliverable for financial tracking",
+      "tools_activated": ["google_drive_get_spreadsheet", "google_drive_update_spreadsheet", "google_drive_search_documents", "google_drive_create_folder", "google_drive_upload_file"]
+    },
+    {
+      "service": "Slack",
+      "connection_id": "conn_4syh5zxa3g8xm552sp6r",
+      "what_for": "Send motivational finance reminders and communicate with user asynchronously",
+      "tools_activated": ["slack_post_message", "slack_search_messages", "slack_list_channels"]
+    },
+    {
+      "service": "Notion (Privé workspace)",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Maintain agent briefing page (17-section format) for portability; reference key system documents",
+      "tools_activated": ["notion_fetch", "notion_search", "notion_create_pages", "notion_update_page"]
+    },
+    {
+      "service": "Google Drive (Personal - huybrechtstim@gmail.com)",
+      "connection_id": "conn_cp8t6gy5wwmb1m9y8ka1",
+      "what_for": "Store deliverable files (analysis docs, formatted workbooks, investment research)",
+      "tools_activated": ["google_drive_search_documents", "google_drive_create_folder", "google_drive_upload_file"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Protocol v3.0 shared brain; READ shared_knowledge for context, WRITE findings; agent registration and audit status",
+      "tools_activated": ["execute_sql", "list_tables"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push agent self-documentation (DNA JSON and briefing) to tim581/qualicoagents for portability",
+      "tools_activated": ["github_push_to_branch", "github_get_file_content", "github_list_repositories"]
+    }
+  ],
+
+  "triggers": [
+    {
+      "type": "webhook",
+      "description": "Receive inter-agent messages from Multi Agent Manager Hub for cross-agent collaboration",
+      "frequency": "on-demand",
+      "trigger_id": "wti_cg0tw127mqc5qafy2rpn"
+    }
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": true,
+    "webhook_url": "https://tasklet.ai/webhooks/whe_d1py3y0nf7acz96cw053",
+    "notes": "Receives messages from Multi Agent Manager Hub; enables inter-agent workflow coordination"
+  },
+
+  "key_rules": [
+    "ALL cash deployed as of March 6, 2026 — no cash drag, no new buys without selling",
+    "Going all-in on AI thesis: MSFT (OpenAI 49%), GOOG (Anthropic 10-14%), semiconductors, data infrastructure",
+    "Balance Sheet F8 (Q1 2026 Investments) must always = Investments!E13 (live portfolio total)",
+    "Weekly knowledge upload: Batch findings to Supabase shared_knowledge every Friday (skip if nothing new)",
+    "Protocol v3.0: READ shared_knowledge before work, WRITE findings after work (domain='personal')",
+    "Personal finance tasks use weekend due dates (when user works on finances)",
+    "Messaging style: Always outcome-focused, benefit-driven; paint picture of financial clarity and control",
+    "Directive #28 compliance: Delete status-checking triggers; keep business-critical triggers that produce output"
+  ],
+
+  "input_format": {
+    "accepts": "Chat messages with portfolio updates, bank statements, formatting requests, analysis questions, and P&L maintenance tasks",
+    "example_queries": [
+      "I bought GOOG, update my portfolio",
+      "Parse this CSV and update my Actuals tab",
+      "Show me my variance for March",
+      "Should I reallocate my semiconductors to V9N?",
+      "Fix the Dashboard formulas — they're not calculating correctly"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Mixed: Direct analysis + actions taken on Google Sheets, files pushed to Google Drive, Slack notifications, Supabase updates, portfolio charts",
+    "response_time": "fast for simple lookups (1-2m), medium for data entry (5-10m), slow for complex modeling (15-30m)",
+    "typical_token_usage": "low for portfolio updates (<1K), medium for transaction processing (5-10K), high for analysis/modeling (10-20K)"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Multi Agent Manager Hub",
+      "how": "Receive inter-agent messages; no active outbound messages at this time",
+      "direction": "They call me"
+    }
+  ],
+
+  "databases_tables": [
+    {
+      "table": "pnl_config",
+      "access": "read+write",
+      "what_for": "Store spreadsheet_id, slack_channel_id, last_update_month for configuration persistence"
+    },
+    {
+      "table": "agent_audits",
+      "access": "write",
+      "what_for": "Submit audit responses with active triggers, integrations, subagents, GitHub readiness"
+    },
+    {
+      "table": "shared_knowledge (Supabase)",
+      "access": "read+write",
+      "what_for": "READ portfolio holdings and market context; WRITE weekly findings about portfolio performance, thesis validation, market analysis"
+    }
+  ],
+
+  "github_repos": [
+    {
+      "repo": "tim581/qualicoagents",
+      "what_for": "Push agent briefing (agents/finance.md) and DNA JSON (agents/finance.json) for portability and documentation"
+    }
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/AI_ETF_Deep_Dive_March2026.md", "what": "Comprehensive analysis of UCITS AI ETFs (XAIX, WTAI, AIAI) vs AGIX"},
+    {"path": "/agent/home/Investment_Analysis_Tim.md", "what": "Portfolio analysis and AI strategy justification"},
+    {"path": "/agent/home/IBKR_Registration_Tim.md", "what": "Step-by-step Interactive Brokers account setup with personal details"},
+    {"path": "/agent/home/finance_dna_complete.json", "what": "Complete self-assessment DNA (this file)"},
+    {"path": "/agent/subagents/", "what": "8 active subagents + 1 inactive (network-listener.md)"},
+    {"path": "/agent/home/apps/personal-pnl/", "what": "Instant app for dashboard visualization"},
+    {"path": "/agent/home/apps/finance-agent-deliverables/", "what": "Instant app for tracking agent deliverables"}
+  ],
+
+  "known_issues": [
+    "Google Sheets API tools (update-values) don't support visual formatting (colors, bold, borders) — requires manual user action or download→format→re-upload workaround",
+    "IBKR account registration still pending — required for put options trading and AGIX ETF access",
+    "Vercel connection created but tools not yet activated — available for future deployment",
+    "GitHub briefing push was initiated but final confirmation not documented in last session",
+    "Network Listener trigger deleted per Directive #28, but network-listener.md subagent file still exists (marked inactive)"
+  ],
+
+  "portfolio_aum": "€43,365 as of March 6, 2026",
+  "portfolio_holdings_count": 6,
+  "portfolio_ai_alignment": "80%+ (MSFT + GOOG direct, SEC0 + XBOT + V9N infrastructure, VUAA broad)",
+  "pnl_system_tabs": 9,
+  "pnl_formula_cells": 1160,
+  "pnl_data_cells": 2492,
+  "audit_status": "Submitted to Supabase agent_audits table",
+  "last_portfolio_reallocation": "May 21, 2026 (RCRS → V9N)",
+  "last_dna_dump": "May 21, 2026 (this session)"
+}
