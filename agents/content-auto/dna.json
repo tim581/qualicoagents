@@ -1,0 +1,279 @@
+{
+  "sidebar_name": "✍️ Content Auto",
+  "internal_name": "✍️ Content Auto",
+  "chat_url": "unknown — not accessible from agent context",
+  "one_liner": "Automates Puzzlup social media content creation from customer reviews to branded Instagram/Facebook posts via Canva templates and Meta Graph API.",
+  "category": "Marketing & Sales",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced is enough for routine bulk content generation and publishing. Expert needed for template design strategy, research tasks, and complex multi-step workflows involving Canva + Meta API."
+  },
+
+  "capabilities": [
+    "Generate social media post designs from customer reviews using Canva API",
+    "Upload product images from Google Drive to Canva as reusable assets",
+    "Manage Canva designs — search, create, export, organize in folders",
+    "Research content strategy and Instagram design trends",
+    "Create detailed designer briefings for brand template creation",
+    "Draft and send emails via Gmail (designer briefs, status updates)",
+    "Maintain and update Notion portability briefing after every session",
+    "Read/write shared knowledge to Supabase for inter-agent collaboration",
+    "Push files and briefings to GitHub repository",
+    "Cross-post content across platforms following social content calendar (planned)",
+    "Publish to Instagram/Facebook via Meta Graph API (pending setup)"
+  ],
+
+  "routing_keywords": ["content", "canva", "design", "social", "instagram", "facebook", "post", "creative", "review", "puzzlup", "template", "bulk", "publish", "meta", "marketing", "brand"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Simple content lookups and status checks",
+      "example_queries": ["What designs have we created for Puzzlup?", "Show me our Canva assets", "What's the content automation status?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Design generation and content creation",
+      "example_queries": ["Create 10 review post designs for Puzzlup", "Upload product images to Canva", "Generate social media posts from these reviews"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "generate-review-posts-v2.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Strategy research and briefing creation",
+      "example_queries": ["Research best practices for automated Canva content", "Create a designer briefing for brand templates", "Analyze this content tech stack"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "generate-review-posts.md",
+      "purpose": "Original batch design generator. Creates Puzzlup social media post designs from customer reviews using Canva generate-design API. V1 used AI-generated scenes.",
+      "task_types": ["report_generation", "api_call"],
+      "query_patterns": ["Generate review posts", "Create social media designs"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Canva"],
+        "tables": [],
+        "other_subagents": ["save-designs-to-canva.md"],
+        "external_agents": []
+      },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "generate-review-posts-v2.md",
+      "purpose": "V2 batch design generator using real Puzzlup product photos from Google Drive. Creates designs with actual lifestyle imagery instead of AI-generated scenes.",
+      "task_types": ["report_generation", "api_call"],
+      "query_patterns": ["Generate review posts with real photos", "Create designs with product images"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Canva", "Google Drive"],
+        "tables": [],
+        "other_subagents": ["save-designs-v2.md"],
+        "external_agents": []
+      },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "save-designs-to-canva.md",
+      "purpose": "Saves generated design candidates to Canva account as editable designs. Takes job/candidate IDs from generate subagent output.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Save these designs to Canva"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Canva"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "save-designs-v2.md",
+      "purpose": "V2 save handler for designs generated with real product photos. Saves to Canva and records metadata.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Save v2 designs to Canva"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Canva"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "upload-drive-images-to-canva.md",
+      "purpose": "Uploads Puzzlup product images from Google Drive to Canva as reusable assets. Handles public URL conversion and batch upload.",
+      "task_types": ["api_call", "file_processing"],
+      "query_patterns": ["Upload product images to Canva", "Sync Drive images to Canva"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Drive", "Canva"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "Formerly checked Supabase for answered agent requests and Notion for broadcast directives. Trigger deleted per Directive #28 (kill switch). Subagent file retained for reference.",
+      "task_types": ["data_lookup", "api_call"],
+      "query_patterns": ["Check for new directives", "Poll Supabase for responses"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase", "Notion"],
+        "tables": ["agent_requests"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Canva",
+      "connection_id": "conn_0yrnaawphzfgt9b07yca",
+      "what_for": "Design generation, asset upload, template management, export, folder organization — core creative engine",
+      "tools_activated": ["create-folder", "upload-asset-from-url", "search-designs", "get-design", "import-design-from-url", "export-design", "get-export-formats", "move-item-to-folder", "list-folder-items", "search-folders", "generate-design", "create-design-from-candidate", "list-brand-kits"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Access Puzzlup product images, upload deliverables to Output folder, manage marketing assets",
+      "tools_activated": ["google_drive_list_drives", "google_drive_search_documents", "google_drive_upload_file", "google_drive_download_file"]
+    },
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Send designer briefings, draft emails, search email threads for context",
+      "tools_activated": ["gmail_search_threads", "gmail_send_message", "gmail_create_draft"]
+    },
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Maintain portability briefing, read broadcast directives, search workspace for context",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Shared brain — read/write shared_knowledge, agent_requests, Agent_Audit_Status for inter-agent collaboration",
+      "tools_activated": ["execute_sql", "list_tables"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push agent briefings and DNA files to tim581/qualicoagents repo",
+      "tools_activated": ["github_push_to_branch"]
+    }
+  ],
+
+  "triggers": [],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "Webhook deleted per Directive #28 (kill switch). No active triggers."
+  },
+
+  "key_rules": [
+    "Template-first approach: never use generate-design API for final production content — always use Canva Brand Templates + Bulk Create",
+    "All content must use real Puzzlup product photos from Google Drive, never AI-generated product imagery",
+    "Designer (Youri) creates templates; agent automates data fill and publishing",
+    "Update Notion portability briefing after every chat session",
+    "Write key findings to Supabase shared_knowledge with domain=company",
+    "Agent name must be ✍️ Content Auto across all systems",
+    "Ayrshare rejected (too expensive) — use Meta Graph API for publishing (free)",
+    "AdCreative.ai skipped — enterprise API only"
+  ],
+
+  "input_format": {
+    "accepts": "Natural language requests about Puzzlup content creation, design generation, publishing strategy, and content automation. Can process CSV files with customer reviews, DOCX review documents, and image files.",
+    "example_queries": [
+      "Make 10 review post designs for Puzzlup with lifestyle images",
+      "Upload our product photos from Google Drive to Canva",
+      "Research how to automate Canva content creation at scale",
+      "Send a design briefing to our designer Youri",
+      "What's the status of our content automation pipeline?"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Canva designs (with edit/view URLs), strategy reports, designer briefings, email drafts, status updates, and files uploaded to Google Drive Output folder",
+    "response_time": "medium",
+    "typical_token_usage": "high"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Tim (human operator)",
+      "how": "Receives directives, answers blocked requests via agent_requests table, reviews and approves content",
+      "direction": "Bidirectional"
+    }
+  ],
+
+  "databases_tables": [
+    {
+      "table": "shared_knowledge",
+      "access": "read+write",
+      "what_for": "Store and share findings, deliverables, and status updates with other agents"
+    },
+    {
+      "table": "agent_requests",
+      "access": "read+write",
+      "what_for": "Write questions when blocked, read Tim's responses"
+    },
+    {
+      "table": "Agent_Audit_Status",
+      "access": "write",
+      "what_for": "Submit self-audit data"
+    },
+    {
+      "table": "Agents_Overview",
+      "access": "write",
+      "what_for": "Push DNA dump data"
+    }
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Push agent briefings and DNA files"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/puzzlup-content-strategy-report.md", "what": "Comprehensive research report on Canva automation best practices and template-first strategy"},
+    {"path": "/agent/home/youri-design-briefing.md", "what": "Detailed designer brief for 5 brand templates — sent to Youri"},
+    {"path": "/agent/home/puzzlup-saved-designs-v2.json", "what": "Metadata for 10 designs using real product photos (v2, rejected by user)"},
+    {"path": "/agent/home/canva-assets.json", "what": "List of uploaded Canva asset IDs for Puzzlup product images"},
+    {"path": "/agent/home/puzzlup-brand-specs.md", "what": "Puzzlup brand specifications"},
+    {"path": "/agent/uploads/Puzzlup Reviews.docx", "what": "Customer reviews document used for content generation"}
+  ],
+
+  "known_issues": [
+    "Canva generate-design API produces inconsistent, low-quality designs — pivoted to template-first approach",
+    "Meta Graph API for Instagram/Facebook publishing not yet connected — awaiting access token setup",
+    "Frame.io connection attempted but user skipped auth flow — not connected yet",
+    "Atria has no API/integration — browser-only tool, cannot automate",
+    "No active triggers — all killed per Directive #28",
+    "Network listener subagent file retained but trigger deleted"
+  ]
+}
