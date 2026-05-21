@@ -1,0 +1,369 @@
+{
+  "sidebar_name": "👥 Customer Svc",
+  "internal_name": "Puzzlup CS Agent",
+  "chat_url": "https://app.tasklet.ai/chat/[current-chat-id]",
+  "one_liner": "Answers Puzzlup customer service questions about products and orders in Dutch, handles replacements via Monta, scrapes Bol.com cases daily.",
+  "category": "eCommerce & Product",
+  "status": "active",
+  
+  "intelligence": {
+    "current_level": "basic",
+    "recommended_min": "basic",
+    "recommended_max": "advanced",
+    "notes": "Basic sufficient for product lookups and API queries. Advanced needed for complex decision-making (damage assessment, cost-benefit analysis between replacement options, historical pattern analysis)."
+  },
+  
+  "capabilities": [
+    "Look up Puzzlup product specifications (dimensions, materials, weights, EAN codes) from Supabase and answer in Dutch",
+    "Retrieve Bol.com orders and returns via official API; provide customer with order status, shipping dates, tracking info",
+    "Process damaged/missing product replacements: verify stock via Monta API, create replacement orders, retrieve track & trace",
+    "Apply cost-optimized decision tree for customer issues: prefer instruction → retour+refund → replacement (in that order)",
+    "Scrape Bol.com partner portal cases daily at 12:00 CET via local Playwright executor; notify Karlien in Slack with case summary + proposed Dutch response",
+    "Enforce strict guardrails: never expose pricing, supplier names, warehouse locations, internal systems, or other customer data",
+    "Draft professional customer responses in Dutch following Puzzlup tone and policy",
+    "Manage Supabase tables for product info, CS cases, events, and browser task queue",
+    "Execute multi-step workflows with subagent delegation (respond drafting, case handling, data imports)"
+  ],
+  
+  "routing_keywords": ["puzzlup", "product", "bol.com", "customer service", "shipping", "dimensions", "order", "return", "replacement", "dutch", "nederlands", "beschadigd", "vermist", "retour", "damaged", "missing", "track and trace"],
+  
+  "routing_matrix": [
+    {
+      "query_type": "Product & shipping lookups",
+      "example_queries": [
+        "Wat zijn de afmetingen van de PUZZLUP 1500 ECO?",
+        "Hoe lang duurt het voordat mijn bestelling aankomt?",
+        "Wat zijn de materialen van de MAT 3000 GIFT?"
+      ],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low"
+    },
+    {
+      "query_type": "Order lookup & status tracking",
+      "example_queries": [
+        "Waar is mijn bestelling #12345?",
+        "Wat is de status van mijn retour?",
+        "Kan ik de track & trace van mijn pakket zien?"
+      ],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low"
+    },
+    {
+      "query_type": "Damage/missing item assessment & replacement decision",
+      "example_queries": [
+        "Het product is beschadigd aangekomen, kan ik een vervanging krijgen?",
+        "Ik heb een item gemist in mijn bestelling",
+        "Hoe los ik dit op als mijn TRAY 1500 BLACK niet meer plat ligt?"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "cs-agent-respond.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    }
+  ],
+  
+  "subagents": [
+    {
+      "filename": "cs-agent-respond.md",
+      "purpose": "Drafts detailed customer service responses in Dutch. Takes product lookup data, order info, customer issue, and applies Puzzlup policy + cost decision tree to generate professional, empathetic reply ready for Karlien's review before sending to customer.",
+      "task_types": ["data_lookup", "analysis", "report_generation", "formatting"],
+      "query_patterns": [
+        "Draft a response to a customer who received a damaged product",
+        "Write a professional reply to a missing item complaint",
+        "Compose a response explaining shipping delays or delivery options"
+      ],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Bol.com", "Monta"],
+        "tables": ["Puzzlup_Product_Info", "cs_events", "cs_cases"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "bol-case-handler.md",
+      "purpose": "Runs daily at 12:00 CET. Inserts Browser_Task into Supabase; local Playwright executor scrapes Bol.com partner portal cases; sends Slack message to @Karlien in #customer_service (privé) with case summary + proposed Dutch reply. Processes new cases only, no duplicates.",
+      "task_types": ["web_scraping", "api_call", "notification"],
+      "query_patterns": [
+        "Daily automated Bol.com case scraping at 12:00 CET",
+        "Slack notification to Karlien with new customer cases"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Slack", "Supabase"],
+        "tables": ["Browser_Tasks", "cs_cases", "cs_processed_cases"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "qa-import.md",
+      "purpose": "Utility subagent for bulk importing Q&A data into Supabase. Processes CSV files, validates data schema, and inserts knowledge base entries.",
+      "task_types": ["file_processing", "data_lookup", "api_call"],
+      "query_patterns": [
+        "Import Q&A data from CSV into knowledge base"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Shared_Knowledge"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "supabase-import.md",
+      "purpose": "Generic Supabase data import utility. Handles CSV to table imports, data validation, and upsert operations with conflict handling.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": [
+        "Import CSV data into Supabase"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["any"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "fast-import.md",
+      "purpose": "Quick data import utility for one-off bulk operations. Optimized for speed with minimal validation for development/testing.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": [
+        "Quickly import data into database"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["various"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "import-qa-batches.md",
+      "purpose": "Batch import of Q&A records in multiple passes to avoid timeouts on large datasets. Handles pagination and resumable imports.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": [
+        "Import large Q&A dataset in batches"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Shared_Knowledge"],
+        "other_subagents": ["supabase-import.md"],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    }
+  ],
+  
+  "connections": [
+    {
+      "service": "Bol.com Official API",
+      "connection_id": "conn_70vbxjxc56825dwazafe",
+      "what_for": "Retrieve live orders, shipments, and returns data to answer customer questions and verify order history before processing replacements",
+      "tools_activated": ["bol_com-list-orders", "bol_com-get-order", "bol_com-list-returns", "bol_com-get-return", "bol_com-list-shipments", "bol_com-get-shipment"]
+    },
+    {
+      "service": "Monta REST API v6",
+      "connection_id": "conn_zcywhzeyaebx7qajy9gh",
+      "what_for": "Check stock availability for damaged/missing products; create replacement orders; retrieve track & trace for shipments to customers",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Read/write CS agent briefings, subagent docs, and browser scripts to tim581/qualicoagents repo for version control and backup",
+      "tools_activated": ["github_list_repositories", "github_get_file_content", "github_push_to_branch"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Query product info, customer service cases/events, process case tracking, insert Browser_Tasks for Bol.com scraping, read/write decision data",
+      "tools_activated": ["list_tables", "execute_sql"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Store and retrieve shared documents, reports, and reference files in eCommerce & Product and Customer Service folders",
+      "tools_activated": ["google_drive_list_drives", "google_drive_search_documents", "google_drive_create_folder", "google_drive_move_file", "google_drive_upload_file", "google_drive_download_file", "google_drive_get_spreadsheet"]
+    },
+    {
+      "service": "Slack",
+      "connection_id": "conn_4syh5zxa3g8xm552sp6r",
+      "what_for": "Send daily case summaries and notifications to @Karlien in #customer_service (private channel) with proposed responses",
+      "tools_activated": ["slack_list_channels", "slack_post_message"]
+    },
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Reference system documentation (AI Operating System, Shared Skills, Agent Onboarding guides, Broadcast Directives)",
+      "tools_activated": ["notion-search", "notion-fetch"]
+    },
+    {
+      "service": "Firecrawl",
+      "connection_id": "conn_90tczdf19k0hvk1rc00j",
+      "what_for": "Scrape web content if needed for product research or external reference lookups",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Tavily AI Search",
+      "connection_id": "conn_sz4v59nwy6b2kfp81agh",
+      "what_for": "Optional web search for customer service context (rarely used; local knowledge preferred)",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Exa AI Search",
+      "connection_id": "conn_mn2jr6h8am06yhamtgxh",
+      "what_for": "Optional neural search for complex customer inquiries or product research",
+      "tools_activated": ["remote_http_call"]
+    }
+  ],
+  
+  "triggers": [
+    {
+      "type": "schedule",
+      "description": "Daily Bol.com case scraping at 12:00 CET. Executes bol-case-handler subagent which inserts Browser_Task, local Playwright scrapes partner portal, sends Slack notification to Karlien with case summary and proposed Dutch response.",
+      "frequency": "daily at 12:00 CET",
+      "trigger_id": "cti_ef1pdzzwsx0cx2a53wtc"
+    },
+    {
+      "type": "webhook",
+      "description": "Receive inter-agent messages from hub or other agents",
+      "frequency": "on-demand",
+      "trigger_id": "wti_9k6wcweyv6frm3x7rcjv"
+    }
+  ],
+  
+  "webhook": {
+    "has_webhook_trigger": true,
+    "webhook_url": null,
+    "notes": "Webhook trigger set up for receiving messages from other agents; specific URL managed by Tasklet system"
+  },
+  
+  "key_rules": [
+    "NEVER expose: pricing, COGS, supplier/manufacturer names, warehouse locations, internal systems, API keys, Amazon/Bol strategy, or other customer data (AVG compliance)",
+    "Replacement rule: only offer if 1) stock verified via Monta, 2) damage/missing confirmed with photo, 3) customer returning product (or retour impractical), 4) no prior replacement history",
+    "Cost priority: 1) Explain/instruct (€0), 2) Retour+refund via Bol LVB (€0), 3) Monta replacement (last resort with real COGS costs)",
+    "Always respond in Dutch (Nederlands) unless customer writes English",
+    "No auto-send to customers until Karlien approves in Slack thread",
+    "Daily case scraping requires fresh cookies in bol-storage-state.json; refresh via Cookie-Editor if session expires"
+  ],
+  
+  "input_format": {
+    "accepts": "Customer service questions in Dutch about Puzzlup products, shipping, orders, returns, and damage/missing items; can also accept direct product lookup requests",
+    "example_queries": [
+      "Wat zijn de afmetingen van de PUZZLUP 1500 ECO mat?",
+      "Mijn bestelling #987654 is nog niet aangekomen, waar is het?",
+      "De TRAY 3000 BLACK is beschadigd aangekomen. Kan ik een vervanging krijgen?",
+      "Hoe kan ik een retour aanvragen voor een product dat niet past?",
+      "Wat is het gewicht van de MAT 5000 GIFT en hoe lang is het de verzendtijd?"
+    ]
+  },
+  
+  "output_format": {
+    "returns": "Structured data (JSON), professional Dutch responses ready for customer, Slack notifications to Karlien, replacement order confirmations with track & trace, cost-benefit analysis for damage decisions",
+    "response_time": "fast for lookups, medium for complex decisions",
+    "typical_token_usage": "medium (1-5K for simple, up to 10K for complex case analysis)"
+  },
+  
+  "cooperation_partners": [
+    {
+      "agent": "Karlien (human reviewer)",
+      "how": "I draft case responses in Dutch and send via Slack; she reviews, approves, and sends final reply to customer",
+      "direction": "I call them"
+    }
+  ],
+  
+  "databases_tables": [
+    {
+      "table": "Puzzlup_Product_Info",
+      "access": "read",
+      "what_for": "Product specifications (EAN, dimensions, materials, weights) for customer inquiries"
+    },
+    {
+      "table": "Product_Name_Mapping",
+      "access": "read",
+      "what_for": "Map customer product names to internal SKUs and EANs"
+    },
+    {
+      "table": "Shared_Knowledge",
+      "access": "read",
+      "what_for": "Shipping info, logistics Q&A, common customer questions and answers"
+    },
+    {
+      "table": "cs_cases",
+      "access": "read",
+      "what_for": "Historical Bol.com customer cases for pattern matching and reference"
+    },
+    {
+      "table": "cs_events",
+      "access": "read",
+      "what_for": "Historical customer service messages and resolution templates"
+    },
+    {
+      "table": "cs_processed_cases",
+      "access": "read+write",
+      "what_for": "Track which Bol.com cases have been processed to avoid duplicates"
+    },
+    {
+      "table": "Browser_Tasks",
+      "access": "write",
+      "what_for": "Insert pending tasks for local Playwright executor to scrape Bol.com cases"
+    },
+    {
+      "table": "puzzlup_margins",
+      "access": "read",
+      "what_for": "COGS and margin data for cost-decision analysis (GUARDRAIL: never expose to customers)"
+    },
+    {
+      "table": "COGS_Landed",
+      "access": "read",
+      "what_for": "Real landed costs for replacement products to inform decision-making (GUARDRAIL: never expose to customers)"
+    },
+    {
+      "table": "Flieber_Debug_Log",
+      "access": "read",
+      "what_for": "Debug logs from browser script execution (case scraping failures, cookies issues, etc.)"
+    }
+  ],
+  
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Store CS agent briefings (cs-agent-system.md, monta-replacement-system.md), subagent docs, browser scripts (bol-cases-scrape.js), and decision framework documentation"}
+  ],
+  
+  "files_and_paths": [
+    {"path": "/agent/home/cs-agent-system.md", "what": "Complete CS agent system prompt v2.0 with product lookup flow, order decision tree, guardrails, and simulations"},
+    {"path": "/agent/home/monta-replacement-system.md", "what": "Monta replacement order workflow with real COGS costs, SKU mapping, and business rules"},
+    {"path": "/agent/home/cs-agent-profile.json", "what": "Agent metadata for auditing and routing"},
+    {"path": "/agent/home/apps/cs-dashboard/", "what": "Interactive instant app dashboard showing CS metrics, ticket table, chat history, and charts (Next.js/TSX)"},
+    {"path": "/agent/home/bol-all-emails.json", "what": "275 full email bodies from Bol.com cases (reference for tone/templates)"},
+    {"path": "/agent/subagents/cs-agent-respond.md", "what": "Subagent that drafts customer responses in Dutch with cost-optimized decisions"},
+    {"path": "/agent/subagents/bol-case-handler.md", "what": "Subagent that runs daily Bol.com case scraping and sends Slack notifications to Karlien"}
+  ],
+  
+  "known_issues": [
+    "Bol.com cookies expire periodically (session timeout ~2-4 weeks); requires manual Cookie-Editor export and convert-cookies.js conversion",
+    "Amazon SP-API access pending approval from Amazon; Messaging API read-support not yet verified (may need Jarvio alternative if insufficient)",
+    "Bol.com cases scraping has minor bug: 'New cases returned 500' error (NEW category endpoint may not exist); does not block OPEN case retrieval",
+    "Monta API rate limit: 4,500 requests per 5 min; /product/updated_since endpoint has stricter limits (bucket of 5, refill 1 per 10s)",
+    "Playwright executor on Tim's PC (C:\\Users\\Tim\\playwright-render-service\\) is single point of failure — requires 24/7 uptime and manual intervention if PC restarts"
+  ]
+}
