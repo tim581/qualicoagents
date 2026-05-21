@@ -1,0 +1,321 @@
+{
+  "sidebar_name": "Email Assistant",
+  "internal_name": "Email Assistant",
+  "chat_url": "https://tasklet.so/chat/email-assistant",
+  "one_liner": "Automated daily inbox triage, email classification, invoice tracking, and Shortwave split management with thread-safe labeling",
+  "category": "Finance & Accounting",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "basic",
+    "recommended_min": "basic",
+    "recommended_max": "advanced",
+    "notes": "Basic sufficient for daily processing and email classification; advanced needed for complex rule updates and edge case handling"
+  },
+
+  "capabilities": [
+    "Automated daily email inbox triage at 12:00 Brussels time with 5-pass deduplication",
+    "Email classification into 6 organizational labels (Invoices, Operations, Accounting/Legal/HR, Bauwee, Finance & Funding, Sales & Marketing)",
+    "Shortwave inbox split management with INBOX retention for organizational labels",
+    "Invoice tracking with large-amount detection (>=EUR 1,000) and Asana task creation",
+    "Thread relabeling with topic change detection while preserving thread integrity",
+    "Email thread consistency enforcement (STEP 0c) — applies dominant label to all messages in thread",
+    "Braintoss archival (promotional, spam, personal notifications) with full INBOX removal",
+    "XERIUS and tax-related email routing and processing",
+    "Gmail duplicate detection and consolidation using 5-pass algorithm (subject, sender, amount, date, snippet)",
+    "Integration with Asana for large invoice approval workflows",
+    "Payment failure detection and manual review flagging (label-only, no archival)",
+    "Supabase state tracking for deduplication, agent metrics, and large invoice alerts"
+  ],
+
+  "routing_keywords": ["email", "inbox", "triage", "invoices", "labeling", "braintoss", "shortwave", "accounting", "finance", "thread", "archive", "organization"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Inbox status & email lookups",
+      "example_queries": [
+        "How many invoices are pending?",
+        "What's in my Braintoss folder?",
+        "Show me unprocessed emails",
+        "Which supplier emails arrived today?",
+        "Are there any payment failure notifications?"
+      ],
+      "intelligence_needed": "basic",
+      "handles_subagent": "email-assistant.md",
+      "avg_response_time": "fast (seconds to 1 min)",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Invoice analysis & tracking",
+      "example_queries": [
+        "Which invoices are overdue?",
+        "What's the total amount pending from suppliers?",
+        "Show large invoices (>EUR 1,000) this month",
+        "Track invoice INV-12345 status",
+        "Create approval task for this invoice"
+      ],
+      "intelligence_needed": "basic",
+      "handles_subagent": "email-assistant.md",
+      "avg_response_time": "medium (1-2 min)",
+      "avg_tokens": "medium (2-5K)"
+    },
+    {
+      "query_type": "Labeling rule updates & workflow changes",
+      "example_queries": [
+        "Change how we classify supplier emails",
+        "Update the Braintoss rules",
+        "Modify invoice routing logic",
+        "Add a new organizational label category",
+        "Fix thread labeling issues"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium (5-10 min)",
+      "avg_tokens": "high (5-15K)"
+    },
+    {
+      "query_type": "Bulk email operations & migrations",
+      "example_queries": [
+        "Re-label all supplier emails from Company X",
+        "Archive old promotional emails before Q1 2026",
+        "Merge duplicate vendor threads",
+        "Force relabel a thread with mixed labels",
+        "Cleanup email processing state"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "email-assistant.md",
+      "avg_response_time": "slow (5-15 min)",
+      "avg_tokens": "very_high (15-40K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "email-assistant.md",
+      "purpose": "Core engine for daily inbox processing. Executes 5-pass deduplication, STEP 0c thread relabeling consistency, STEP 1 email classification, invoice tracking, Braintoss organization, XERIUS routing, Asana integration, and Supabase state management with per-run metrics logging.",
+      "task_types": ["data_lookup", "classification", "archive_operation", "database_update", "api_call", "email_labeling", "thread_management"],
+      "query_patterns": [
+        "Daily automated 12:00 Brussels run (via cronScheduler trigger)",
+        "Manual on-demand email processing",
+        "Bulk email relabeling by topic or sender",
+        "Invoice escalation and Asana task creation",
+        "Thread consistency validation and repair"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Gmail (tim@qualico.be)", "Google Drive (Invoices folder, XERIUS NL folder)", "Slack (#invoices, #reporting)", "Asana (Accounting, Finance projects)", "Supabase", "GitHub (briefing docs)"],
+        "tables": ["shared_knowledge", "agent_state", "agent_requests", "large_pending_invoices", "processed_emails", "TO_Product_Lines"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action (email labeling/archival) + data (Supabase updates) + message (run summary to Slack)",
+      "response_speed": "medium (3-5 min typical)"
+    },
+    {
+      "filename": "invoice_processor.md",
+      "purpose": "Specialized subagent for detailed invoice processing workflows. Handles PDF extraction, amount parsing, supplier matching, approval status tracking, and large invoice escalation to Asana.",
+      "task_types": ["data_lookup", "file_processing", "calculation", "database_update", "api_call", "report_generation"],
+      "query_patterns": [
+        "Process new invoice attachment",
+        "Extract invoice metadata (amount, date, supplier)",
+        "Create large invoice approval task",
+        "Track invoice payment status"
+      ],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Gmail (attachment download)", "Google Drive (invoice storage)", "Asana"],
+        "tables": ["large_pending_invoices", "processed_emails"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data + action",
+      "response_speed": "medium"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Email triage, labeling, thread management, deduplication, attachment handling",
+      "tools_activated": ["gmail_search_threads", "gmail_get_messages", "gmail_modify_message_labels", "gmail_forward_message", "gmail_download_attachment", "gmail_create_draft", "gmail_send_message", "gmail_search_labels"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Invoice storage, retrieval, and organization (Invoices folder ID: 1cblHtaCN0djNUKX1DNj_RVF2grFVi_IM, XERIUS NL ID: 1GhpQ-St5DZsG8n6odGuypARXUYizid0O)",
+      "tools_activated": ["conn_zhj70cc89xscszt6ktwj__google_drive_search_documents", "conn_zhj70cc89xscszt6ktwj__google_drive_upload_file"]
+    },
+    {
+      "service": "Google Calendar",
+      "connection_id": "conn_q9ea16csh2f7k9sg5pam",
+      "what_for": "Event scheduling for invoice approvals and tax deadlines",
+      "tools_activated": ["conn_q9ea16csh2f7k9sg5pam__google_calendar_search_events", "conn_q9ea16csh2f7k9sg5pam__google_calendar_create_event"]
+    },
+    {
+      "service": "Slack",
+      "connection_id": "conn_4syh5zxa3g8xm552sp6r",
+      "what_for": "Posting processing summaries and alerts to #invoices (C04NP9DG9QU) and #reporting (C0A1XC5AKFT)",
+      "tools_activated": ["conn_4syh5zxa3g8xm552sp6r__slack_list_channels", "conn_4syh5zxa3g8xm552sp6r__slack_post_message"]
+    },
+    {
+      "service": "Asana",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Creating approval tasks for large invoices (Accounting project 1211747104935332, Finance project 1208634071347385); updating invoice status",
+      "tools_activated": ["conn_1ykn33de2j69hkpfvg5r__notion-search", "conn_1ykn33de2j69hkpfvg5r__notion-fetch", "conn_1ykn33de2j69hkpfvg5r__notion-create-pages", "conn_1ykn33de2j69hkpfvg5r__notion-update-page", "conn_1ykn33de2j69hkpfvg5r__notion-create-database"]
+    },
+    {
+      "service": "Shortwave",
+      "connection_id": "conn_60gywx06q9armya5206j",
+      "what_for": "Creating draft email replies for vendor communication (legacy; gradually migrating to Gmail drafts)",
+      "tools_activated": ["conn_60gywx06q9armya5206j__shortwave_create_reply_draft", "conn_60gywx06q9armya5206j__shortwave_create_new_draft"]
+    },
+    {
+      "service": "Supabase (PostgreSQL)",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Persistent state tracking for deduplication, processed emails, agent run metrics, large invoice alerts, shared knowledge updates (project: zlteahycfmpiaxdbnlvr)",
+      "tools_activated": ["conn_xmaq9bngsgw6e19jxcjn__list_tables", "conn_xmaq9bngsgw6e19jxcjn__execute_sql"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Storing briefing documentation (tim581/qualicoagents, agents/email-asst.md) for version control and reference",
+      "tools_activated": ["conn_rf4te6wqncg18hn7dn13__github_get_file_content", "conn_rf4te6wqncg18hn7dn13__github_push_to_branch"]
+    }
+  ],
+
+  "triggers": [
+    {
+      "type": "cronScheduler",
+      "description": "Daily automated email processing at 12:00 Brussels time (CET/CEST)",
+      "frequency": "daily (0 12 * * *, Europe/Brussels timezone)",
+      "trigger_id": "cti_4dj9fg28e345zgxrphqt"
+    }
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "Not currently webhook-driven; daily 12:00 run only. Real-time processing could be added via webhook if urgent email handling needed."
+  },
+
+  "key_rules": [
+    "SHORTWAVE SPLIT COMPATIBILITY: Organizational labels (Invoices, Operations, Accounting/Legal/HR, Bauwee, Finance & Funding, Sales & Marketing) MUST keep INBOX tag — never remove INBOX when applying org labels",
+    "THREAD PROTECTION: When relabeling threads for topic changes, add new organizational label WITHOUT removing INBOX; only Toss (archival) emails get INBOX removed",
+    "THREAD CONSISTENCY (STEP 0c): Find all labeled inbox threads, apply dominant label to ALL messages consistently — prevents threads being split across Shortwave folders",
+    "INVOICE LABELING: All invoice emails get Invoices label + INBOX (never archived unless spam/duplicate) — keeps them visible in Invoices split",
+    "PAYMENT FAILURES: Label 'Invoices' ONLY, keep in INBOX, never process/forward/archive — manual review required",
+    "LARGE INVOICE TRACKING: Non-EUR invoices >=EUR 1,000 trigger Asana task creation + database entry in large_pending_invoices",
+    "PAID = DEFAULT: SaaS receipts assumed PAID unless explicitly marked 'payment failed'",
+    "BRAINTOSS (TOSS LABEL): Only Toss emails get INBOX removed (true archive) — promotional/newsletter/auto-generated go here",
+    "NO CALENDAR EVENTS: Never auto-create calendar events from regular emails — scheduling is manual",
+    "DEDUPLICATION: 5-pass check (subject, sender, amount, date, snippet) prevents duplicate processing; tracks in processed_emails table"
+  ],
+
+  "input_format": {
+    "accepts": "Automated trigger events (cronScheduler) at 12:00 daily Brussels time; manual requests for email analysis, invoice status, Braintoss management, labeling rule updates, or bulk email operations",
+    "example_queries": [
+      "What invoices are pending approval right now?",
+      "Show me all large invoices (>EUR 1,000) from this month",
+      "Which emails are stuck in the wrong label?",
+      "Archive all promotional emails from [sender]",
+      "Create an approval task for invoice #INV-12345",
+      "What's the total amount owed to suppliers right now?"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Run summaries (Slack messages + Supabase), email label operations (Gmail API calls), database state updates, Asana task creation, draft email replies, validation reports",
+    "response_time": "fast (seconds to 1 min for queries); medium (3-5 min for daily automated runs); slow (10-15 min for bulk operations)",
+    "typical_token_usage": "low (<1K) for simple queries; medium (2-10K) for daily runs; high (10-40K) for bulk email operations or complex analysis"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Tim (Manual Review/Approval)",
+      "how": "I process emails and flag items for manual decision (invoices, deal advisors, compliance deadlines). Tim reviews in Shortwave splits and approves via Asana.",
+      "direction": "Bidirectional (I alert via Slack/email; Tim approves in Asana/Shortwave)"
+    }
+  ],
+
+  "databases_tables": [
+    {
+      "table": "shared_knowledge",
+      "access": "read+write",
+      "what_for": "Storing dynamic state (last email_id processed, VAT deadlines, M&A deal updates, run summaries) for runtime queries and cross-run context"
+    },
+    {
+      "table": "agent_state",
+      "access": "read+write",
+      "what_for": "Per-run metrics (emails processed, labeled, archived, duplicates found, errors) for performance tracking and debugging"
+    },
+    {
+      "table": "agent_requests",
+      "access": "read",
+      "what_for": "Manual override requests from Tim (e.g., 'relabel this thread', 'hold this invoice', 'force archive') for handling exceptions"
+    },
+    {
+      "table": "processed_emails",
+      "access": "read+write",
+      "what_for": "Deduplication log — tracks all processed emails by message_id, subject, sender, amount, date, snippet for 5-pass duplicate detection"
+    },
+    {
+      "table": "large_pending_invoices",
+      "access": "read+write",
+      "what_for": "Invoices >=EUR 1,000 (non-EUR) with approval status, tracking, due dates, and deadline alerts for financial management"
+    },
+    {
+      "table": "TO_Product_Lines",
+      "access": "read",
+      "what_for": "Reference table for product/SKU classification (used for vendor email routing and categorization if needed)"
+    }
+  ],
+
+  "github_repos": [
+    {
+      "repo": "tim581/qualicoagents",
+      "what_for": "Storing briefing document (agents/email-asst.md) with high-level workflow overview, version history, and collaborative documentation"
+    }
+  ],
+
+  "files_and_paths": [
+    {
+      "path": "/agent/subagents/email-assistant.md",
+      "what": "Primary subagent instruction file (v6.2+ as of May 21, 2026) — contains full 5-pass deduplication, STEP 0c thread labeling, STEP 1 email processing, invoice/Braintoss/XERIUS/Asana workflows, validation logic, and Shortwave split compatibility rules"
+    },
+    {
+      "path": "/agent/home/AGENT_BRIEFING_MINIMAL.md",
+      "what": "280-word quick reference guide for runtime queries — condensed version of core rules and workflow"
+    },
+    {
+      "path": "/agent/home/AGENT_REGISTRY.json",
+      "what": "Comprehensive agent metadata and routing information (dependencies, capabilities, connections)"
+    },
+    {
+      "path": "/agent/home/EMAIL_ASSISTANT_DNA.json",
+      "what": "Complete self-assessment DNA dump — this file, used for agent discovery and integration"
+    },
+    {
+      "path": "/agent/home/THREAD_LABELING_FIX_MAY12.md",
+      "what": "Documentation of May 12 thread relabeling fix (STEP 0c) that prevents split threads"
+    },
+    {
+      "path": "/agent/home/TOKEN_OPTIMIZATION_COMPLETE.md",
+      "what": "Documentation of May 5-12 token optimization work (minimal briefing adoption, agent_state table, Phase 3 summary logging)"
+    }
+  ],
+
+  "known_issues": [
+    "FIXED (May 21, 2026): Organizational labels were removing INBOX, breaking Shortwave splits — corrected to retain INBOX for all org labels",
+    "FIXED (May 21, 2026): 'MANDATORY ARCHIVE CLEANUP' section was archiving all labeled emails — removed; only Toss emails now get archived",
+    "TODO: WE PREP duplicate entries in large_pending_invoices table need cleanup",
+    "TODO: GitHub agents/email-asst.md briefing may need sync with recent May 2026 STEP 0c and Shortwave rule changes",
+    "LIMITATION: Daily 12:00 run only — no real-time webhook processing; urgent emails may have up to 24-hour processing delay",
+    "LIMITATION: Thread consistency enforcement (STEP 0c) only runs on emails currently in inbox; archived emails not re-labeled retroactively"
+  ],
+
+  "version": "v6.2",
+  "version_date": "2026-05-21",
+  "dna_generated_at": "2026-05-21T13:13:00+02:00",
+  "maintained_by": "Tim Huybrechts"
+}
