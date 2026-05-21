@@ -1,0 +1,689 @@
+{
+  "sidebar_name": "Qualico Logistics",
+  "internal_name": "Qualico Logistics & Operations Agent",
+  "chat_url": "https://app.tasklet.ai/c/qualico-logistics",
+  "one_liner": "End-to-end logistics, supply chain, inventory, and eCommerce operations manager for Qualico BV — handles POs, TOs, freight, pricing, VAT, 3PL coordination, and marketplace management across Amazon, Bol.com, WooCommerce.",
+  "category": "Operations",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "basic",
+    "recommended_max": "genius",
+    "notes": "Basic for routine trigger runs (logistics scan, inventory sync). Advanced for email drafting, data analysis. Expert for PO/TO calculations, pricing strategy, multi-step workflows. Genius for complex financial modeling, Playwright debugging, instant app building."
+  },
+
+  "capabilities": [
+    "Monitor and extract shipment ETAs/ETDs/container numbers from Gmail partner emails (Floormax, IFB, Westbound, Forceget, GLC, WePrepFBA)",
+    "Create and manage Purchase Orders (POs) with Floormax China — including price negotiation, PI tracking, payment scheduling",
+    "Create and manage Transfer Orders (TOs) with pallet-snapping optimization across 6+ warehouses",
+    "Sync inventory levels across Monta (3PL NL), Vanthiel/Kamps (3PL EU), GLC (3PL US/CA), Bol LvB, and Amazon FBA",
+    "Manage Bol.com NL and BE pricing — regular prices via API, promotional actieprijs via Playwright automation",
+    "Push Amazon FBM orders from Jarvio to Monta 3PL with carrier routing (PostNL NL, DHLParcelConnect EU)",
+    "Run Flieber replenishment simulations and generate TO proposals with container fill optimization (4% buffer)",
+    "Pull monthly sales actuals from Bol.com shipments API and reconcile with forecasts",
+    "Draft professional partner emails (Dutch/English) with proper formatting and CC compliance",
+    "Manage Bol.com offer catalog — activate/deactivate offers, update stock, toggle FBR/FBB",
+    "Track and manage payments to suppliers with cashflow optimization (pay as late as possible)",
+    "Monitor FBA storage capacity limits from Amazon notification emails",
+    "Take monthly inventory snapshots for financial reporting",
+    "Coordinate with Staxxer for VAT/OSS monitoring across EU marketplaces",
+    "Post ultra-compact actionable updates to Slack channels (#tranfers-to, #invoices, #purchases-po)",
+    "Build and maintain instant apps (dashboards) for logistics deliverables, PO/TO management, transport partners"
+  ],
+
+  "routing_keywords": [
+    "logistics", "shipping", "freight", "container", "ETD", "ETA", "tracking",
+    "purchase order", "PO", "transfer order", "TO", "inventory", "stock",
+    "bol.com", "amazon", "FBA", "FBM", "monta", "flieber", "vanthiel", "forceget", "GLC",
+    "floormax", "supplier", "3PL", "warehouse", "pallet", "CBM",
+    "pricing", "actieprijs", "margin", "COGS", "VAT", "staxxer",
+    "replenishment", "forecast", "sales actuals", "WooCommerce",
+    "qualico", "puzzlup", "invoice", "payment", "cashflow"
+  ],
+
+  "routing_matrix": [
+    {
+      "query_type": "Inventory lookup",
+      "example_queries": ["What's our stock at Monta?", "How many trays at GLC?", "Show Bol LvB inventory"],
+      "intelligence_needed": "basic",
+      "handles_subagent": "inventory-sync.md",
+      "avg_response_time": "fast",
+      "avg_tokens": "low"
+    },
+    {
+      "query_type": "PO/TO status check",
+      "example_queries": ["What's the status of PO-42?", "Show active TOs", "When does TO-147 arrive?"],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low"
+    },
+    {
+      "query_type": "Email scanning and extraction",
+      "example_queries": ["Check Gmail for shipping updates", "Any new emails from Floormax?", "What did Forceget say about the container?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "logistics-monitor.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    },
+    {
+      "query_type": "Draft partner emails",
+      "example_queries": ["Email Floormax about production dates", "Draft reply to IFB about booking", "Write email to Staxxer about VAT"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    },
+    {
+      "query_type": "Pricing management",
+      "example_queries": ["Update Bol prices for summer campaign", "Set actieprijs for MAT GIFT 1000", "What are current Bol margins?"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "high"
+    },
+    {
+      "query_type": "Replenishment planning",
+      "example_queries": ["Run Flieber replenishment simulation", "What do we need to restock EU FBA?", "Calculate next PO quantities"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "flieber-replenishment.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high"
+    },
+    {
+      "query_type": "TO creation with pallet optimization",
+      "example_queries": ["Create TO from Vanthiel to EU FBA", "Propose TOs based on replenishment sim", "Snap TO-147 to full pallets"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "order-calculator.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high"
+    },
+    {
+      "query_type": "Financial analysis / margins",
+      "example_queries": ["What are our margins on Bol.com?", "Calculate WAC for COGS update", "Show payment schedule for PO-42"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "high"
+    },
+    {
+      "query_type": "Instant app building / complex code",
+      "example_queries": ["Build a PO dashboard", "Fix the inventory levels module", "Create Playwright pricing script"],
+      "intelligence_needed": "genius",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "logistics-monitor.md",
+      "purpose": "Bi-weekly Gmail scan for partner emails. Extracts ETAs, ETDs, container numbers, tracking info. Updates Supabase TO/PO fields and Order_Updates. Posts to Slack if actionable.",
+      "task_types": ["web_scraping", "api_call", "notification", "data_lookup"],
+      "query_patterns": ["Check Gmail for shipping updates", "Run logistics scan"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Gmail", "Supabase", "Slack", "Google Drive"],
+        "tables": ["TO_Transfers", "PO_Purchases", "Order_Updates", "Shared_Knowledge", "agent_requests"],
+        "other_subagents": ["po-flieber-sync.md"],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "inventory-sync.md",
+      "purpose": "Syncs inventory from all 3PLs (Monta API, Bol LvB API, GLC browser scrape) into Supabase Inventory_Levels and Flieber Google Sheets. Uses Available Qty for GLC.",
+      "task_types": ["api_call", "data_lookup", "web_scraping"],
+      "query_patterns": ["Sync inventory", "Update stock levels", "Refresh Monta/Bol/GLC inventory"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Monta API", "Bol.com API", "Supabase", "Google Drive", "Browser/Computer"],
+        "tables": ["Inventory_Levels", "Puzzlup_Product_Info"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "inventory-snapshot.md",
+      "purpose": "Takes monthly inventory snapshots across all warehouses for financial reporting. Stores in Supabase inventory_snapshots table.",
+      "task_types": ["api_call", "data_lookup", "report_generation"],
+      "query_patterns": ["Take inventory snapshot", "Monthly snapshot"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase", "Monta API", "Bol.com API"],
+        "tables": ["Inventory_Levels", "inventory_snapshots"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "actuals-pull.md",
+      "purpose": "Monthly pull of sales actuals from Bol.com shipments API (pre-built connector with pagination). Maps EAN to product_id via flieber_product_skus. Writes to puzzlup_sales_actuals.",
+      "task_types": ["api_call", "calculation", "data_lookup"],
+      "query_patterns": ["Pull sales actuals", "Monthly actuals", "Bol shipment data"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Bol.com API (pre-built)", "Supabase"],
+        "tables": ["puzzlup_sales_actuals", "flieber_product_skus"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "forecast-accuracy-monitor.md",
+      "purpose": "Compares actual sales vs forecasts every 5 days. Identifies SKUs with >20% deviation and proposes forecast adjustments. Uses Bol pre-built connector for actuals.",
+      "task_types": ["analysis", "calculation", "notification"],
+      "query_patterns": ["Check forecast accuracy", "Run forecast analysis", "Compare actuals vs forecast"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Bol.com API (pre-built)", "Supabase", "Flieber API"],
+        "tables": ["forecast_proposed_updates", "puzzlup_sales_actuals", "flieber_product_skus"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "report",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "forecast-approve.md",
+      "purpose": "Handles forecast update approve/reject actions from the platform UI. Updates forecast_proposed_updates status and syncs approved changes to Flieber.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Approve forecast update", "Reject forecast change"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase", "Flieber API"],
+        "tables": ["forecast_proposed_updates"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "flieber-replenishment.md",
+      "purpose": "Queries Flieber GraphQL API for replenishment simulation data. Extracts product-level reorder needs, maps to Qualico product IDs, returns structured proposals.",
+      "task_types": ["api_call", "calculation", "data_lookup"],
+      "query_patterns": ["Run replenishment simulation", "What does Flieber recommend?", "Check reorder needs"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Flieber API", "Supabase"],
+        "tables": ["replenishment_simulations", "replenishment_proposals", "replenishment_proposal_lines", "flieber_product_skus"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "flieber-replenishment-sim.md",
+      "purpose": "Runs full replenishment simulation: fetches Flieber data, calculates container fill with 4% buffer, snaps to pallets, and creates proposal records.",
+      "task_types": ["calculation", "api_call"],
+      "query_patterns": ["Simulate replenishment", "Calculate next PO/TO quantities"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Flieber API", "Supabase"],
+        "tables": ["replenishment_simulations", "replenishment_proposals", "replenishment_proposal_lines", "Container_Standards", "Product_Pallet_Config"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "jarvio-fbm-monta-push.md",
+      "purpose": "Processes pending Amazon FBM orders from jarvio_fbm_orders table. Pushes to Monta API with correct carrier routing (PostNL for NL, DHLParcelConnect for EU). Skips UK orders.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Push FBM orders to Monta", "Process Jarvio orders"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Monta API", "Supabase"],
+        "tables": ["jarvio_fbm_orders"],
+        "other_subagents": [],
+        "external_agents": ["Jarvio"]
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "po-flieber-sync.md",
+      "purpose": "Syncs PO/TO data between Supabase and the Flieber Google Sheet (Connected to Flieber tab). Ensures all active TOs appear in Flieber for inventory planning.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Sync TOs to Flieber sheet", "Update Flieber inbound data"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase", "Google Drive"],
+        "tables": ["TO_Transfers", "TO_Product_Lines", "Puzzlup_Product_Info"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "po-draft-floormax.md",
+      "purpose": "Generates Excel PO attachment and Gmail draft email to Floormax China for new purchase orders. Uses product reference sheet for specs.",
+      "task_types": ["file_processing", "formatting", "api_call"],
+      "query_patterns": ["Create PO draft for Floormax", "Send PO email to supplier"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Gmail", "Google Drive", "Supabase"],
+        "tables": ["PO_Purchases", "PO_Product_Lines", "Puzzlup_Product_Info"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "file",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "fba-capacity-scan.md",
+      "purpose": "Scans Gmail for Amazon FBA storage capacity limit notification emails. Parses capacity data and inserts into Supabase FBA_Storage_Capacity table.",
+      "task_types": ["web_scraping", "data_lookup"],
+      "query_patterns": ["Check FBA capacity limits", "Any new FBA storage emails?"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Gmail", "Supabase"],
+        "tables": ["FBA_Storage_Capacity", "amazon_monitor_fba_puzzlup"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "order-calculator.md",
+      "purpose": "Calculates PO and TO quantities with container fill optimization (4% buffer on practical_volume_cbm) and pallet snapping. Uses Product_Pallet_Config for warehouse-specific configs.",
+      "task_types": ["calculation"],
+      "query_patterns": ["Calculate order quantities", "How many units fit in a 40ft HQ?", "Snap TO to full pallets"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Container_Standards", "Product_Pallet_Config", "Puzzlup_Product_Info"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "proposal-approval.md",
+      "purpose": "Handles replenishment proposal approvals from the platform webhook. Creates TOs and POs in Supabase based on approved proposals.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Approve replenishment proposal", "Create TOs from approved sim"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase", "Google Drive"],
+        "tables": ["replenishment_proposals", "replenishment_proposal_lines", "TO_Transfers", "TO_Product_Lines", "PO_Purchases"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "market-dynamics-refresh.md",
+      "purpose": "Fetches latest currency rates, freight indices, commodity prices, and fuel costs via Exa/Tavily search APIs. Updates Supabase market tables.",
+      "task_types": ["web_scraping", "data_lookup"],
+      "query_patterns": ["Refresh market data", "What's the current freight index?", "Update currency rates"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Exa AI", "Tavily AI", "Supabase"],
+        "tables": ["market_metrics", "market_history", "market_insights"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "to-comment-slack-handler.md",
+      "purpose": "Receives TO comment webhooks from the platform and posts formatted updates to Slack #tranfers-to channel.",
+      "task_types": ["notification", "formatting"],
+      "query_patterns": ["TO comment received"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Slack"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "message",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "forecast-update-handler.md",
+      "purpose": "Handles forecast update webhook events from the platform — processes approved or rejected forecast changes.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Process forecast update"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["forecast_proposed_updates"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "build-fba-capacity-module.md",
+      "purpose": "Builds the FBA Capacity instant app module for the logistics platform.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build FBA capacity dashboard"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["FBA_Storage_Capacity"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "build-inventory-levels.md",
+      "purpose": "Builds the Inventory Levels instant app module.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build inventory dashboard"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["Inventory_Levels"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "build-market-dynamics.md",
+      "purpose": "Builds the Market Dynamics instant app module.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build market dynamics dashboard"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["market_metrics", "market_history"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "build-po-crud.md",
+      "purpose": "Builds the PO CRUD operations module for the platform.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build PO management UI"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["PO_Purchases", "PO_Product_Lines"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "build-po-detail.md",
+      "purpose": "Builds the PO detail view module.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build PO detail page"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["PO_Purchases", "PO_Product_Lines", "PO_Payments"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "build-to-crud.md",
+      "purpose": "Builds the TO CRUD operations module for the platform.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build TO management UI"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["TO_Transfers", "TO_Product_Lines"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "build-to-detail.md",
+      "purpose": "Builds the TO detail view module.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build TO detail page"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["TO_Transfers", "TO_Product_Lines", "Order_Updates"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "inventory-levels-v3.md",
+      "purpose": "V3 of the inventory levels module with stale indicators and multi-channel support.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Update inventory levels module v3"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["Inventory_Levels"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "logistics-2025-research.md",
+      "purpose": "Research subagent for logistics market intelligence and carrier benchmarking.",
+      "task_types": ["web_scraping", "analysis"],
+      "query_patterns": ["Research logistics providers", "Compare freight rates"],
+      "intelligence_needed": "expert",
+      "dependencies": { "connections": ["Exa AI", "Tavily AI"], "tables": [], "other_subagents": [], "external_agents": [] },
+      "output_type": "report",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "logistics-dataroom-builder.md",
+      "purpose": "Builds the transport partners data room instant app with contacts, services, docs tabs.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build transport partners app"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": [], "tables": [], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "po-component-builder.md",
+      "purpose": "Builds React components for the PO management section of the platform.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Build PO component"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["PO_Purchases"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "po-detail-rebuild.md",
+      "purpose": "Rebuilds the PO detail page with improved layout.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Rebuild PO detail"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["PO_Purchases", "PO_Product_Lines"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "to-comments-import.md",
+      "purpose": "Imports historical TO comments from various sources into Order_Updates table.",
+      "task_types": ["data_lookup", "api_call"],
+      "query_patterns": ["Import TO comments"],
+      "intelligence_needed": "basic",
+      "dependencies": { "connections": ["Supabase"], "tables": ["Order_Updates"], "other_subagents": [], "external_agents": [] },
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "to-detail-rebuilder.md",
+      "purpose": "Rebuilds the TO detail page with improved layout and timeline view.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Rebuild TO detail"],
+      "intelligence_needed": "genius",
+      "dependencies": { "connections": ["Supabase"], "tables": ["TO_Transfers", "TO_Product_Lines"], "other_subagents": [], "external_agents": [] },
+      "output_type": "file",
+      "response_speed": "slow"
+    }
+  ],
+
+  "connections": [
+    {"service": "Supabase", "connection_id": "conn_xmaq9bngsgw6e19jxcjn", "what_for": "Primary database — all product, PO, TO, inventory, pricing, forecast, order data", "tools_activated": ["list_tables", "execute_sql"]},
+    {"service": "GitHub", "connection_id": "conn_rf4te6wqncg18hn7dn13", "what_for": "Code repos: qualico-platform (Next.js app) and qualicoagents (scripts/automation)", "tools_activated": ["github_get_file_content", "github_create_pull_request", "github_push_to_branch"]},
+    {"service": "Gmail", "connection_id": "conn_rqbhxnbt4b242v34h9hh", "what_for": "Email scanning, drafts, partner communication, attachment downloads", "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages", "gmail_download_attachment", "gmail_create_draft"]},
+    {"service": "Shortwave", "connection_id": "conn_nqnymtm2dsh3dfd0b57p", "what_for": "Email drafts", "tools_activated": ["shortwave_create_new_draft", "shortwave_edit_draft"]},
+    {"service": "Slack", "connection_id": "conn_4syh5zxa3g8xm552sp6r", "what_for": "Post actionable logistics updates to #tranfers-to, #invoices, #purchases-po", "tools_activated": ["slack_list_channels", "slack_post_message", "slack_dm_current_user"]},
+    {"service": "Notion", "connection_id": "conn_1ykn33de2j69hkpfvg5r", "what_for": "READ ONLY — reference docs, SOPs", "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page", "notion-query-data-sources"]},
+    {"service": "Browser/Computer (Main)", "connection_id": "conn_d1pj7sjg7aja3hz5zydg", "what_for": "Browser automation for sites requiring login (GLC WMS, Bol partner portal)", "tools_activated": ["computer", "copy_file_to_computer", "copy_file_from_computer"]},
+    {"service": "Browser/Computer (Kamps WMS)", "connection_id": "conn_7mm97znsacwa9g0pfxpq", "what_for": "Corax WMS browser automation for Vanthiel/Kamps 3PL EU", "tools_activated": ["computer", "copy_file_to_computer", "copy_file_from_computer"]},
+    {"service": "Vercel", "connection_id": "conn_kd02nc5yrb4xv2w8vd7z", "what_for": "qualico-platform.vercel.app deployments", "tools_activated": ["vercel_token_auth-list-deployments"]},
+    {"service": "Monta REST API v6", "connection_id": "conn_zcywhzeyaebx7qajy9gh", "what_for": "3PL NL — stock queries, inbound forecasts, outbound order creation, FBM fulfillment", "tools_activated": ["remote_http_call"]},
+    {"service": "Google Drive", "connection_id": "conn_zhj70cc89xscszt6ktwj", "what_for": "PO documents, Flieber sheets, product reference, inventory sheets, file uploads", "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_create_document", "google_drive_create_folder", "google_drive_get_spreadsheet", "google_drive_update_spreadsheet", "google_drive_upload_file", "google_drive_download_file"]},
+    {"service": "Exa AI Search", "connection_id": "conn_mn2jr6h8am06yhamtgxh", "what_for": "Neural search for market dynamics, freight rates, commodity prices", "tools_activated": ["remote_http_call"]},
+    {"service": "Tavily AI Search", "connection_id": "conn_sz4v59nwy6b2kfp81agh", "what_for": "AI search for logistics intelligence and market data", "tools_activated": ["remote_http_call"]},
+    {"service": "Bol.com API (pre-built)", "connection_id": "conn_70vbxjxc56825dwazafe", "what_for": "Bol.com orders, shipments, products — required for sales data (client_credentials scope lacks orders)", "tools_activated": ["bol_com-list-shipments", "bol_com-list-products", "bol_com-list-orders", "bol_com-get-order"]},
+    {"service": "Airtable", "connection_id": "conn_jr26b33r1azf9ys1nh4p", "what_for": "Legacy data access (migration source)", "tools_activated": ["remote_http_call"]},
+    {"service": "Asana Full API", "connection_id": "conn_0xmnk6abnh2jpa58hmmc", "what_for": "Project management — ProductFlow decommission tracking", "tools_activated": ["remote_http_call"]}
+  ],
+
+  "triggers": [
+    {"type": "schedule", "description": "Bi-weekly logistics scan — Gmail partner email extraction, TO/PO updates, Slack posts", "frequency": "Daily 14:00 Brussels (Mon-Sun)", "trigger_id": "cti_jyz516sfvntp98t4z3xm"},
+    {"type": "schedule", "description": "Weekly FBA capacity email scan", "frequency": "Monday 10:00 Brussels", "trigger_id": "cti_f49ge74e6wgcycqyx4qf"},
+    {"type": "schedule", "description": "Forecast accuracy monitor", "frequency": "Every 5 days 09:00 Brussels", "trigger_id": "cti_jwbzj8f59de1fe1jgc18"},
+    {"type": "schedule", "description": "Monthly inventory snapshot", "frequency": "Last day of month 18:00 Brussels", "trigger_id": "cti_zsmh8fkhdsqf4jdnmfb6"},
+    {"type": "schedule", "description": "Monthly actuals pull from Bol shipments", "frequency": "2nd of each month 09:00 Brussels", "trigger_id": "cti_wbr2n8wej53vvpyjma8w"},
+    {"type": "webhook", "description": "TO comment → Slack handler", "frequency": "On-demand", "trigger_id": "wti_q18jqv2dfymv11hr8mxb"},
+    {"type": "webhook", "description": "Manual inventory sync refresh", "frequency": "On-demand", "trigger_id": "wti_azsr7dsz9kj2hg7qe54m"},
+    {"type": "webhook", "description": "Replenishment approval + TO simulation", "frequency": "On-demand", "trigger_id": "wti_qnsxdbbt7dh1242wcmts"},
+    {"type": "webhook", "description": "Floormax PO draft email generator", "frequency": "On-demand", "trigger_id": "wti_geas2xftap2ejqcnna9q"},
+    {"type": "webhook", "description": "Forecast approve/reject handler", "frequency": "On-demand", "trigger_id": "wti_jkr0j9xdzapnbfr35mwy"},
+    {"type": "webhook", "description": "Forecast accuracy analysis (New Analysis button)", "frequency": "On-demand", "trigger_id": "wti_33gj8acpz11dmv7974m2"},
+    {"type": "webhook", "description": "Market dynamics data refresh", "frequency": "On-demand", "trigger_id": "wti_n1f23x9296m9hrvtx1t1"},
+    {"type": "webhook", "description": "Manual inventory snapshot", "frequency": "On-demand", "trigger_id": "wti_hr8ezfxmxhbw15pwzt08"},
+    {"type": "webhook", "description": "Jarvio FBM → Monta order push", "frequency": "On-demand (triggered by Jarvio agent)", "trigger_id": "wti_6qnxd9j78k9j2b8htm57"}
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": true,
+    "webhook_url": null,
+    "notes": "9 webhook triggers active — each has its own URL. Key ones: inventory sync, replenishment approval, Jarvio FBM push, forecast analysis."
+  },
+
+  "key_rules": [
+    "Always CC Karlien (plessers.karlien@qualico.be) on ALL operational emails",
+    "Cashflow: wait as long as possible to pay partners — never rush payments",
+    "Query Supabase at runtime for ALL data — never assume or hardcode",
+    "Use Shared_Knowledge (capital S, capital K, double-quoted) for dynamic state",
+    "PO values in USD (total_value_usd); cashflow baseline EUR; USD_TO_EUR = 0.88",
+    "Always use practical_volume_cbm from Container_Standards, NEVER gross_volume_cbm",
+    "Container fill: always apply 4% buffer on practical_volume_cbm",
+    "Amazon TOs: ALWAYS separate MATS vs TRAYS (different FCs)",
+    "Bol TOs: ALWAYS separate Regulier vs XL — check bol_lvb_category",
+    "Never activate Bol NL and Bol BE simultaneously",
+    "Tijdelijke actieprijs NOT possible via Bol Retailer API — must use Playwright",
+    "Bol.com pricing: always use tijdelijke actieprijs (sales price), NOT regular price",
+    "TOs: NEVER hard-delete — use soft delete (status = Cancelled)",
+    "COGS updates: do NOT overwrite cogs_usd without WAC calculation",
+    "Monta uses EAN as SKU/product identifier (not internal SKU names)",
+    "Delivery date MANDATORY when creating TOs — always set eta_fc",
+    "Pallet optimization: ALWAYS snap to full pallets — query Product_Pallet_Config",
+    "GLC WMS: use Available Qty (not On Hand) — Available = On Hand - Allocated",
+    "Slack: only post NEW actionable content from external partners — never internal emails",
+    "No logging to Supabase Emails_Processed_Qualico — local SQLite dedup only",
+    "Floormax scope: only confirm ex factory dates — never ask for container/ETD/booking",
+    "PI change → payment hold: confirm previous payment credited before paying updated PI",
+    "Flieber inventory sheets: only update rows where column D has a label"
+  ],
+
+  "input_format": {
+    "accepts": "Natural language requests in Dutch or English about logistics, supply chain, inventory, pricing, partner communications, PO/TO management, marketplace operations",
+    "example_queries": [
+      "Check Gmail for shipping updates from our partners",
+      "What's our current inventory at Monta and Bol LvB?",
+      "Create a TO from Vanthiel to EU FBA with pallet optimization",
+      "Draft an email to Floormax asking about production status for PO-42",
+      "Update Bol prices for the summer campaign — set actieprijs for all MAT products",
+      "Run a replenishment simulation and show me what we need to reorder",
+      "What are our margins on Bol.com products?",
+      "Pull April sales actuals from Bol shipments",
+      "Push pending FBM orders to Monta",
+      "Show me all overdue TOs and their tracking status"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Structured data tables, Gmail drafts with direct links, Slack posts, Supabase updates, Google Sheet updates, instant app dashboards, file previews, email summaries",
+    "response_time": "fast for lookups, medium for email scanning/drafting, slow for simulations/calculations/app building",
+    "typical_token_usage": "medium for routine tasks, high for multi-step workflows, very_high for app building and complex analysis"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Jarvio",
+      "how": "Jarvio inserts Amazon FBM orders into jarvio_fbm_orders table, then triggers my webhook. I push orders to Monta for fulfillment.",
+      "direction": "They call me"
+    }
+  ],
+
+  "databases_tables": [
+    {"table": "TO_Transfers", "access": "read+write", "what_for": "Transfer Order headers — status, ETA, destination, tracking"},
+    {"table": "TO_Product_Lines", "access": "read+write", "what_for": "Transfer Order line items — product quantities per TO"},
+    {"table": "PO_Purchases", "access": "read+write", "what_for": "Purchase Order headers — supplier, status, payment tracking"},
+    {"table": "PO_Product_Lines", "access": "read+write", "what_for": "Purchase Order line items"},
+    {"table": "PO_Payments", "access": "read+write", "what_for": "Payment tranches and schedules for POs"},
+    {"table": "PO_Payment_Anomalies", "access": "read+write", "what_for": "Double payment and anomaly tracking"},
+    {"table": "PO_Documents", "access": "read+write", "what_for": "PI documents, invoices linked to POs"},
+    {"table": "Order_Updates", "access": "read+write", "what_for": "Timeline/activity log for TOs and POs"},
+    {"table": "Inventory_Levels", "access": "read+write", "what_for": "Current stock levels across all warehouses/channels"},
+    {"table": "inventory_snapshots", "access": "read+write", "what_for": "Monthly inventory snapshots for financial reporting"},
+    {"table": "Shared_Knowledge", "access": "read+write", "what_for": "Dynamic state sharing — read before every run, write findings after"},
+    {"table": "agent_requests", "access": "read+write", "what_for": "Agent request protocol — blocked tasks requiring Tim input"},
+    {"table": "Puzzlup_Product_Info", "access": "read", "what_for": "Product master data — EAN, SKU, brand, bol_lvb_category"},
+    {"table": "flieber_product_skus", "access": "read", "what_for": "SKU→product_id mapping per channel for Flieber"},
+    {"table": "Product_Pallet_Config", "access": "read", "what_for": "Pallet specs per product/region/warehouse"},
+    {"table": "Container_Standards", "access": "read", "what_for": "Container dimensions and practical volumes with 4% buffer"},
+    {"table": "puzzlup_sales_actuals", "access": "read+write", "what_for": "Monthly sales actuals per product per channel"},
+    {"table": "forecast_proposed_updates", "access": "read+write", "what_for": "Forecast adjustment proposals and approval status"},
+    {"table": "replenishment_simulations", "access": "read+write", "what_for": "Replenishment simulation runs"},
+    {"table": "replenishment_proposals", "access": "read+write", "what_for": "Replenishment proposals (PO/TO level)"},
+    {"table": "replenishment_proposal_lines", "access": "read+write", "what_for": "Replenishment proposal product lines"},
+    {"table": "Browser_Tasks", "access": "read+write", "what_for": "Playwright browser task queue for pricing automation"},
+    {"table": "Browser_Credentials", "access": "read", "what_for": "Service credentials for browser automation"},
+    {"table": "Browser_Task_Registry", "access": "read", "what_for": "Registered browser task types"},
+    {"table": "FBA_Storage_Capacity", "access": "read+write", "what_for": "Amazon FBA storage capacity limits"},
+    {"table": "amazon_monitor_fba_puzzlup", "access": "read", "what_for": "ASIN→product_id mapping for Amazon"},
+    {"table": "puzzlup_channel_products", "access": "read", "what_for": "Channel-product assignments"},
+    {"table": "puzzlup_all_prices", "access": "read", "what_for": "All pricing data across channels"},
+    {"table": "puzzlup_margins", "access": "read", "what_for": "Margin calculations per product/channel"},
+    {"table": "margins_connected", "access": "read", "what_for": "VIEW — fully calculated margin data with CM formula"},
+    {"table": "market_metrics", "access": "read+write", "what_for": "Latest market data (currency, freight, commodity)"},
+    {"table": "market_history", "access": "read+write", "what_for": "Historical market data points"},
+    {"table": "market_insights", "access": "read+write", "what_for": "AI-generated market intelligence"},
+    {"table": "jarvio_fbm_orders", "access": "read+write", "what_for": "Amazon FBM orders from Jarvio for Monta push"},
+    {"table": "SOP_Progress", "access": "read+write", "what_for": "SOP implementation tracking"},
+    {"table": "Flieber_Debug_Log", "access": "read", "what_for": "Playwright debug output for browser tasks"},
+    {"table": "Product_Name_Mapping", "access": "read", "what_for": "Product name normalization"}
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualico-platform", "what_for": "Next.js logistics platform — PRs for modules, bug fixes, features"},
+    {"repo": "tim581/qualicoagents", "what_for": "Automation scripts — Playwright pricing, task executor, actuals pull, replenishment sim"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/bol_retailer_api.py", "what": "Bol.com Retailer API helper — offers, prices, stock management"},
+    {"path": "/agent/home/po-calculator.py", "what": "PO quantity calculator with container fill + 4% buffer"},
+    {"path": "/agent/home/to-calculator.py", "what": "TO calculator v2 with pallet-snapping logic"},
+    {"path": "/agent/home/actuals-pull.py", "what": "Pure Python sales actuals pull from Bol shipments API"},
+    {"path": "/agent/home/AGENT_BRIEFING_MINIMAL.md", "what": "Minimal agent briefing for quick reference"},
+    {"path": "/agent/home/PLAYWRIGHT_SYSTEM_BRIEFING.md", "what": "Complete Playwright automation system documentation"},
+    {"path": "/agent/home/PRICING_STRATEGY_AUDIT_20260518.md", "what": "Bol.com pricing strategy audit report"},
+    {"path": "/agent/home/PAYMENT_ANOMALY_SUMMARY_20260514.md", "what": "CA double payment anomaly documentation"},
+    {"path": "/agent/home/KARLIEN_PI_PAYMENT_CHECKLIST.md", "what": "Payment verification checklist for Karlien"},
+    {"path": "/agent/home/monta_swagger.json", "what": "Monta API v6 OpenAPI spec for reference"}
+  ],
+
+  "known_issues": [
+    "Amazon SP-API approval pending — blocks Monta stock→Amazon FBM sync and tracking confirmation",
+    "4 Bol.com actieprijs updates pending — Tim must run git pull for v1.4b executor",
+    "Vercel deployment failed after PR #68 merge — Tim to investigate",
+    "PUZZLUP 5000 GIFT pallet config discrepancy: Sheet=4 vs Supabase=6 units/case — Tim to confirm",
+    "Jan–Apr 2026 sales actuals backfill pending — data only through Dec 2025",
+    "Jarvio agent needs to add EAN column to jarvio_fbm_orders inserts",
+    "Flieber inbound sheet has duplicate FBA entries and missing delivery dates",
+    "July PO Proposals (IDs 48-55) calculated WITHOUT 4% buffer — may need recalculation",
+    "UK FBM → 3PL UK automation not yet built (not urgent)",
+    "Replenishment-approval subagent needs update",
+    "WAC calculation system not yet built — blocks COGS updates",
+    "Flieber API occasionally returns 403/1010 on inbound_shipments — use Supabase fallback",
+    "Kelly reply draft exists as file but Gmail draft not yet created"
+  ]
+}
