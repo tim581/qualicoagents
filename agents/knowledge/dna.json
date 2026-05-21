@@ -1,0 +1,245 @@
+{
+  "sidebar_name": "🧠 Knowledge",
+  "internal_name": "🧠 Knowledge",
+  "chat_url": null,
+  "one_liner": "Central repository for Tim Huybrechts' personal information, writing style, and psychological profile — serves as the definitive source for all agents.",
+  "category": "Personal",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "basic",
+    "recommended_max": "expert",
+    "notes": "Basic suffices for simple lookups (birthday, address, banking). Expert needed for writing style analysis, personality assessment processing, or building comprehensive profiles from multiple sources."
+  },
+
+  "capabilities": [
+    "Store and retrieve all personal information about Tim Huybrechts (identity, financial, legal, health, family)",
+    "Provide Tim's complete writing style profile with 32 ghostwriting rules for other agents",
+    "Provide Tim's psychological snapshot with HIGH/MEDIUM/LOW stress triggers for task prioritization",
+    "Analyze email writing style from sent emails across both tim@qualico.be and huybrechtstim@gmail.com",
+    "Process personality assessments (MBTI, Enneagram, DISC, etc.) and extract actionable insights",
+    "Maintain and publish a comprehensive personal knowledge base in Notion",
+    "Self-document via AI Agent Briefings database in Notion",
+    "Upload key knowledge to Supabase shared_knowledge for cross-agent access",
+    "Search across Gmail (work + personal), Google Drive, Notion, and LinkedIn for personal data"
+  ],
+
+  "routing_keywords": ["tim", "personal", "writing style", "ghostwriting", "stress", "psychological", "profile", "birthday", "address", "banking", "family", "julian", "marie", "personality", "mbti", "enneagram", "identity", "health", "nurosym", "long covid", "knowledge base"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Personal fact lookups",
+      "example_queries": ["What is Tim's birthday?", "What is Tim's address?", "What are Tim's banking details?", "What is Tim's partner's name?"],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Writing style queries",
+      "example_queries": ["How does Tim write emails in Dutch?", "What are Tim's ghostwriting rules?", "Draft this email in Tim's style"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Psychological profile and stress assessment",
+      "example_queries": ["What stresses Tim out?", "Is this task high or low stress for Tim?", "What are Tim's personality traits?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Full profile building or analysis from new sources",
+      "example_queries": ["Process this personality assessment and update the profile", "Analyze Tim's emails for writing patterns", "Build a comprehensive profile from all sources"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "writing_style_analyzer.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "writing_style_analyzer.md",
+      "purpose": "Analyzes Tim's sent emails from Gmail to extract writing patterns, formality levels, verbal fingerprints, and ghostwriting rules. Processes batches of email threads and produces structured style analysis.",
+      "task_types": ["analysis", "data_lookup"],
+      "query_patterns": ["Analyze Tim's writing style", "Update the writing style profile from recent emails"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Gmail (tim@qualico.be)", "Gmail (huybrechtstim@gmail.com)"],
+        "tables": ["shared_knowledge"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "report",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "Checks Supabase for answered agent_requests and fetches Notion broadcast directives page. Processes and reports any pending items. Currently inactive (trigger deleted per Directive #28).",
+      "task_types": ["data_lookup", "notification"],
+      "query_patterns": ["Check for network messages", "Check for directives"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase", "Notion"],
+        "tables": ["agent_requests"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Read/write personal knowledge base, agent briefings, finance info, health data",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page", "notion-query-data-sources"]
+    },
+    {
+      "service": "Gmail (tim@qualico.be)",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Search and read work emails for writing style analysis",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages"]
+    },
+    {
+      "service": "Gmail (huybrechtstim@gmail.com)",
+      "connection_id": "conn_s2eddrsyrmg8hkhe3qsg",
+      "what_for": "Search and read personal emails for writing style analysis and personal data mining",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages"]
+    },
+    {
+      "service": "Shortwave (huybrechtstim@gmail.com)",
+      "connection_id": "conn_m4adyn83ery67e5me4tf",
+      "what_for": "Full email management for personal Gmail — threads, drafts, comments, todos",
+      "tools_activated": ["shortwave_get_user_info", "shortwave_lookup_thread_id", "shortwave_read_thread", "shortwave_create_comment", "shortwave_create_reply_draft", "shortwave_create_new_draft", "shortwave_edit_draft", "shortwave_list_todos", "shortwave_add_thread_to_todo", "shortwave_list_threads_in_todo"]
+    },
+    {
+      "service": "Google Drive (huybrechtstim@gmail.com)",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Search, read, and upload files to personal Google Drive",
+      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_create_document", "google_drive_upload_file"]
+    },
+    {
+      "service": "LinkedIn",
+      "connection_id": "conn_c85pncn9hd0r2zppxdvc",
+      "what_for": "Pull basic LinkedIn profile data for Tim",
+      "tools_activated": ["linkedin-get-profile-picture-fields", "linkedin-get-org-member-access", "linkedin-get-current-member-profile"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Read/write shared_knowledge for cross-agent data sharing (writing style, psychological profile, core facts)",
+      "tools_activated": ["execute_sql", "list_tables"]
+    },
+    {
+      "service": "Notion Database",
+      "connection_id": "conn_0037yvbnkcjkv1x917aj",
+      "what_for": "Query Notion databases with filtering and sorting",
+      "tools_activated": ["notion_database_query_data_source"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push agent briefings and DNA files to qualicoagents repo",
+      "tools_activated": ["github_push_to_branch"]
+    }
+  ],
+
+  "triggers": [],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "Network listener trigger was deleted per Directive #28 (kill system overhead triggers). No business-critical triggers needed."
+  },
+
+  "key_rules": [
+    "Domain is strictly 'personal' — hard separation from company domain",
+    "Protocol v3.0: READ Supabase → DO work → WRITE back to Supabase",
+    "Central source for Tim's writing style — other agents query Supabase shared_knowledge, not this agent directly",
+    "Psychological snapshot in Supabase enables stress-based task prioritization by other agents (Asana agent)",
+    "Self-documenting: maintains own briefing in Notion AI Agent Briefings database",
+    "All personal profile data published to Notion page 318b0893-7ab7-8073-ad1e-dae301680561",
+    "Partner is Marie Holemans (unmarried), child is Julian, address is Parklaan 20, 2610 Wilrijk",
+    "Tim uses Nurosym device for vagal nerve stimulation (Long COVID treatment)"
+  ],
+
+  "input_format": {
+    "accepts": "Questions about Tim's personal information, requests to analyze writing style, personality assessment files, profile update instructions",
+    "example_queries": [
+      "What is Tim's birthday and address?",
+      "Draft this email in Tim's writing style",
+      "What stresses Tim out? Is this a high-stress task?",
+      "Process this personality assessment PDF",
+      "Update the knowledge base with this new information about Tim"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Personal data lookups, writing style profiles with ghostwriting rules, psychological snapshots with stress levels, Notion knowledge base updates, Supabase shared_knowledge entries",
+    "response_time": "fast",
+    "typical_token_usage": "medium"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Asana agent",
+      "how": "Asana agent reads tim_psychological_snapshot from Supabase to tag tasks with stress level (HIGH/MEDIUM/LOW)",
+      "direction": "They call me (via Supabase)"
+    },
+    {
+      "agent": "All agents in network",
+      "how": "Any agent can query Supabase shared_knowledge for tim_writing_style_full_profile to ghostwrite emails in Tim's style",
+      "direction": "They call me (via Supabase)"
+    }
+  ],
+
+  "databases_tables": [
+    {
+      "table": "shared_knowledge",
+      "access": "read+write",
+      "what_for": "Publish writing style profile, psychological snapshot, core identity facts for other agents"
+    },
+    {
+      "table": "agents",
+      "access": "read",
+      "what_for": "Look up agent registry (this agent is ID 27)"
+    },
+    {
+      "table": "agent_requests",
+      "access": "read+write",
+      "what_for": "Check for answered requests and submit new requests when blocked"
+    },
+    {
+      "table": "Agents_Overview",
+      "access": "write",
+      "what_for": "DNA dump self-assessment"
+    }
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Push agent briefing and DNA files"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/tim_huybrechts_personal_profile.md", "what": "Comprehensive personal profile — identity, family, financial, health, legal, personality data"},
+    {"path": "/agent/home/tim_writing_style_profile.md", "what": "Complete writing style analysis with 32 ghostwriting rules from 58 email threads"},
+    {"path": "/agent/subagents/writing_style_analyzer.md", "what": "Subagent that analyzes sent emails to extract writing patterns"},
+    {"path": "/agent/subagents/network-listener.md", "what": "Subagent that checks Supabase requests and Notion directives (trigger inactive)"},
+    {"path": "/agent/home/apps/personal-knowledge-deliverables/", "what": "Interactive React app tracking 13 deliverables (pinned to sidebar)"}
+  ],
+
+  "known_issues": [
+    "LinkedIn API only provides basic profile data — full profile requires manual data archive download (scraping blocked)",
+    "Supabase MCP connection has intermittent SSE transport failures",
+    "No active triggers since Directive #28 killed system overhead triggers",
+    "Chat URL not available programmatically"
+  ]
+}
