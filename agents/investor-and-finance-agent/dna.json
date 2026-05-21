@@ -1,0 +1,398 @@
+{
+  "sidebar_name": "Investor & Finance Agent",
+  "internal_name": "Investor & Finance Agent",
+  "chat_url": "https://app.tasklet.ai/chat",
+  "one_liner": "Manages Qualico's cap table, investor relations, M&A broker deliverables, and financial reporting across all systems.",
+  "category": "Finance & Accounting",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "advanced",
+    "recommended_max": "genius",
+    "notes": "Expert for most tasks (cap table updates, PDF generation, cross-system sync). Genius needed for complex PDF design, multi-step M&A document creation, or large data reconciliation. Advanced sufficient for simple lookups and status checks."
+  },
+
+  "capabilities": [
+    "Maintain authoritative cap table across Airtable, Google Sheets, Supabase, and Notion",
+    "Generate professional investor updates and M&A documents as PDFs in Qualico Design System",
+    "Manage investor dataroom in Notion with structured archive of monthly/quarterly updates",
+    "Process legal documents (SHA, termsheets, notarial deeds) and extract governance terms",
+    "Organize and maintain M&A broker folder in Google Drive with clean subfolder structure",
+    "Search and compile investor contact information from Gmail, HubSpot, Drive, and LinkedIn",
+    "Build and maintain interactive investor dashboard (instant app)",
+    "Draft investor communications via Gmail",
+    "Push cap table and legal data to Supabase shared_knowledge for cross-agent access",
+    "Generate investor presentations via Gamma and Canva",
+    "Track funding rounds: 2021 Founding (€40K), 2022 Angel (€400K), 2025 Founders reinvestment",
+    "Calculate exit waterfall analysis with liquidation preferences",
+    "Coordinate with CFO agent for financial data validation before any investor communications",
+    "Upload and organize broker deliverables in Google Drive",
+    "Maintain agent briefing in Notion AI Agent Briefings database"
+  ],
+
+  "routing_keywords": ["investor", "cap table", "shareholders", "equity", "funding", "kapitaalsverhoging", "M&A", "broker", "dataroom", "investor update", "shares", "ownership", "valuation", "exit", "waterfall", "liquidation", "SHA", "termsheet", "angel", "ESOP", "deal advisor", "aandelenregister", "finance agent", "investor relations"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Cap table lookups and shareholder info",
+      "example_queries": ["How many shares does Bram have?", "What's Tim's ownership percentage?", "Show me the cap table", "Who are our investors?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Investor update creation and distribution",
+      "example_queries": ["Create a quarterly investor update", "Build an investor update PDF", "Draft an email to investors", "Update the Notion investor archive"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "populate_investor_archive.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    },
+    {
+      "query_type": "M&A document preparation and broker deliverables",
+      "example_queries": ["Prepare equity overview for broker", "Upload SHA to broker folder", "Create M&A governance PDF", "Organize the dataroom for due diligence"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    },
+    {
+      "query_type": "Cross-system cap table sync",
+      "example_queries": ["Update all systems with new cap table", "Push cap table to Supabase", "Sync Airtable with notarial docs", "Fix shareholder types"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "update_mace_cap_table.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Legal document processing",
+      "example_queries": ["Parse the SHA governance terms", "Extract termsheet provisions", "What are the drag-along thresholds?", "Push legal docs to Supabase"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Exit and valuation analysis",
+      "example_queries": ["Calculate exit waterfall", "What's the breakeven exit value?", "Show liquidation preferences", "Run valuation scenario"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "update_exit_waterfall.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "airtable_cap_table.md",
+      "purpose": "Creates and updates the cap table in Airtable Finance & Accounting base. Handles shareholder records with all fields.",
+      "task_types": ["data_lookup", "api_call"],
+      "query_patterns": ["Update Airtable cap table", "Add shareholder to Airtable"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Airtable"], "tables": ["Cap Table (tbl7s4ky64Fxw42uE)"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "airtable_enrich_investors.md",
+      "purpose": "Enriches Airtable investor records with address, phone, and other data found in Drive equity folder documents.",
+      "task_types": ["data_lookup", "file_processing"],
+      "query_patterns": ["Enrich investor data from Drive", "Find investor addresses"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Airtable", "Google Drive"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "build_investor_archive.md",
+      "purpose": "Creates the folder structure and pages for the Notion investor update archive (monthly and quarterly pages).",
+      "task_types": ["api_call", "formatting"],
+      "query_patterns": ["Build investor archive in Notion", "Create monthly update pages"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Notion"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "populate_investor_archive.md",
+      "purpose": "Populates Notion investor archive pages with LITERAL content from the Google Docs historical investor updates. Must copy exactly — no fabrication.",
+      "task_types": ["file_processing", "formatting"],
+      "query_patterns": ["Populate investor archive from Google Doc", "Copy update content to Notion"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Notion", "Google Drive"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "rebuild_investor_archive.md",
+      "purpose": "Rebuilds investor archive segments in Notion when content needs to be refreshed or corrected.",
+      "task_types": ["formatting", "api_call"],
+      "query_patterns": ["Rebuild archive section", "Fix investor update page"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Notion"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "rebuild-investor-segment.md",
+      "purpose": "Rebuilds a specific segment of the investor dashboard app with updated data.",
+      "task_types": ["formatting", "calculation"],
+      "query_patterns": ["Update dashboard segment", "Rebuild app section"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": [], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "file",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "improve_investor_update.md",
+      "purpose": "Rewrites and improves investor update content based on feedback, applying Tim's authentic writing style.",
+      "task_types": ["formatting", "analysis"],
+      "query_patterns": ["Improve investor update", "Rewrite in Tim's style"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Notion"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "notion_investor_dataroom.md",
+      "purpose": "Manages the Notion dataroom structure including investor management pages and data organization.",
+      "task_types": ["api_call", "formatting"],
+      "query_patterns": ["Update Notion dataroom", "Organize investor pages"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Notion"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "update_mace_cap_table.md",
+      "purpose": "Processes official Mace cap table data and updates all systems (Airtable, Sheets, Supabase) with corrected shareholder data.",
+      "task_types": ["data_lookup", "calculation", "api_call"],
+      "query_patterns": ["Process Mace cap table", "Update cap table from notarial docs"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Airtable", "Google Sheets", "Supabase"], "tables": ["cap_table"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "update_official_corrections.md",
+      "purpose": "Applies official corrections from notarial documents to all cap table systems.",
+      "task_types": ["data_lookup", "api_call"],
+      "query_patterns": ["Apply notarial corrections", "Fix official data"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Airtable", "Supabase"], "tables": ["cap_table"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "update_exit_waterfall.md",
+      "purpose": "Calculates and updates exit waterfall analysis with liquidation preferences and payout scenarios.",
+      "task_types": ["calculation", "report_generation"],
+      "query_patterns": ["Calculate exit waterfall", "Update liquidation analysis"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Supabase"], "tables": ["cap_table"], "other_subagents": [], "external_agents": []},
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "update_portability_briefing.md",
+      "purpose": "Updates the Notion AI Agent Briefing page for the Investor & Finance Agent with latest capabilities and status.",
+      "task_types": ["formatting", "api_call"],
+      "query_patterns": ["Update agent briefing", "Refresh Notion briefing page"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Notion"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "update_agent_briefing.md",
+      "purpose": "Creates and updates the comprehensive agent briefing in Notion AI Agent Briefings database.",
+      "task_types": ["formatting", "api_call"],
+      "query_patterns": ["Create agent briefing", "Update briefing in Notion"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Notion"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "submit-audit-response.md",
+      "purpose": "Submits agent audit status to Supabase Agent_Audit_Status table with classification and recommendations.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Submit audit response", "Update audit status"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Supabase"], "tables": ["Agent_Audit_Status"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "DEPRECATED — was used for network monitoring trigger. Trigger deleted per Directive #28.",
+      "task_types": [],
+      "query_patterns": [],
+      "intelligence_needed": "basic",
+      "dependencies": {"connections": [], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "fast"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "LinkedIn",
+      "connection_id": "conn_c85pncn9hd0r2zppxdvc",
+      "what_for": "Look up investor LinkedIn profiles and company info",
+      "tools_activated": ["linkedin-search-organization", "linkedin-get-member-profile", "linkedin-get-current-member-profile"]
+    },
+    {
+      "service": "HubSpot",
+      "connection_id": "conn_3wekcw22t82kee7e6v1h",
+      "what_for": "Search for investor contact details (phone, email) in CRM",
+      "tools_activated": ["hubspot_search_objects", "hubspot_batch_read_objects", "hubspot_list_objects"]
+    },
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Manage investor dataroom, update archive, maintain agent briefing, create databases",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page", "notion-create-database"]
+    },
+    {
+      "service": "Airtable",
+      "connection_id": "conn_jr26b33r1azf9ys1nh4p",
+      "what_for": "Authoritative cap table with 22 shareholders in Finance & Accounting base",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Canva",
+      "connection_id": "conn_0yrnaawphzfgt9b07yca",
+      "what_for": "Generate investor presentations and visual designs",
+      "tools_activated": ["generate-design", "create-design-from-candidate", "list-brand-kits"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Shared brain: cap_table, shared_knowledge, Legal_Documents, Agent_Audit_Status, agent_requests",
+      "tools_activated": ["list_tables", "execute_sql"]
+    },
+    {
+      "service": "Gamma",
+      "connection_id": "conn_bjgxgshbe91wjwzawz2c",
+      "what_for": "Generate investor presentations via Gamma API",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push agent briefings and DNA to tim581/qualicoagents repo",
+      "tools_activated": ["github_push_to_branch"]
+    },
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Search investor correspondence, create draft emails to investors/brokers",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages", "gmail_create_draft"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Access equity folder, funding docs, upload/organize broker deliverables, manage cap table sheets",
+      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_create_folder", "google_drive_create_spreadsheet", "google_drive_get_spreadsheet", "google_drive_update_spreadsheet", "google_drive_move_file", "google_drive_upload_file", "google_drive_download_file"]
+    }
+  ],
+
+  "triggers": [],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "All triggers deleted per Directive #28. Agent operates on-demand only."
+  },
+
+  "key_rules": [
+    "NEVER fabricate data in official documents — only use actual data from sources. If data is needed, ask Tim.",
+    "Always coordinate with CFO agent for financial data validation before publishing investor communications.",
+    "No placeholders, no fabricated data — if you don't know a number, get it from source, request from another agent, or ask Tim.",
+    "Financial KPIs (netto winst, interest, etc.) must be validated by CFO before publishing.",
+    "Use Agent Request Protocol for all blockers: write to agent_requests table, check responses each run.",
+    "When extracting content from Google Docs for Notion, copy LITERALLY — no summaries, no enrichment.",
+    "Cap table types: Tim = Founder (only), all other individuals = Angel, ESOP = ESOP, Marijn = Freelancer, Rave/AMOTEK = Company.",
+    "Mace cap table is the authoritative source for all shareholder data.",
+    "Qualico Design System: anthracite #1A1D21 + Qualico Blue #1A6FBF for all PDF outputs.",
+    "READ Supabase shared_knowledge before work → DO work → WRITE BACK findings."
+  ],
+
+  "input_format": {
+    "accepts": "Natural language requests about investor relations, cap table management, M&A documents, financial reporting, and broker deliverables. Also handles file processing (PDFs, DOCX, XLSX) for legal and financial documents.",
+    "example_queries": [
+      "How many shares does Bram Van Gaelen own?",
+      "Create a professional investor update PDF for FY 2025",
+      "Prepare the equity overview for the M&A broker",
+      "Update all systems with the latest cap table from Mace",
+      "What are the drag-along thresholds in our SHA?"
+    ]
+  },
+
+  "output_format": {
+    "returns": "PDFs (Qualico Design System), Notion pages, Airtable records, Google Sheets, Supabase data, Gmail drafts, Drive folder organization, interactive dashboards (instant apps), and data lookups",
+    "response_time": "medium",
+    "typical_token_usage": "high"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "CFO Agent",
+      "how": "Validates all financial KPIs before investor communications. I request data via agent_requests table and wait for response.",
+      "direction": "I call them"
+    },
+    {
+      "agent": "Legal Agent",
+      "how": "I push legal document inventories for their review. They handle compliance, I handle investor-facing documents.",
+      "direction": "I call them"
+    },
+    {
+      "agent": "Loan Manager",
+      "how": "Verifies interest expenses and loan data before I include in investor reports.",
+      "direction": "I call them"
+    },
+    {
+      "agent": "Research Assistant",
+      "how": "Provides market analysis and reporting best practices research that I incorporate into investor materials.",
+      "direction": "I call them"
+    }
+  ],
+
+  "databases_tables": [
+    {"table": "shared_knowledge", "access": "read+write", "what_for": "Store and retrieve cap table data, governance terms, and cross-agent shared information"},
+    {"table": "cap_table", "access": "read+write", "what_for": "22-shareholder cap table with full contact info, share classes, and investment rounds"},
+    {"table": "Legal_Documents", "access": "read+write", "what_for": "80+ legal documents parsed and searchable; SHA/termsheet governance terms"},
+    {"table": "Agent_Audit_Status", "access": "write", "what_for": "Submit periodic audit responses with classification and recommendations"},
+    {"table": "agent_requests", "access": "read+write", "what_for": "Inter-agent communication protocol for data requests and blockers"},
+    {"table": "Agents_Overview", "access": "write", "what_for": "DNA dump and agent registration"}
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Push agent briefings, DNA dumps, and audit responses"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/07_Qualico_MA_Equity_Governance.pdf", "what": "12-page M&A equity & governance report for broker"},
+    {"path": "/agent/home/Qualico_Investor_Update_FY2025_v3.pdf", "what": "FY 2025 investor update in Qualico Design System"},
+    {"path": "/agent/home/SHA_Qualico_2023.pdf", "what": "Downloaded SHA/notarial deed (Jan 2023)"},
+    {"path": "/agent/home/Qualico_Termsheet_20dec22.docx", "what": "Termsheet Dec 2022 with all governance rules"},
+    {"path": "/agent/home/Qualico_SSHA_22jan23.docx", "what": "SSHA from Jan 2023"},
+    {"path": "/agent/home/Akte_kapitaalsverhoging_signed.pdf", "what": "Signed notarial deed"},
+    {"path": "/agent/home/apps/investor-dashboard/", "what": "Interactive investor dashboard (pinned instant app)"},
+    {"path": "/agent/home/apps/investor-agent-deliverables/", "what": "Deliverables tracking app (pinned instant app)"},
+    {"path": "/agent/home/generate_investor_update.py", "what": "Python script for PDF generation in Qualico Design System"},
+    {"path": "/agent/home/dna.json", "what": "This agent's DNA dump"}
+  ],
+
+  "known_issues": [
+    "April-December 2024 Notion archive pages may contain fabricated data — not yet audited against real Google Doc content",
+    "Gamma presentation (March 2026) contains stale ownership data — needs regeneration",
+    "3 duplicate investor update pages in Notion need manual deletion by Tim",
+    "Gmail draft to Eva De Ridder pending Tim review/send",
+    "Drive broker folder reorganization just completed — 2025 SHA still needs to be located and uploaded",
+    "Network-listener subagent is deprecated but file still exists"
+  ]
+}
