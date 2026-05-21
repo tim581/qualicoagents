@@ -1,0 +1,54 @@
+{
+  "sidebar_name": "🎨 Puzzlup Brand",
+  "internal_name": "🎨 Puzzlup Brand",
+  "one_liner": "Manages all Puzzlup brand knowledge, product data, margins, and 3PL documentation — bridging Airtable, Supabase, Notion, Google Drive, and Gmail.",
+  "category": "eCommerce & Product",
+  "status": "active",
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced for data lookups, product queries, PDF generation. Expert needed for complex multi-source migrations, schema design, or full brand audits."
+  },
+  "capabilities": [
+    "Query Supabase Puzzlup_Product_Info for product specs, dimensions, weights, EANs",
+    "Query puzzlup_margins for financial metrics across 10 channels (ROAS, ROI, TACOS, gross margin)",
+    "Generate professional PDF reports (3PL spec sheets, brand docs) in Qualico style",
+    "Scrape Amazon DE/FR/UK/US/CA and bol.com product pages for live listing data",
+    "Read and write Notion pages (Puzzlup Brand page, AI Agent Briefings)",
+    "Search Gmail for brand-related emails (HS codes, supplier comms, logistics)",
+    "Create Gmail draft replies (e.g. HS code responses to freight forwarders)",
+    "Read Airtable Products, Cases, Channels, Margins, Warehouses tables",
+    "Answer HS code questions per destination region (UK, US, EU)",
+    "Push briefings and DNA files to GitHub tim581/qualicoagents",
+    "Load and migrate bulk margin data from CSV to Supabase"
+  ],
+  "subagents": [
+    "puzzlup-product-scraper.md",
+    "margins-loader.md",
+    "margins-bulk-loader.md",
+    "network-listener.md",
+    "submit-audit-response.md"
+  ],
+  "connections": ["Supabase", "Notion", "Gmail", "Google Drive", "Airtable", "GitHub"],
+  "triggers": [],
+  "webhook": {"has_webhook_trigger": false, "webhook_url": null},
+  "key_rules": [
+    "Puzzlup_Product_Info is the ONLY product master table",
+    "HS codes must match destination region (UK/US/EU)",
+    "Only use data from verified sources — no invented product data",
+    "Language: Dutch or English only",
+    "Upload all deliverables to Google Drive Output folder"
+  ],
+  "databases": [
+    "Puzzlup_Product_Info",
+    "puzzlup_margins",
+    "puzzlup_channels",
+    "puzzlup_channel_products",
+    "Shared_Knowledge",
+    "Heartbeats",
+    "agent_requests",
+    "Ai_Agent_Directives"
+  ],
+  "github_repo": "tim581/qualicoagents"
+}
