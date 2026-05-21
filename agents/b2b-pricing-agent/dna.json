@@ -1,0 +1,117 @@
+{
+  "sidebar_name": "B2B Pricing Agent",
+  "internal_name": "B2B Pricing Puzzle Mats",
+  "chat_url": null,
+  "one_liner": "Generates professional B2B pricing PDFs for Puzzlup puzzle mats using real COGS data from Supabase with QUALICO branding",
+  "category": "Marketing & Sales",
+  "status": "active",
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Expert needed for PDF generation with complex layouts and pricing calculations. Advanced sufficient for simple data lookups."
+  },
+  "capabilities": [
+    "Generate B2B pricing PDFs with QUALICO dark-theme branding",
+    "Calculate B2B unit prices from landed COGS (L0+L1+L2) with 2x margin markup",
+    "Fetch real product data (names, EANs, units/carton, dimensions) from Supabase",
+    "Apply Belgian general T&Cs (10 sections, Belgian law, Antwerp jurisdiction)",
+    "Create landscape PDF documents with ReportLab canvas",
+    "Calculate MOQ based on carton counts or pallet/CBM volume",
+    "Round prices upward to nearest EUR 0.50"
+  ],
+  "routing_keywords": ["b2b", "pricing", "puzzle", "mat", "puzzlup", "qualico", "proposal", "carton", "moq", "cogs", "landed", "cost", "pdf", "branding"],
+  "routing_matrix": [
+    {
+      "query_type": "Product data lookups",
+      "example_queries": ["What are the puzzle mat SKUs?", "Show me EANs for puzzle mats", "How many units per carton for MAT BLACK GIFT 1000?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Pricing calculations",
+      "example_queries": ["What is the B2B price for MAT BLACK LUX 1500?", "Calculate MOQ for puzzle mats", "What are the landed costs for Europe?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Full PDF generation with branding",
+      "example_queries": ["Generate a B2B pricing PDF for puzzle mats", "Create a new pricing proposal with updated MOQ", "Rebuild the PDF in landscape with QUALICO branding"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    }
+  ],
+  "subagents": [],
+  "connections": [
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Read product info (Puzzlup_Product_Info), COGS data (COGS_Landed), branding guidelines (shared_knowledge), and push DNA data (Agents_Overview)",
+      "tools_activated": ["list_projects", "list_tables", "execute_sql"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push DNA dump to qualicoagents repo",
+      "tools_activated": ["github_push_to_branch"]
+    }
+  ],
+  "triggers": [],
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": null
+  },
+  "key_rules": [
+    "NEVER show COGS/unit costs to customers — only B2B prices",
+    "B2B Unit Price = total_landed_eur (L0+L1+L2) x 2, rounded UP to nearest EUR 0.50",
+    "Price per Master Carton = B2B Unit Price x units_per_master",
+    "MOQ = 10 master cartons (current setting)",
+    "Sell only per master carton",
+    "Payment: 100% UPFRONT before order processing",
+    "Delivery included in prices, 7-14 days",
+    "Belgian law applies, jurisdiction Antwerp",
+    "All product data must come from Supabase — never make up product names or data",
+    "QUALICO branding: dark charcoal #1E1E1E edge-to-edge bg, blue #3B82F6 headers, white text, orange #FF6B35 accents"
+  ],
+  "input_format": {
+    "accepts": "Natural language requests about B2B pricing for Puzzlup puzzle mats, MOQ changes, layout adjustments, PDF regeneration",
+    "example_queries": [
+      "Generate a B2B pricing PDF for puzzle mats",
+      "Change the MOQ to 10 cartons",
+      "Make the layout landscape and more spacious",
+      "Update prices with new COGS data",
+      "Add Belgian T&Cs to the proposal"
+    ]
+  },
+  "output_format": {
+    "returns": "Professional PDF files with B2B pricing tables and Belgian T&Cs, styled with QUALICO branding",
+    "response_time": "slow",
+    "typical_token_usage": "very_high"
+  },
+  "cooperation_partners": [],
+  "databases_tables": [
+    {"table": "COGS_Landed", "access": "read", "what_for": "Landed cost data (L0+L1+L2) per product per region for pricing calculations"},
+    {"table": "Puzzlup_Product_Info", "access": "read", "what_for": "Product SKUs, EANs, units per master carton, master carton dimensions"},
+    {"table": "shared_knowledge", "access": "read", "what_for": "QUALICO branding guidelines and styling rules"},
+    {"table": "Agents_Overview", "access": "write", "what_for": "DNA dump self-registration"}
+  ],
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Push agent DNA dump"}
+  ],
+  "files_and_paths": [
+    {"path": "/agent/home/B2B_Pricing_Puzzle_Mats.pdf", "what": "Latest generated B2B pricing PDF for puzzle mats"}
+  ],
+  "known_issues": [
+    "PDF layout requires multiple iterations to get spacing right — ReportLab canvas is finicky",
+    "Previously used wrong COGS field (l2_total_per_unit instead of total_landed_eur) — now fixed",
+    "Previously fabricated product names instead of querying Supabase — now fixed",
+    "High token usage due to iterative PDF layout debugging"
+  ]
+}
