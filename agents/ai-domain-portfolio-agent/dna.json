@@ -1,0 +1,160 @@
+{
+  "sidebar_name": "AI Domain Portfolio Agent",
+  "internal_name": "AI Domain Portfolio",
+  "chat_url": "?",
+  "one_liner": "Researches, checks availability, scores, and manages a .ai domain investment portfolio for resale on Afternic and Atom.com.",
+  "category": "Finance & Accounting",
+  "status": "active",
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced sufficient for domain checks and Supabase updates. Expert needed for complex scoring, PDF generation, or multi-batch domain research sessions."
+  },
+  "capabilities": [
+    "Check domain availability across .ai, .com, .nl, .de via GoDaddy and Namecheap APIs",
+    "Score and rank domains using 1e/2e/3e orde ROI model (sell probability x resale value x market score x sector heat)",
+    "Insert and manage domain portfolio in Supabase (premium_domains table)",
+    "Filter domains by quality rules: no XAI pattern, no 3-word, no trademark risk, hub/ops/pro suffix strategy",
+    "Research domain market trends, sales comparables, and pricing via Tavily + Exa search",
+    "Generate investment reports, winners lists, and pitch decks as PDFs",
+    "Upload domain lists to Afternic (CSV) and Atom.com",
+    "Manage co-ownership legal documents",
+    "Update Google Sheets on explicit request only",
+    "Track portfolio: 38 purchased .ai domains, 103 pending across 7 themes"
+  ],
+  "routing_keywords": ["domain", "domains", ".ai", "afternic", "atom", "namecheap", "portfolio", "register", "available", "resale", "invest", "pending", "purchased", "premium", "hub", "ops", "pro", "godaddy", "tld"],
+  "routing_matrix": [
+    {
+      "query_type": "Domain availability check",
+      "example_queries": ["Is theologyhub.ai available?", "Check these 10 domains for availability"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "bulk_domain_checker.md",
+      "avg_response_time": "fast",
+      "avg_tokens": "low"
+    },
+    {
+      "query_type": "Supabase domain insert / portfolio update",
+      "example_queries": ["Add these domains to Supabase pending", "Update asking price for oilhub.ai"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "supabase_domain_insert.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    },
+    {
+      "query_type": "Theme research + domain generation",
+      "example_queries": ["Generate HR/Recruitment agent domain ideas", "Research ethical AI domain names"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "domain_researcher.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    },
+    {
+      "query_type": "Full domain research session with scoring, PDF, and batch Supabase insert",
+      "example_queries": ["Do a complete research session for token optimization domains", "Build winners list PDF from overlap"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "strategic_analysis.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high"
+    }
+  ],
+  "subagents": [
+    {"filename": "accounting_domain_checker.md", "purpose": "Checks availability of accounting/bookkeeping automation domains and inserts available ones into Supabase pending.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check accounting domain availability"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "agent_economy_payments_checker.md", "purpose": "Checks availability of agent economy / payments / stablecoin domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check agent economy payment domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "ai_infrastructure_domain_checker.md", "purpose": "Checks availability of AI infrastructure domains (routing, inference, quantize, etc.).", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check AI infrastructure domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "bulk_domain_checker.md", "purpose": "Generic bulk domain availability checker for any theme. Calls GoDaddy API in batches.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check availability for list of domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy"], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "fast"},
+    {"filename": "crypto_domain_checker.md", "purpose": "Checks availability of crypto/DeFi/payments domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check crypto domain availability"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "domain_researcher.md", "purpose": "Researches domain name ideas for a given theme using Tavily/Exa search, applies quality filters, and returns scored candidates.", "task_types": ["web_scraping", "analysis"], "query_patterns": ["Generate domain ideas for X theme"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Tavily", "Exa"], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "ethical_ai_domain_checker.md", "purpose": "Checks availability of ethical AI / fairness / bias domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check ethical AI domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "governance_compliance_checker.md", "purpose": "Checks availability of AI governance and compliance domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check governance/compliance domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "llm_commerce_domain_checker.md", "purpose": "Checks availability of LLM commerce / conversational commerce domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check LLM commerce domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "religious_ai_checker.md", "purpose": "Checks availability of religion/faith/theology AI domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check religion AI domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "token_domain_checker.md", "purpose": "Checks availability of token optimization / AI cost reduction domain names.", "task_types": ["api_call", "data_lookup"], "query_patterns": ["Check token optimization domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "medium"},
+    {"filename": "strategic_analysis.md", "purpose": "Deep scoring and analysis of domain candidates. Applies ROI model, sell speed, market scoring.", "task_types": ["analysis", "calculation", "report_generation"], "query_patterns": ["Score and rank these domains", "Build ROI model for candidates"], "intelligence_needed": "expert", "dependencies": {"connections": ["Tavily", "Exa", "Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "report", "response_speed": "slow"},
+    {"filename": "supabase_domain_insert.md", "purpose": "Inserts batches of domain records into Supabase premium_domains table with duplicate checking.", "task_types": ["api_call"], "query_patterns": ["Add domains to Supabase"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "fast"},
+    {"filename": "supabase_domain_uploader.md", "purpose": "Batch uploader for domain lists into Supabase. Handles large batches with deduplication.", "task_types": ["api_call"], "query_patterns": ["Bulk insert domains into Supabase"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "fast"},
+    {"filename": "build_winners_pdf.md", "purpose": "Generates a formatted PDF winners list from scored domain candidates.", "task_types": ["report_generation", "file_processing"], "query_patterns": ["Build winners PDF", "Generate domain shortlist PDF"], "intelligence_needed": "advanced", "dependencies": {"connections": [], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "file", "response_speed": "medium"},
+    {"filename": "sheet_bulk_upload.md", "purpose": "Uploads domain data to Google Sheets in bulk. Only used when Tim explicitly requests a review session.", "task_types": ["api_call"], "query_patterns": ["Update Google Sheet with domains"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "medium"},
+    {"filename": "sheet-batch-updater.md", "purpose": "Batch updates Google Sheets with domain status changes.", "task_types": ["api_call"], "query_patterns": ["Batch update sheet"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "medium"},
+    {"filename": "sheet_update_overlap.md", "purpose": "Updates Google Sheet with overlap analysis between Tim and Bram domain picks.", "task_types": ["api_call", "analysis"], "query_patterns": ["Update overlap in sheet"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "medium"},
+    {"filename": "batch_sql_executor.md", "purpose": "Executes batched SQL statements against Supabase.", "task_types": ["api_call"], "query_patterns": ["Run batch SQL"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Supabase"], "tables": ["premium_domains", "domains"], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "fast"},
+    {"filename": "batch_sql_inserter.md", "purpose": "Inserts records via batched SQL with error handling.", "task_types": ["api_call"], "query_patterns": ["Batch insert SQL records"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "fast"},
+    {"filename": "check_obvious_domains.md", "purpose": "Checks the obvious high-value single-word .ai domain names to see if any are available.", "task_types": ["api_call"], "query_patterns": ["Are any big single-word .ai domains available?"], "intelligence_needed": "advanced", "dependencies": {"connections": ["GoDaddy"], "tables": [], "other_subagents": [], "external_agents": []}, "output_type": "data", "response_speed": "fast"},
+    {"filename": "sql_domain_inserter.md", "purpose": "Dedicated SQL inserter for domain records with conflict handling.", "task_types": ["api_call"], "query_patterns": ["Insert domain records"], "intelligence_needed": "advanced", "dependencies": {"connections": ["Supabase"], "tables": ["premium_domains"], "other_subagents": [], "external_agents": []}, "output_type": "action", "response_speed": "fast"}
+  ],
+  "connections": [
+    {"service": "GoDaddy Domain Search", "connection_id": "conn_ggxw3bg1m5yftq762m2s", "what_for": "Check domain availability and get suggestions", "tools_activated": ["domains_check_availability", "domains_suggest"]},
+    {"service": "Supabase", "connection_id": "conn_xmaq9bngsgw6e19jxcjn", "what_for": "Read/write premium_domains table, domains table, cap_table", "tools_activated": ["list_projects", "list_tables", "execute_sql"]},
+    {"service": "Namecheap Domains", "connection_id": "conn_fbj2jaxczp5y4mhpaqp0", "what_for": "Backup domain availability checks via Namecheap API", "tools_activated": ["remote_http_call"]},
+    {"service": "Tavily AI Search", "connection_id": "conn_sz4v59nwy6b2kfp81agh", "what_for": "Research domain market trends, comparable sales, AI sector news", "tools_activated": ["remote_http_call"]},
+    {"service": "Exa AI Search", "connection_id": "conn_mn2jr6h8am06yhamtgxh", "what_for": "Deep research on AI domain valuations and market signals", "tools_activated": ["remote_http_call"]},
+    {"service": "Gmail", "connection_id": "conn_rqbhxnbt4b242v34h9hh", "what_for": "Send co-ownership docs and domain emails from tim@qualico.be", "tools_activated": ["gmail_create_draft"]},
+    {"service": "Google Drive", "connection_id": "conn_zhj70cc89xscszt6ktwj", "what_for": "Update Google Sheets review file (only on explicit Tim request)", "tools_activated": ["google_drive_search_documents", "google_drive_create_spreadsheet", "google_drive_get_spreadsheet", "google_drive_update_spreadsheet"]},
+    {"service": "GitHub", "connection_id": "conn_rf4te6wqncg18hn7dn13", "what_for": "Push DNA dumps and agent files to tim581/qualicoagents repo", "tools_activated": ["github_push_to_branch", "github_get_file_content"]}
+  ],
+  "triggers": [],
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "No webhook configured"
+  },
+  "key_rules": [
+    "ONLY .ai, .com, .nl, .de TLDs — never .io, .tech, .co",
+    "NO XAI pattern (tradingai.ai) unless AI is intrinsic to the term",
+    "NO 3-word domains, NO >18 character domains",
+    "NO brand/trademark domains (UDRP risk = negative EV)",
+    "SUFFIX strategy: -hub (43%) > -pro (17%) > -ops (12%) > -hq (max 7 domains) > -ify (max 5)",
+    "Supabase is the ONLY source of truth — Google Sheet only on explicit Tim request",
+    "Review app is permanently IGNORED",
+    "75% .ai / 15% .com / 5% .nl / 5% .de portfolio allocation",
+    "All .ai = 2-year minimum registration = EUR 157.99 per domain",
+    "Do NOT purchase domains — only check availability and add to Supabase pending",
+    "Tim resale values override agent estimates when provided",
+    "Afternic + Atom.com are the only listing platforms. Sedo permanently skipped.",
+    "Lease-to-Own ON for all Afternic listings",
+    "Min offer = 50% of Buy Now. Never counter below 85% of ask."
+  ],
+  "input_format": {
+    "accepts": "Natural language domain research requests, theme briefs, availability check lists, Supabase update commands, CSV uploads",
+    "example_queries": [
+      "Check if theologyhub.ai is available and add to Supabase if yes",
+      "What are the best HR/Recruitment agent domain names I should check?",
+      "Add these 15 domains to pending in Supabase",
+      "Show me all ethical AI domains currently pending",
+      "What is the total budget exposure for all 103 pending domains?"
+    ]
+  },
+  "output_format": {
+    "returns": "Tables of domain names with availability, scores, resale estimates, and budget impact. Supabase actions confirmed. Files written to /agent/home/. No review app updates.",
+    "response_time": "medium",
+    "typical_token_usage": "medium"
+  },
+  "cooperation_partners": [],
+  "databases_tables": [
+    {"table": "premium_domains", "access": "read+write", "what_for": "Main portfolio: all domain candidates with status (pending/purchased/declined), asking price, resale estimates"},
+    {"table": "domains", "access": "read+write", "what_for": "Original domain portfolio table (legacy)"},
+    {"table": "cap_table", "access": "read", "what_for": "Co-ownership data: Tim + Bram Van Gaelen 50/50 split"},
+    {"table": "Agents_Overview", "access": "read+write", "what_for": "Agent DNA registry — self-registration"}
+  ],
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "DNA dump storage for agent registry"}
+  ],
+  "files_and_paths": [
+    {"path": "/agent/home/afternic_upload_v2.csv", "what": "38 purchased domains with realistic USD asking prices for Afternic"},
+    {"path": "/agent/home/atom_upload.csv", "what": "38 domains in Atom.com format (domain,price)"},
+    {"path": "/agent/home/domain_coownership_agreement.pdf", "what": "Legal co-ownership agreement Tim + Bram"},
+    {"path": "/agent/home/AI_Domain_Investment_Pitch.pdf", "what": "Investor pitch deck v4"},
+    {"path": "/agent/home/WINNERS_LIST_FINAL.pdf", "what": "Tim+Bram 73-domain overlap winners list"},
+    {"path": "/agent/home/AGENTIC_AI_DOMAINS_MASTERLIST.md", "what": "Master domain research notes"},
+    {"path": "/agent/home/ai_infrastructure_available_domains.json", "what": "AI infrastructure domain check results"},
+    {"path": "/agent/home/ethical_ai_domains_availability.json", "what": "Ethical AI domain check results"},
+    {"path": "/agent/home/domain_check_results.json", "what": "Agent economy payments domain check results"}
+  ],
+  "known_issues": [
+    "Namecheap API IP whitelist is unreliable — prefer GoDaddy for availability checks",
+    "Afternic/GoDaddy blocks sandbox browser — Tim must verify domains manually in own browser",
+    "h2lab.ai: NS3 confirmed in Namecheap, Tim still needs to click Request Ownership Verification in Afternic",
+    "Co-ownership doc to Bram (bramvangaelen@gmail.com) — send retry still pending",
+    "Atom.com API keys not yet provided by Tim (MCP Access + Seller Marketplace API + Appraisal API)"
+  ]
+}
