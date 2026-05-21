@@ -1,0 +1,395 @@
+{
+  "sidebar_name": "📊 COGS",
+  "internal_name": "📊 COGS",
+  "chat_url": null,
+  "one_liner": "Automates COGS invoice scanning, classification, landed cost calculation, and Sellerboard sync for Puzzlup/Qualico Amazon FBA operations across EU, UK, US, and Canada.",
+  "category": "Finance & Accounting",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "expert",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced suffices for weekly invoice scans and approvals. Expert needed for new Vercel features, complex invoice classification edge cases, and multi-step CBM allocation calculations."
+  },
+
+  "capabilities": [
+    "Weekly automated scanning of 2 Gmail inboxes for COGS partner invoices (PDF/XLSX)",
+    "Content-based invoice classification into 3-layer cost model (L0 Factory, L1 Inbound, L2 Transfer)",
+    "CBM-weighted cost allocation across multiple products per invoice",
+    "Matching invoices to Transfer Orders (TO) and Purchase Orders (PO) in Supabase",
+    "Automatic COGS_Landed weighted average updates after invoice approval",
+    "Sellerboard Google Sheets auto-sync (EU+UK in EUR, US+CA in USD)",
+    "Webhook-driven invoice approval/comment processing from Vercel app",
+    "3PL storage invoice routing to overhead table (3PL_Warehousing_Costs)",
+    "Google Drive upload and linking for all new invoice PDFs",
+    "Vercel platform COGS module development (feature branches + PR workflow)",
+    "WePrep XLSX multi-tab parsing (Invoice Items, GoodsIn, Additional Invoice Items)",
+    "US tariff rate tracking and COGS_Landed adjustments",
+    "Dual currency display (EUR + USD/GBP/CAD) for landed costs",
+    "margins_connected view auto-updates contribution margins"
+  ],
+
+  "routing_keywords": ["cogs", "invoice", "landed cost", "sellerboard", "freight", "duties", "customs", "3pl", "weprep", "van thiel", "forceget", "glc", "ifb", "weship", "floormax", "transfer order", "purchase order", "cbm", "allocation", "fba", "inbound", "tariff", "duty", "ocean freight"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Invoice status and lookup",
+      "example_queries": ["What invoices are pending?", "Show me the latest COGS scan results", "Is the WePrep invoice processed?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Landed cost queries",
+      "example_queries": ["What is the landed cost for TRAYS BLACK in US?", "Show me L1 costs for UK products", "Compare landed costs across regions"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Weekly invoice scanning",
+      "example_queries": ["Run the weekly COGS scan now", "Check both inboxes for new invoices", "Any new invoices this week?"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "cogs-email-scanner.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    },
+    {
+      "query_type": "Invoice approval processing",
+      "example_queries": ["(webhook) Invoice approved by Tim", "(webhook) Comment on pending invoice"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Sellerboard sheet updates",
+      "example_queries": ["Sync sellerboard sheets", "Update EU+UK sellerboard", "Recalculate US+CA sheet with new tariffs"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "sellerboard-sheet-sync.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Vercel platform development",
+      "example_queries": ["Add dual currency to the COGS app", "Fix the pending invoices filter", "Build new feature for COGS module"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "very_high (20K+)"
+    },
+    {
+      "query_type": "Tariff and duty updates",
+      "example_queries": ["Update US tariff rates", "What are current duty rates for HS 9503?", "Recalculate US landed costs after tariff change"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "high (5-20K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "cogs-email-scanner.md",
+      "purpose": "Scans both Gmail inboxes (invoices@ and tim@) for COGS partner invoices. Downloads, parses, classifies, uploads to Drive, and writes to COGS_Pending_Invoices. Also routes storage invoices to 3PL_Warehousing_Costs.",
+      "task_types": ["file_processing", "api_call", "analysis", "data_lookup"],
+      "query_patterns": ["Scan for new invoices", "Run weekly COGS scan", "Check emails for invoices"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Gmail invoices@qualico.be", "Gmail tim@qualico.be", "Supabase", "Google Drive"],
+        "tables": ["COGS_Pending_Invoices", "3PL_Warehousing_Costs", "Emails_Processed", "TO_Transfers", "PO_Purchases", "TO_Product_Lines", "PO_Product_Lines", "Puzzlup_Product_Info"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "sellerboard-sheet-sync.md",
+      "purpose": "Reads COGS_Landed from Supabase and updates two Google Sheets (EU+UK in EUR, US+CA in USD at €1=$1.087) for Sellerboard import.",
+      "task_types": ["api_call", "calculation", "formatting"],
+      "query_patterns": ["Sync sellerboard", "Update sellerboard sheets", "Refresh COGS export"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase", "Google Sheets"],
+        "tables": ["COGS_Landed"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "batch-invoice-parser.md",
+      "purpose": "Parses batches of invoice PDFs/XLSX files, extracts line items, and classifies costs into the 3-layer model.",
+      "task_types": ["file_processing", "analysis"],
+      "query_patterns": ["Parse these invoices", "Classify invoice batch"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["COGS_Pending_Invoices"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "landed-cost-analysis.md",
+      "purpose": "Analyzes landed costs across products and regions, generates comparisons and identifies cost optimization opportunities.",
+      "task_types": ["analysis", "report_generation", "calculation"],
+      "query_patterns": ["Analyze landed costs", "Compare costs across regions", "Cost breakdown report"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["COGS_Landed", "COGS_Invoices"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "supabase-batch-loader.md",
+      "purpose": "Batch loads/updates data into Supabase tables — used for bulk COGS data migrations and backfills.",
+      "task_types": ["api_call", "data_lookup"],
+      "query_patterns": ["Bulk load data", "Backfill table", "Migrate records"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["COGS_Landed", "COGS_Invoices", "COGS_Pending_Invoices"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "3pl-storage-backfill.md",
+      "purpose": "Backfills historical 3PL storage/warehousing costs from email archives into 3PL_Warehousing_Costs table.",
+      "task_types": ["file_processing", "api_call", "data_lookup"],
+      "query_patterns": ["Backfill storage costs", "Load historical warehousing data"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Gmail", "Supabase"],
+        "tables": ["3PL_Warehousing_Costs"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "cogs-master-comparison.md",
+      "purpose": "Compares COGS data across sources (Airtable legacy vs Supabase) to verify data migration accuracy.",
+      "task_types": ["analysis", "data_lookup"],
+      "query_patterns": ["Compare COGS sources", "Verify migration"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["COGS_Landed", "COGS_Invoices"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "build-cogs-vercel-module.md",
+      "purpose": "Builds and updates the COGS module in the qualico-platform Vercel app. Handles TypeScript, React components, and Supabase integration.",
+      "task_types": ["api_call", "formatting"],
+      "query_patterns": ["Build COGS feature", "Update Vercel module", "Fix COGS app bug"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["GitHub"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "update-sellerboard-sheet.md",
+      "purpose": "Legacy subagent for updating a single Sellerboard sheet. Superseded by sellerboard-sheet-sync.md.",
+      "task_types": ["api_call", "formatting"],
+      "query_patterns": ["Update sellerboard"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Sheets"],
+        "tables": ["COGS_Landed"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Deprecated for COGS — briefings now in Supabase. Occasional workspace search only.",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
+    },
+    {
+      "service": "Airtable",
+      "connection_id": "conn_jr26b33r1azf9ys1nh4p",
+      "what_for": "FULLY DEPRECATED for COGS. Legacy connection only.",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "Gmail (invoices@qualico.be)",
+      "connection_id": "conn_62e2881g35jcmc5qrmq7",
+      "what_for": "Scan for COGS partner invoices — primary invoice inbox",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages", "gmail_download_attachment"]
+    },
+    {
+      "service": "Gmail (tim@qualico.be)",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Scan for COGS partner invoices — secondary inbox, some partners email Tim directly",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages", "gmail_download_attachment"]
+    },
+    {
+      "service": "Slack",
+      "connection_id": "conn_4syh5zxa3g8xm552sp6r",
+      "what_for": "Deprecated for COGS notifications. Kept for occasional cross-agent coordination only.",
+      "tools_activated": ["slack_list_channels", "slack_post_message"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Primary database — all COGS data: invoices, landed costs, TOs, POs, products, warehousing, margins",
+      "tools_activated": ["list_tables", "execute_sql"]
+    },
+    {
+      "service": "Google Drive & Sheets",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Upload invoice PDFs to Drive, manage Sellerboard import sheets, COGS Landed Cost Overview sheet",
+      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_get_spreadsheet", "google_drive_update_spreadsheet", "google_drive_move_file", "google_drive_upload_file", "google_drive_download_file"]
+    },
+    {
+      "service": "Computer Use",
+      "connection_id": "conn_htp1rsc9jwmzgrwgkdwf",
+      "what_for": "Browser automation for Sellerboard imports and other web UI tasks",
+      "tools_activated": ["computer", "copy_file_from_computer"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "qualico-platform Vercel app development — feature branches, PRs, code pushes",
+      "tools_activated": ["github_get_file_content", "github_create_pull_request", "github_push_to_branch"]
+    }
+  ],
+
+  "triggers": [
+    {
+      "type": "schedule",
+      "description": "Weekly COGS invoice scan — scans both Gmail inboxes for new partner invoices every Monday 9:00 AM CET",
+      "frequency": "weekly (Monday 09:00 CET)",
+      "trigger_id": "cti_87ymz61mm4q8k5n8kmmk"
+    },
+    {
+      "type": "webhook",
+      "description": "COGS invoice approval/comment webhook — fires when Tim approves or comments on a pending invoice in the Vercel app",
+      "frequency": "on-demand",
+      "trigger_id": "wti_hw2e9zza4sv0hbdg6p9x"
+    }
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": true,
+    "webhook_url": "wti_hw2e9zza4sv0hbdg6p9x",
+    "notes": "Vercel app sends POST with invoice_id, action (approve/comment), and optional comment text. Env var NEXT_PUBLIC_TASKLET_WEBHOOK_URL set in Vercel dashboard."
+  },
+
+  "key_rules": [
+    "GOLDEN RULE: Content-first classification — NEVER classify invoices by prefix, partner name, or assumptions. Always read the actual PDF/XLSX content first.",
+    "3-Layer Cost Model: L0 (Factory COGS) + L1 (Factory→3PL: ocean freight, duties, rail, inbound) + L2 (3PL→FBA: transfer prep, freight, placement)",
+    "CBM-weighted allocation: Cost split across products using Master Box Volume ratios, never flat per-unit",
+    "ALL non-Monta 3PL costs = COGS (Amazon FBA). Only Monta = webshop operations (overhead).",
+    "ALL 3PL storage/rent = Overhead across all partners, never COGS",
+    "TO/PO matching is mandatory: Every invoice must link to specific TO or PO. Cost/unit only shown when matched.",
+    "Products JSON must always be populated when TO/PO is linked — never NULL",
+    "Sellerboard format: XLSX with D/MM/YYYY dates, CostPeriodStartDate = 1/01/2000. EU in EUR, US in USD (€1=$1.087).",
+    "Canada region key = 'Canada' (not 'CA') in COGS_Landed",
+    "Git workflow: Always feature branches + PR, never push to main directly (Directive #29)",
+    "No Slack for COGS — everything through Vercel app only",
+    "Every new invoice uploaded to Google Drive folder 15zTNC3cdtKD5v6ADRVw8MqN62J-eaPP2 with pdf_drive_id stored",
+    "Airtable is fully deprecated for COGS — all data in Supabase"
+  ],
+
+  "input_format": {
+    "accepts": "Natural language questions about COGS, invoices, landed costs, tariffs. Also webhook payloads from Vercel app and scheduled trigger events.",
+    "example_queries": [
+      "What is the landed cost for MAT 3000 in the US?",
+      "Run the weekly invoice scan now",
+      "Show me all pending invoices",
+      "Update US tariff rates after the Supreme Court ruling",
+      "Add dual currency display to the COGS app",
+      "Sync the Sellerboard sheets",
+      "What are current 3PL storage costs for WePrep?",
+      "Process this WePrep XLSX invoice",
+      "Compare landed costs EU vs UK for all products"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Data tables, Supabase updates, Google Sheets updates, GitHub PRs, Vercel app features, invoice processing confirmations, PDF reports",
+    "response_time": "fast for lookups, slow for full scans and Vercel development",
+    "typical_token_usage": "medium for queries, very_high for scans and development"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Overhead Agent",
+      "how": "Coordinate mailbox scanning — COGS agent routes overhead invoices (Monta, storage) away from COGS pipeline. Overhead agent may scan same inboxes for operational expenses.",
+      "direction": "Bidirectional"
+    }
+  ],
+
+  "databases_tables": [
+    {"table": "COGS_Landed", "access": "read+write", "what_for": "48 product×region landed cost records with 3-layer breakdown. Auto-updated after invoice approval."},
+    {"table": "COGS_Invoices", "access": "read+write", "what_for": "146+ approved invoice records. Final destination after Tim approves pending invoices."},
+    {"table": "COGS_Pending_Invoices", "access": "read+write", "what_for": "Pending invoices awaiting Tim approval in Vercel app. Scanner writes here, webhook reads/updates."},
+    {"table": "3PL_Warehousing_Costs", "access": "read+write", "what_for": "60+ 3PL storage records (overhead). Scanner routes storage invoices directly here."},
+    {"table": "TO_Transfers", "access": "read", "what_for": "126 Transfer Order records for matching L2 invoices to outbound FBA transfers."},
+    {"table": "TO_Product_Lines", "access": "read", "what_for": "271 product lines across TOs — used for CBM allocation."},
+    {"table": "PO_Purchases", "access": "read+write", "what_for": "34 Purchase Order records for matching L1 invoices to inbound containers."},
+    {"table": "PO_Product_Lines", "access": "read", "what_for": "90 product lines across POs — used for CBM allocation."},
+    {"table": "PO_Payments", "access": "read", "what_for": "65 payment records for PO payment tracking."},
+    {"table": "Puzzlup_Product_Info", "access": "read", "what_for": "Product specs (CBM, standard COGS, SKU mappings) for volume-based cost allocation."},
+    {"table": "Import_Duties", "access": "read+write", "what_for": "US tariff rates per HS code. Updated when trade policy changes."},
+    {"table": "Emails_Processed", "access": "write", "what_for": "Logging every processed email with action, label, notes, agent_name."},
+    {"table": "Agent_Briefings", "access": "read+write", "what_for": "Weekly briefing update (ID 58, v5.0). Updated Fridays if materially changed."},
+    {"table": "margins_connected", "access": "read", "what_for": "SQL VIEW joining puzzlup_margins with COGS_Landed. Auto-updates contribution margins."},
+    {"table": "Agents_Overview", "access": "write", "what_for": "Agent DNA registration."}
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualico-platform", "what_for": "Vercel app COGS module development — COGSModule.tsx, MarginsModule.tsx"},
+    {"repo": "tim581/qualicoagents", "what_for": "Agent briefing and DNA file storage"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/apps/landed-cost-calculator/", "what": "📊 COGS instant app (GOLD STATUS — do not modify)"},
+    {"path": "/agent/home/apps/po-payment-tracker/", "what": "💳 PO Payment Tracker app (USD + EUR)"},
+    {"path": "/agent/home/COGSModule.tsx", "what": "Latest COGSModule source for Vercel platform"},
+    {"path": "/agent/home/landed_cost_extrapolated.json", "what": "Primary landed cost data source"},
+    {"path": "/agent/home/landed_cost_layered.json", "what": "3-layer structured landed cost data"},
+    {"path": "/agent/home/sellerboard_EU_UK_v5.xlsx", "what": "Latest EU+UK Sellerboard export (92 rows, EUR)"},
+    {"path": "/agent/home/sellerboard_USCA_v5.xlsx", "what": "Latest US+CA Sellerboard export (16 rows, USD)"}
+  ],
+
+  "known_issues": [
+    "Scanner timing gap: invoices arriving day-after Monday scan are missed until next week (14-day window catches them eventually)",
+    "Product ID type mismatch between TO/PO_Product_Lines (Airtable rec IDs) and Puzzlup_Product_Info (integer IDs) — must use product names for mapping",
+    "PR #21 (Sellerboard badges), #22 (MarketDynamics font fix), #53 (pending filter v1), #55 (dual currency + pending filter v2) awaiting Tim merge",
+    "Exchange rates (USD, GBP, CAD) need monthly manual updates",
+    "Monta storage data has gap for Mar+Apr 2026"
+  ]
+}
