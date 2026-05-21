@@ -1,0 +1,288 @@
+{
+  "sidebar_name": "Ads Manager",
+  "internal_name": "Bol.com Ads Manager (multi-marketplace)",
+  "chat_url": null,
+  "one_liner": "Manages and optimizes sponsored product advertising across Bol.com (NL+BE) and Amazon (USA, DE, CA, UK) — bid optimization, TACOS-based targeting, weekly performance ingestion, and live dashboard.",
+  "category": "eCommerce & Product",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced covers bid reviews, data lookups, and IntentWise processing. Expert needed for multi-step optimizations, frontend changes, and cross-marketplace analysis."
+  },
+
+  "capabilities": [
+    "Optimize Bol.com NL + BE sponsored product keyword bids via Advertiser API v11",
+    "Optimize Amazon USA keyword and target bids via Agent Central MCP (CA/DE/UK extensible)",
+    "Ingest IntentWise weekly email reports into Supabase advertising_performance table",
+    "Calculate Max ACOS per product from P&L actuals (Max TACOS = Pre-Ad Margin − 10%, Max ACOS = Max TACOS / PPC Share)",
+    "Detect over/under-performing keywords using bid adjustment tiers (-40% to +20%)",
+    "Maintain full bid audit trail in ads_bid_log with before/after + reason",
+    "Push frontend updates to Vercel advertising dashboard via GitHub auto-deploy",
+    "Pull full paginated campaign/ad-group/keyword data from Bol.com API",
+    "Query unified_ad_performance and monthly_tacos views for cross-channel TACOS trends"
+  ],
+
+  "routing_keywords": [
+    "ads", "bids", "campaigns", "keywords", "ACOS", "TACOS", "ROAS",
+    "advertising", "bol.com", "amazon", "intentwise", "spend", "performance",
+    "bid optimizer", "keyword rank", "ad spend", "PPC", "sponsored"
+  ],
+
+  "routing_matrix": [
+    {
+      "query_type": "Data lookup — performance check",
+      "example_queries": [
+        "What's our current TACOS on Bol.com?",
+        "Show me last 30d Amazon USA spend",
+        "Which keywords are over target ACOS?"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium (1-2 min)",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Bid optimization — analysis + proposal",
+      "example_queries": [
+        "Run the Bol.com bid optimizer",
+        "Calculate bid adjustments for Amazon USA",
+        "Which MAT keywords need to be cut?"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "bol_weekly_optimizer.md",
+      "avg_response_time": "slow (5+ min)",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "IntentWise email ingestion",
+      "example_queries": [
+        "Process this week's IntentWise emails",
+        "Any new performance emails from IntentWise?",
+        "Update the advertising_performance table"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "intentwise_email_processor.md",
+      "avg_response_time": "medium (1-2 min)",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "P&L / margin analysis",
+      "example_queries": [
+        "What's our pre-ad margin on the USA Trays?",
+        "Calculate Max ACOS for all products",
+        "Why is AMZ ES TACOS so high?"
+      ],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium"
+    },
+    {
+      "query_type": "Dashboard / frontend changes",
+      "example_queries": [
+        "Add a new time range to the dashboard",
+        "Fix the TACOS chart on the overview page",
+        "Deploy the latest AdvertisingModule.tsx"
+      ],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow (5+ min)",
+      "avg_tokens": "very_high (20K+)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "bol_weekly_optimizer.md",
+      "purpose": "Runs the full Bol.com bid optimization cycle: authenticates with Bol.com Advertiser API v11, pulls all campaigns/ad groups/keywords (paginated), fetches 7d (fallback 30d) performance per keyword, calculates ACOS, applies bid adjustment tiers, pushes bid changes, and logs results to Supabase. Skips if Q2/Q3 and last run was less than 10 days ago.",
+      "task_types": ["api_call", "calculation", "action", "data_lookup"],
+      "query_patterns": [
+        "Run the Bol.com bid optimizer now",
+        "Optimize Bol.com keyword bids",
+        "Weekly Bol.com ad optimization"
+      ],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Bol.com Advertiser API (direct HTTP — NL + BE credentials)", "Supabase"],
+        "tables": ["ads_targets", "ads_bid_log", "ads_optimization_runs", "ads_campaigns", "puzzlup_margins"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "intentwise_email_processor.md",
+      "purpose": "Searches Gmail for IntentWise performance emails (from help@intentwise.com), parses seller account, region, and time-window metrics (Spend, Revenue, ACOS, ROAS for 7d/30d/MTD/YTD), inserts data into advertising_performance table with ACOS as whole number, tracks processed emails in intentwise_emails_processed to prevent duplicates, and archives emails.",
+      "task_types": ["api_call", "data_lookup", "formatting", "action"],
+      "query_patterns": [
+        "Process IntentWise emails",
+        "Update ad performance from IntentWise",
+        "Weekly IntentWise ingestion"
+      ],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Gmail", "Supabase"],
+        "tables": ["advertising_performance", "intentwise_emails_processed"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Gmail (Qualico)",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Search and archive IntentWise performance emails",
+      "tools_activated": ["gmail_search_threads", "gmail_get_messages", "gmail_list_drafts", "gmail_get_draft", "gmail_create_draft"]
+    },
+    {
+      "service": "Vercel",
+      "connection_id": "conn_kd02nc5yrb4xv2w8vd7z",
+      "what_for": "Monitor and trigger deployments of the advertising dashboard",
+      "tools_activated": ["list-deployments", "create-deployment", "cancel-deployment"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push frontend changes to tim581/qualico-platform — triggers auto-deploy to Vercel",
+      "tools_activated": ["github_list_repositories", "github_get_repository", "github_list_issues", "github_list_pull_requests", "github_get_file_content", "github_download_file", "github_create_issue", "github_create_pull_request", "github_push_to_branch"]
+    },
+    {
+      "service": "Supabase (Qualico BV — zlteahycfmpiaxdbnlvr)",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Read/write all advertising tables, P&L data, margins, and views",
+      "tools_activated": ["list_projects", "get_project", "list_tables", "list_migrations", "apply_migration", "execute_sql", "get_logs", "get_project_url", "generate_typescript_types"]
+    },
+    {
+      "service": "Agent Central MCP (Amazon Advertising — USA)",
+      "connection_id": "conn_z7tmg8ac6g735fascezx",
+      "what_for": "Amazon Ads data (campaigns, keywords, TACOS, keyword ranks) + bid updates for Amazon USA. CA/DE/UK not yet connected.",
+      "tools_activated": ["get_campaign_performance", "get_keyword_performance", "get_search_terms", "get_sales_and_traffic", "get_tacos", "diagnose_performance", "get_bid_recommendations", "update_keyword_bids", "update_target_bids", "get_keyword_ranks", "get_account_data_tour"]
+    },
+    {
+      "service": "Bol.com Advertiser API — NL (direct HTTP)",
+      "connection_id": "direct — no connection object",
+      "what_for": "Full campaign/keyword management for Bol.com NL account",
+      "tools_activated": ["Used via run_command / subagent HTTP calls — client_id: f7acf420-3b5c-4e1d-93f2-a499babd60f2"]
+    },
+    {
+      "service": "Bol.com Advertiser API — BE (direct HTTP)",
+      "connection_id": "direct — no connection object",
+      "what_for": "Full campaign/keyword management for Bol.com BE account (1050+ campaigns, all currently PAUSED)",
+      "tools_activated": ["Used via run_command / subagent HTTP calls — client_id: f054f629-06ff-4a8b-8f4e-f9e91d63d79d"]
+    }
+  ],
+
+  "triggers": [
+    {
+      "type": "schedule",
+      "description": "IntentWise weekly email processor — searches Gmail for new IntentWise performance reports and ingests metrics into Supabase",
+      "frequency": "Every Monday at 10:00 AM Europe/Brussels",
+      "trigger_id": "cti_037vr1a7d1t59b9pma65"
+    },
+    {
+      "type": "schedule",
+      "description": "Bol.com NL bid optimizer — pulls all keyword performance, calculates ACOS, adjusts bids per tier, logs changes. Skips in Q2/Q3 if last run < 10 days ago.",
+      "frequency": "Every 5 days starting 2026-05-23 09:00 Europe/Brussels (effective 10 days Q2/Q3, 5 days Q4/Q1)",
+      "trigger_id": "see manage_active_triggers"
+    }
+  ],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "No webhook trigger configured. All automation is schedule-based."
+  },
+
+  "key_rules": [
+    "TACOS is the primary safety net — minimum 10% contribution margin per product must be preserved after ad spend",
+    "Max TACOS = Pre-Ad Margin − 10% (dynamic per product × channel)",
+    "Max ACOS = Max TACOS / PPC Share (PPC Share = Ad Sales / Total Sales from get_tacos)",
+    "ALL percentage values stored as WHOLE NUMBERS — 17.5 means 17.5%, never 0.175",
+    "Bid adjustments capped at −40% to +20% per run; never adjust same keyword more than once per 7 days",
+    "Q2+Q3 (Apr–Sep): optimize every 10 days. Q4+Q1 (Oct–Mar): every 5 days",
+    "Bol.com API always v11 — both Accept and Content-Type headers required",
+    "Paginate all Bol.com list endpoints until page returns < 50 results",
+    "Keywords list: POST /campaign-management/keywords/list (NOT /keyword-management/) — only works on ENABLED campaigns",
+    "Keyword bid update payload MUST include state: ENABLED; bid as {amount: x, currency: EUR}",
+    "TACOS calculated from P&L actuals (pl_monthly view), never from ad revenue alone",
+    "Amazon USA profile_id = 2996826121127383 (required for update_keyword_bids)",
+    "IntentWise data: can calculate ACOS but NEVER TACOS — TACOS requires total revenue from Agent Central or P&L",
+    "Each product should have its own campaign for clean per-product optimization",
+    "Control absolute spend first — a keyword burning €500 at 40% ACOS is more dangerous than 80% ACOS at €5"
+  ],
+
+  "input_format": {
+    "accepts": "Natural language requests about ad performance, bid optimization, campaign management, or dashboard updates. Can also accept raw data (e.g. P&L CSV uploads, API credential updates).",
+    "example_queries": [
+      "Run the Bol.com bid optimizer for this week",
+      "What's the current TACOS vs target for Amazon USA per product?",
+      "Process this week's IntentWise emails and update the database",
+      "Show me which Bol.com keywords are over target ACOS",
+      "Push the latest dashboard changes to Vercel",
+      "What's happening with the BE account — are the ads active?",
+      "Calculate Max ACOS for all products based on latest P&L margins",
+      "Which Amazon USA keywords should I increase/decrease bids on?"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Bid change tables (before/after/reason), performance summaries (spend/ACOS/TACOS per product), Supabase write confirmations, Vercel deploy links, markdown reports, and dashboard previews.",
+    "response_time": "medium (1-2 min) for lookups; slow (5+ min) for full optimization runs",
+    "typical_token_usage": "medium (1-5K) for queries; high (5-20K) for optimization runs; very_high (20K+) for frontend work"
+  },
+
+  "cooperation_partners": [],
+
+  "databases_tables": [
+    {"table": "advertising_performance", "access": "read+write", "what_for": "Amazon ad metrics from IntentWise (Spend, Revenue, ACOS, ROAS by region/seller/window)"},
+    {"table": "advertising_benchmarks", "access": "read", "what_for": "ACOS/TACOS targets per marketplace"},
+    {"table": "intentwise_emails_processed", "access": "read+write", "what_for": "Deduplication tracker for IntentWise email ingestion"},
+    {"table": "ads_campaigns", "access": "read+write", "what_for": "Bol.com campaign registry (21 NL campaigns loaded)"},
+    {"table": "ads_targets", "access": "read+write", "what_for": "Bol.com keyword + category targets (347 keywords, 9 cat targets). acos_7d is generated column."},
+    {"table": "ads_bid_log", "access": "read+write", "what_for": "Full audit trail of every bid change — before, after, reason, keyword. change_pct is generated."},
+    {"table": "ads_optimization_runs", "access": "read+write", "what_for": "Metadata per optimizer run (timestamp, campaigns processed, bids changed)"},
+    {"table": "ads_search_terms", "access": "read+write", "what_for": "Auto campaign search term data (100 terms)"},
+    {"table": "puzzlup_margins", "access": "read", "what_for": "Per-product pre-ad margin percentages (99 rows, whole numbers, status=draft)"},
+    {"table": "P&L_Masterdata", "access": "read", "what_for": "Full P&L waterfall by marketplace/month — sources: sellerboard_actual, bol_api, airtable, forecast"},
+    {"table": "pl_monthly (view)", "access": "read", "what_for": "PRIMARY P&L source — auto-prioritizes actuals over forecasts"},
+    {"table": "margins_connected (view)", "access": "read", "what_for": "Actual product-level margins per channel"},
+    {"table": "unified_ad_performance (view)", "access": "read", "what_for": "Merges IntentWise historical Amazon data with Bol.com API data"},
+    {"table": "monthly_tacos (view)", "access": "read", "what_for": "TACOS actuals capped at current month (prevents future forecast bleed)"}
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualico-platform", "what_for": "Next.js advertising dashboard — push to main triggers Vercel auto-deploy"}
+  ],
+
+  "files_and_paths": [
+    {"path": "/agent/home/bol_ads_overview.md", "what": "Full Bol.com NL campaign overview (21 campaigns)"},
+    {"path": "/agent/home/ad_management_token_optimized.md", "what": "Final architecture v4 — multi-marketplace ad management"},
+    {"path": "/agent/home/bid_adjustment_framework.md", "what": "Bid adjustment tiers + percentage format standard (WHOLE NUMBERS)"},
+    {"path": "/agent/home/calculate_bid_adjustments.py", "what": "Deterministic bid calculator — 10 self-tests pass, validates whole-number percentages"},
+    {"path": "/agent/home/bol_full_refresh.py", "what": "Full Bol.com API refresh + optimizer script (correct endpoints)"},
+    {"path": "/agent/home/AdvertisingModule.tsx", "what": "Latest advertising dashboard frontend (deployed at commit ae57da1)"},
+    {"path": "/agent/home/amazon_usa_analysis_2026_05_20.md", "what": "Amazon USA 30d analysis + initial bid proposals (Apr 20 – May 19 2026)"},
+    {"path": "/agent/home/usa_cross_check_report.md", "what": "Amazon USA cross-check across Agent Central, IntentWise, and P&L"},
+    {"path": "/agent/subagents/bol_weekly_optimizer.md", "what": "Bol.com NL bid optimizer subagent spec"},
+    {"path": "/agent/subagents/intentwise_email_processor.md", "what": "IntentWise Gmail ingestion subagent spec"}
+  ],
+
+  "known_issues": [
+    "Amazon USA P&L actuals missing for 2026 — only sellerboard (not sellerboard_actual) through Dec 2025. CA has actuals through Apr 2026. USA TACOS calculations use forecasts until pipeline is fixed.",
+    "Bol.com BE account: 1050+ campaigns, ALL currently PAUSED — reason unknown. Needs investigation before BE optimizer can run.",
+    "Bol.com category targets (/target-management/targets/list) returns 500 error — confirmed Bol.com API bug.",
+    "Keywords/list endpoint (POST /campaign-management/keywords/list) returns 403 on PAUSED campaigns — only ENABLED campaigns supported.",
+    "Amazon CA/DE/UK not yet connected in Agent Central — only USA profile active (profile_id: 2996826121127383).",
+    "Jarvio MCP connection failed — OAuth registration returns 404 (Jarvio-side bug). Not usable.",
+    "BE optimizer subagent not yet created — BE credentials confirmed working but optimizer logic not extended to BE account yet.",
+    "puzzlup_margins has status = 'draft' (not 'active') — query must use status = 'draft' or remove status filter."
+  ]
+}
