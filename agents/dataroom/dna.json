@@ -1,145 +1,219 @@
 {
   "sidebar_name": "📋 Dataroom",
-  "internal_name": "📋 Dataroom",
+  "internal_name": "Acquisition Dataroom & COGS Analysis Agent",
   "chat_url": null,
-  "one_liner": "Manages IP portfolio documentation and acquisition dataroom for M&A due diligence",
-  "category": "Legal & Compliance",
+  "one_liner": "Builds and maintains the Qualico BV acquisition dataroom, COGS traceability, broker documentation package, and exit waterfall for M&A process",
+  "category": "Finance & Accounting",
   "status": "active",
 
   "intelligence": {
     "current_level": "expert",
     "recommended_min": "advanced",
     "recommended_max": "expert",
-    "notes": "Advanced suffices for file operations and lookups. Expert needed for IP strategy advice, email drafting, and complex multi-step reorganizations."
+    "notes": "Advanced is enough for simple data lookups and file moves. Expert needed for PDF generation, COGS analysis, exit waterfall calculations, and complex multi-step broker package builds."
   },
 
   "capabilities": [
-    "Extract images from PDFs and upload to Google Drive",
-    "Reorganize Google Drive folder structures with logical naming conventions",
-    "Build investor-ready IP sections in Notion dataroom",
-    "Research and draft IP lawyer correspondence (Winger)",
-    "Track trademark and design patent registrations across jurisdictions (Benelux, EU, UK, US, China)",
-    "Create Asana tasks for urgent IP action items",
-    "Analyze email threads for IP matter status",
-    "M&A due diligence IP portfolio preparation for toy industry buyers"
+    "Build and maintain Google Drive acquisition dataroom with 372+ files across 12 sections",
+    "Extract and analyze COGS data from 260+ logistics invoices (Van Thiel, WePrepFBA, Westbound, Forceget, Monta, IFB, WeShip, GLC, Floormax)",
+    "Generate professional M&A broker package PDFs (10 documents) using WeasyPrint with dark house style",
+    "Build exit waterfall Excel with 5 scenario tabs (FBA Aggregator, Strategic Buyer, Studio Strategic, Studio PE, Adjusted SDE)",
+    "Calculate SDE and EBITDA from P&L_Masterdata with correct Net Revenue filtering",
+    "Maintain cap table, loans, IP portfolio, and VAT registration documentation",
+    "Build interactive COGS dashboard and sales opportunity matrix (instant apps)",
+    "Draft and manage Gmail communications for broker correspondence",
+    "Push sales opportunity apps to GitHub for Vercel deployment",
+    "Generate brand overview PDFs (Puzzlup + Bauwee) from Supabase data only",
+    "Market sizing and revenue potential analysis across Amazon EU/NA channels",
+    "Full supply chain mapping: Factory → Ocean freight → Customs → 3PL → Amazon FBA"
   ],
 
-  "routing_keywords": ["ip", "intellectual property", "trademark", "patent", "design rights", "dataroom", "due diligence", "acquisition", "bauwee", "winger", "brand registration", "merk", "octrooi", "drive reorganization", "notion dataroom"],
+  "routing_keywords": ["dataroom", "acquisition", "COGS", "broker", "exit", "waterfall", "due diligence", "SDE", "EBITDA", "cap table", "loans", "IP", "VAT", "invoice", "supply chain", "3PL", "FBA", "broker package", "Wout", "M&A", "valuation", "debt", "shareholder", "puzzlup brand", "bauwee brand"],
 
   "routing_matrix": [
     {
-      "query_type": "IP status lookups",
-      "example_queries": ["What is the status of our BAUWEE trademark?", "Which IP matters are pending with Winger?"],
+      "query_type": "Data lookups — financials, cap table, loans, IP",
+      "example_queries": ["What is our FY2026 EBITDA?", "Show me the cap table", "What loans do we have?", "List our trademarks"],
       "intelligence_needed": "advanced",
       "handles_subagent": null,
       "avg_response_time": "fast",
-      "avg_tokens": "medium"
+      "avg_tokens": "low (<1K)"
     },
     {
-      "query_type": "Drive and Notion content management",
-      "example_queries": ["Upload these files to the dataroom", "Update the IP section in Notion", "Reorganize the IP folder in Drive"],
-      "intelligence_needed": "advanced",
-      "handles_subagent": "reorganize-ip-drive.md",
-      "avg_response_time": "medium",
-      "avg_tokens": "medium"
-    },
-    {
-      "query_type": "IP strategy and email drafting",
-      "example_queries": ["Draft an email to Winger about BAUWEE design patents", "What should we prioritize for M&A IP due diligence?", "Analyze our IP portfolio gaps"],
+      "query_type": "Document generation — rebuild specific PDFs or Excel",
+      "example_queries": ["Rebuild the exit waterfall with new numbers", "Update Doc 02 with latest revenue", "Regenerate the COGS supply chain PDF"],
       "intelligence_needed": "expert",
       "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "high (5-20K)"
+    },
+    {
+      "query_type": "Complex analysis — COGS traceability, market sizing, full package builds",
+      "example_queries": ["Build a complete broker package for Phase 1", "Analyze all 260 COGS invoices and build traceability", "Create market sizing for untapped Amazon channels"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "extract_invoices.md",
       "avg_response_time": "slow",
-      "avg_tokens": "high"
+      "avg_tokens": "very_high (20K+)"
+    },
+    {
+      "query_type": "Dataroom maintenance — file moves, renaming, organization",
+      "example_queries": ["Move new invoices to the dataroom", "Rename documents in Section 5", "Add a new folder for legal documents"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": "dataroom_builder.md",
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
     }
   ],
 
   "subagents": [
     {
-      "filename": "network-listener.md",
-      "purpose": "Checked Supabase for answered requests and Notion for broadcast directives. Now deactivated per Directive #28.",
-      "task_types": ["api_call", "notification"],
-      "intelligence_needed": "advanced",
-      "output_type": "action",
-      "response_speed": "fast"
-    },
-    {
-      "filename": "create-dataroom-folders.md",
-      "purpose": "Creates subfolder structure in Google Drive Dataroom for IP files",
+      "filename": "dataroom_builder.md",
+      "purpose": "Builds and organizes the Google Drive dataroom structure. Creates folders matching Notion structure and moves/renames files with proper naming convention.",
       "task_types": ["file_processing", "api_call"],
+      "query_patterns": ["Build the dataroom", "Organize Drive files", "Create dataroom folders"],
       "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []},
       "output_type": "action",
-      "response_speed": "fast"
+      "response_speed": "medium"
     },
     {
-      "filename": "explore-ip-folders.md",
-      "purpose": "Recursively explores Google Drive IP folders and catalogs all files",
-      "task_types": ["data_lookup", "api_call"],
+      "filename": "dataroom_pass2.md",
+      "purpose": "Second pass over dataroom to find missing files, verify completeness, and fill gaps in each section.",
+      "task_types": ["file_processing", "analysis"],
+      "query_patterns": ["Check dataroom completeness", "Find missing documents"],
       "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "report",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "migrate_dataroom.md",
+      "purpose": "Migrates dataroom files from Tim's personal Drive to the Qualico shared drive with proper structure.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Migrate dataroom to shared drive"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "cogs_invoices.md",
+      "purpose": "Processes COGS invoice files from Google Drive Section 12, categorizes by logistics partner and date.",
+      "task_types": ["file_processing", "data_lookup"],
+      "query_patterns": ["Process COGS invoices", "List invoices by partner"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Google Drive"], "tables": ["COGS_Invoices"], "other_subagents": [], "external_agents": []},
       "output_type": "data",
       "response_speed": "medium"
     },
     {
-      "filename": "move-to-dataroom.md",
-      "purpose": "Moves files from Operations IP folder to Dataroom with correct subfolder mapping",
-      "task_types": ["file_processing", "api_call"],
-      "intelligence_needed": "advanced",
-      "output_type": "action",
-      "response_speed": "medium"
-    },
-    {
-      "filename": "rename-ip-files.md",
-      "purpose": "Renames IP files in Drive with logical consistent naming based on content",
-      "task_types": ["file_processing", "api_call"],
-      "intelligence_needed": "advanced",
-      "output_type": "action",
-      "response_speed": "medium"
-    },
-    {
-      "filename": "reorganize-ip-drive.md",
-      "purpose": "Orchestrates full Drive IP folder reorganization — rename, restructure, move to Dataroom",
-      "task_types": ["file_processing", "api_call"],
+      "filename": "extract_invoices.md",
+      "purpose": "Extracts structured data from invoice PDFs using AI — amounts, dates, line items, partners. Outputs JSONL for COGS analysis.",
+      "task_types": ["file_processing", "analysis"],
+      "query_patterns": ["Extract data from invoices", "Parse invoice PDFs"],
       "intelligence_needed": "expert",
-      "output_type": "action",
+      "dependencies": {"connections": ["Google Drive"], "tables": ["COGS_Invoices"], "other_subagents": [], "external_agents": []},
+      "output_type": "data",
       "response_speed": "slow"
+    },
+    {
+      "filename": "batch_move_files.md",
+      "purpose": "Batch moves and renames files in Google Drive based on a provided mapping list.",
+      "task_types": ["file_processing"],
+      "query_patterns": ["Move files in batch", "Rename multiple files"],
+      "intelligence_needed": "advanced",
+      "dependencies": {"connections": ["Google Drive"], "tables": [], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "build_puzzlup_brand_pdf.md",
+      "purpose": "Generates the Puzzlup Brand Overview PDF (Doc 09) using Supabase data only. WeasyPrint, dark house style.",
+      "task_types": ["report_generation"],
+      "query_patterns": ["Build Puzzlup brand PDF", "Rebuild Doc 09"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Supabase", "Google Drive"], "tables": ["Puzzlup_Product_Info", "puzzlup_channels", "P&L_Masterdata"], "other_subagents": [], "external_agents": []},
+      "output_type": "file",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "build_bauwee_brand_pdf.md",
+      "purpose": "Generates the Bauwee Brand Overview PDF (Doc 10) using bauwee.* schema in Supabase. WeasyPrint, dark house style.",
+      "task_types": ["report_generation"],
+      "query_patterns": ["Build Bauwee brand PDF", "Rebuild Doc 10"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Supabase", "Google Drive"], "tables": ["bauwee.brand_info", "bauwee.set_categories", "bauwee.ip_portfolio", "bauwee.suppliers", "bauwee.safety_compliance", "bauwee.development_roadmap"], "other_subagents": [], "external_agents": []},
+      "output_type": "file",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "build_vercel_sales_app.md",
+      "purpose": "Builds the Next.js sales opportunity matrix app for Vercel deployment. Pushed to GitHub tim581/qualicoagents.",
+      "task_types": ["report_generation", "api_call"],
+      "query_patterns": ["Build sales opportunity app", "Update Vercel app"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["GitHub", "Supabase"], "tables": ["P&L_Masterdata", "puzzlup_channels", "Puzzlup_Product_Info"], "other_subagents": [], "external_agents": []},
+      "output_type": "file",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "rebuild_doc02.md",
+      "purpose": "Rebuilds Doc 02 (Products & Channels PDF) with correct Net Revenue data, opportunity matrix, market sizing, and compact channel table.",
+      "task_types": ["report_generation"],
+      "query_patterns": ["Rebuild Doc 02", "Update products and channels PDF"],
+      "intelligence_needed": "expert",
+      "dependencies": {"connections": ["Supabase", "Google Drive"], "tables": ["P&L_Masterdata", "Puzzlup_Product_Info", "puzzlup_channels"], "other_subagents": [], "external_agents": []},
+      "output_type": "file",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "Formerly listened for network directives from other agents via Supabase. Trigger deleted per Directive #28 — now dormant.",
+      "task_types": ["notification"],
+      "query_patterns": [],
+      "intelligence_needed": "basic",
+      "dependencies": {"connections": ["Supabase"], "tables": ["agent_requests", "shared_knowledge"], "other_subagents": [], "external_agents": []},
+      "output_type": "action",
+      "response_speed": "fast"
     }
   ],
 
   "connections": [
     {
-      "service": "Notion",
-      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
-      "what_for": "Maintain investor-ready IP dataroom section, update agent briefing, search workspace",
-      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
-    },
-    {
-      "service": "Shortwave",
-      "connection_id": "conn_nqnymtm2dsh3dfd0b57p",
-      "what_for": "Draft and send emails to IP lawyers (Winger) and read email threads",
-      "tools_activated": ["shortwave_lookup_thread_id", "shortwave_read_thread", "shortwave_create_new_draft"]
-    },
-    {
-      "service": "Gmail",
-      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
-      "what_for": "Search email threads for IP correspondence history",
-      "tools_activated": ["gmail_search_threads", "gmail_get_threads"]
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Dataroom file management, broker package uploads, invoice processing, document organization",
+      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_upload_file", "google_drive_move_file", "google_drive_create_folder", "google_drive_download_file", "google_drive_list_drives"]
     },
     {
       "service": "Supabase",
       "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
-      "what_for": "Shared brain for inter-agent coordination, knowledge sharing, audit submissions",
+      "what_for": "Source of truth for all financial data, cap table, loans, IP, product info, P&L, exit scenarios, shared knowledge",
       "tools_activated": ["execute_sql", "list_tables"]
     },
     {
-      "service": "Google Drive",
-      "connection_id": "conn_zhj70cc89xscszt6ktwj",
-      "what_for": "Manage IP files, reorganize folders, upload to Dataroom, extract and upload images",
-      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_create_document", "google_drive_create_folder", "google_drive_get_spreadsheet", "google_drive_move_file", "google_drive_upload_file", "google_drive_download_file", "google_drive_list_drives"]
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Agent briefing updates, dataroom structure reference (NOT used as data source for PDFs — Notion has wrong/outdated info)",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
+    },
+    {
+      "service": "HubSpot",
+      "connection_id": "conn_3wekcw22t82kee7e6v1h",
+      "what_for": "Vendor/partner/channel company data, contact lookups",
+      "tools_activated": ["hubspot_search_objects", "hubspot_list_objects", "hubspot_get_schemas"]
     },
     {
       "service": "GitHub",
       "connection_id": "conn_rf4te6wqncg18hn7dn13",
-      "what_for": "Push agent briefings and DNA dumps to qualicoagents repo",
-      "tools_activated": ["github_push_to_branch"]
+      "what_for": "Push sales opportunity app and other code to tim581/qualicoagents repo",
+      "tools_activated": ["github_get_repository", "github_get_file_content", "github_create_pull_request", "github_push_to_branch"]
+    },
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Draft and send emails for broker communications, search contacts",
+      "tools_activated": ["gmail_search_threads", "gmail_create_draft", "gmail_update_draft"]
     }
   ],
 
@@ -148,61 +222,104 @@
   "webhook": {
     "has_webhook_trigger": false,
     "webhook_url": null,
-    "notes": "All triggers deleted per Directive #28"
+    "notes": "No active triggers — previously had network listener, deleted per Directive #28"
   },
 
   "key_rules": [
-    "BAUWEE IP registration is top priority for M&A purposes",
-    "Email formatting: no tables, no emoji overload, clean bullet points with bold headers",
-    "All communication via email (no calls due to long covid)",
-    "Mo van der Hallen available for all BAUWEE-related matters",
-    "Dataroom content must be investor-ready for toy industry acquisition due diligence",
-    "Winger (Rogier Goos, Olivier Sinnaeve) handles all IP legal matters",
-    "CC Julie De Blecker and Julie Vanhoeymissen on Winger correspondence"
+    "ALL data in PDFs/reports must come from Supabase — NEVER from Notion (Notion has wrong/outdated info)",
+    "NEVER modify Supabase without Tim''s explicit approval",
+    "Revenue must ALWAYS use section=''REVENUE'' AND line_item=''Net Revenue'' — summing all REVENUE rows causes 2× inflation",
+    "Website is puzzlup.be — NOT puzzlup.com",
+    "Bauwee is a sustainable building toys brand (magnetic building blocks) — NOT ''Product Innovation Studio''",
+    "All PDFs must use WeasyPrint (HTML/CSS → PDF) — NEVER ReportLab, NEVER white backgrounds",
+    "M&A advisor Wout de Ridder may NEVER request data directly — ALL requests go through Tim Huybrechts",
+    "Only include 2025-2026 invoices from approved logistics partners",
+    "Cap table: all shareholders are Angel/Founder/etc. — ''Investor'' type was removed",
+    "FY2026 is the base year for exit waterfall (sale expected December 2026)"
   ],
 
   "input_format": {
-    "accepts": "IP management requests, dataroom updates, Drive reorganization, email drafting for IP lawyers, trademark/patent status questions",
+    "accepts": "Natural language requests about acquisition dataroom, COGS analysis, broker package documents, exit scenarios, financial data queries",
     "example_queries": [
-      "What is the status of our BAUWEE trademark registration?",
-      "Update the Notion dataroom with the latest IP information",
-      "Draft an email to Winger about design patent filings",
-      "Reorganize the IP folder in Google Drive",
-      "Extract images from this PDF and upload to Drive"
+      "Rebuild the exit waterfall with FY2026 numbers",
+      "What is our EBITDA for 2026?",
+      "Create a draft email for Wout with the dataroom link",
+      "Add the new invoices to the COGS analysis",
+      "Update Doc 02 with the latest channel revenue data"
     ]
   },
 
   "output_format": {
-    "returns": "Notion page updates, Drive folder reorganizations, email drafts, IP status reports, extracted images, Asana tasks",
+    "returns": "PDFs (dark house style), Excel workbooks, Google Drive file organization, Gmail drafts, Supabase data updates, instant app dashboards, GitHub PRs",
     "response_time": "medium",
     "typical_token_usage": "high"
   },
 
-  "cooperation_partners": [],
+  "cooperation_partners": [
+    {
+      "agent": "Other Qualico AI agents",
+      "how": "Share data via Supabase shared_knowledge table and agent_requests table. Follow broadcast directives.",
+      "direction": "Bidirectional"
+    }
+  ],
 
   "databases_tables": [
-    {"table": "agents", "access": "read+write", "what_for": "Agent registration and directory"},
-    {"table": "shared_knowledge", "access": "read+write", "what_for": "Share IP findings with other agents"},
-    {"table": "agent_requests", "access": "read+write", "what_for": "Ask Tim questions and get answers"},
-    {"table": "Agent_Audit_Status", "access": "write", "what_for": "Submit audit responses"},
-    {"table": "Agents_Overview", "access": "write", "what_for": "DNA dump submission"}
+    {"table": "P&L_Masterdata", "access": "read", "what_for": "Revenue, COGS, OPEX, EBITDA calculations by marketplace and fiscal year"},
+    {"table": "P_and_L_Yearly_Waterfall", "access": "read", "what_for": "Yearly P&L waterfall summaries"},
+    {"table": "cap_table", "access": "read+write", "what_for": "Ownership structure — 21 shareholders, share types"},
+    {"table": "Loans_Info", "access": "read", "what_for": "8 loans, EUR 406K outstanding, CoC clauses"},
+    {"table": "Puzzlup_Product_Info", "access": "read", "what_for": "Product catalog with SKUs, COGS, EANs, dimensions"},
+    {"table": "puzzlup_channels", "access": "read+write", "what_for": "Sales channel statuses and store links"},
+    {"table": "exit_config", "access": "read+write", "what_for": "Exit simulator base values (SDE, EBITDA, owner comp)"},
+    {"table": "exit_debt", "access": "read", "what_for": "6 debts, €464K total for waterfall calculations"},
+    {"table": "exit_scenarios", "access": "read", "what_for": "4 exit scenario definitions with multiples"},
+    {"table": "exit_shareholders", "access": "read", "what_for": "Shareholder payout calculations across scenarios"},
+    {"table": "COGS_Landed", "access": "read+write", "what_for": "COGS landed cost breakdown"},
+    {"table": "COGS_Invoices", "access": "read+write", "what_for": "Invoice-level COGS data from 260 invoices"},
+    {"table": "puzzlup_margins", "access": "read", "what_for": "Product × region margin data (L0/L1/L2 breakdown)"},
+    {"table": "3PL_Warehousing", "access": "read", "what_for": "3PL warehousing costs"},
+    {"table": "warehouse_network", "access": "read", "what_for": "12 facilities across supply chain"},
+    {"table": "ip_trademarks", "access": "read", "what_for": "10 trademark registrations"},
+    {"table": "ip_designs", "access": "read", "what_for": "7 design rights"},
+    {"table": "ip_patents", "access": "read", "what_for": "1 US patent application"},
+    {"table": "vat_registrations", "access": "read", "what_for": "10 VAT registrations by country"},
+    {"table": "Legal_Documents", "access": "read", "what_for": "Active legal documents"},
+    {"table": "shared_knowledge", "access": "read+write", "what_for": "Style guide, PDF build process, inter-agent data sharing"},
+    {"table": "agent_requests", "access": "read+write", "what_for": "Questions for Tim when blocked"},
+    {"table": "agents", "access": "read", "what_for": "Agent registry (this agent = id 9)"},
+    {"table": "Agents_Overview", "access": "write", "what_for": "DNA dump self-assessment"},
+    {"table": "bauwee.brand_info", "access": "read", "what_for": "Bauwee brand identity and USPs"},
+    {"table": "bauwee.set_categories", "access": "read", "what_for": "Bauwee product categories"},
+    {"table": "bauwee.ip_portfolio", "access": "read", "what_for": "Bauwee IP registrations"},
+    {"table": "bauwee.suppliers", "access": "read", "what_for": "Bauwee manufacturing suppliers"},
+    {"table": "bauwee.safety_compliance", "access": "read", "what_for": "Bauwee EU/UK/US/CA compliance"},
+    {"table": "bauwee.development_roadmap", "access": "read", "what_for": "Bauwee development milestones"}
   ],
 
   "github_repos": [
-    {"repo": "tim581/qualicoagents", "what_for": "Agent briefings and DNA dumps"}
+    {"repo": "tim581/qualicoagents", "what_for": "Sales opportunity app (apps/sales-opportunities/), agent documentation, scripts"}
   ],
 
   "files_and_paths": [
-    {"path": "/agent/home/ip-research/QUALICO-IP-RAPPORT.md", "what": "Comprehensive IP portfolio analysis report"},
-    {"path": "/agent/home/ip-research/BAUWEE-IP-Blokken-en-Sets.pdf", "what": "BAUWEE product catalog with 6 block designs and set configurations"},
-    {"path": "/agent/home/ip-research/bauwee-images/", "what": "Extracted product images from BAUWEE PDF (11 PNGs)"},
-    {"path": "/agent/home/ip-research/drive-reorganization-log.md", "what": "Log of Drive IP folder reorganization (59 files renamed, 55+ moved)"},
-    {"path": "/agent/home/audit-response.md", "what": "Previous audit response backup"}
+    {"path": "/agent/home/broker_package/rebuild_02_03_04_07.py", "what": "Main rebuild script for Docs 02-04 + Exit Waterfall Excel"},
+    {"path": "/agent/home/broker_package/rebuild_doc02_v2.py", "what": "Dedicated Doc 02 builder with market sizing"},
+    {"path": "/agent/home/broker_package/rebuild_06_08.py", "what": "Rebuilds Doc 06 (IP/VAT) + Doc 08 (Data Inventory)"},
+    {"path": "/agent/home/broker_package/build_pdfs.py", "what": "Original PDF builder for Docs 01-06"},
+    {"path": "/agent/home/broker_package/output/", "what": "All generated PDFs and Excel files"},
+    {"path": "/agent/home/sales_opportunities_data.json", "what": "Revenue data for Doc 02 + Sales app (Net Revenue only)"},
+    {"path": "/agent/home/broker_package/data_summary.json", "what": "Supabase data snapshot for PDF generation"},
+    {"path": "/agent/home/cogs_extracted_batch.jsonl", "what": "Extracted data from all 260 COGS invoices"},
+    {"path": "/agent/home/Qualico_COGS_Full_Traceability_2025-2026.xlsx", "what": "Final COGS Excel with clickable Drive links"},
+    {"path": "/agent/home/dataroom_context.md", "what": "Full dataroom structure with folder IDs"},
+    {"path": "/agent/home/cogs_invoice_list.json", "what": "260 invoice file IDs from Google Drive"}
   ],
 
   "known_issues": [
-    "Cannot embed images in Notion without public URLs",
-    "All triggers deleted per Directive #28 — no automated monitoring active",
-    "Asana connection may need reauthorization for task creation"
+    "Doc 09 (Puzzlup Brand Overview) contains Notion-sourced data that Tim flagged as wrong — tagline, target audience, key partners need Tim confirmation before rebuild",
+    "Old duplicate exit waterfall file (168aNekJ8nujAkuDUKirzfTJmAsj91fPq, 38KB) must be manually deleted by Tim from Drive",
+    "Sales Opportunities Vercel app not yet deployed — Tim needs to create Vercel project from GitHub",
+    "HubSpot vendor/partner network document not yet built (Tim confirmed he wants it)",
+    "Agent briefing in Notion needs update to v3.3",
+    "P_and_L_Yearly_Waterfall table does not yet have FY2026 rows"
   ]
 }
