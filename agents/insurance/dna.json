@@ -1,0 +1,258 @@
+{
+  "sidebar_name": "🛡️ Insurance",
+  "internal_name": "Insurance Manager",
+  "chat_url": "https://tasklet.ai",
+  "one_liner": "Manages all Qualico BV insurance policies, documents, and correspondence — keeping everything organized in Drive, searchable in Supabase, and visible in Notion.",
+  "category": "Legal & Compliance",
+  "status": "active",
+
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "advanced",
+    "recommended_max": "expert",
+    "notes": "Advanced for lookups and overviews. Expert needed for bulk PDF parsing, OCR, and large-scale Drive reorganization."
+  },
+
+  "capabilities": [
+    "Search Gmail for insurance correspondence and claims",
+    "Maintain 7-policy Notion database in Dataroom",
+    "Organize and rename 55+ insurance documents in Google Drive",
+    "Parse PDFs with full-text extraction and OCR for scanned docs",
+    "Store complete document content in Supabase for instant search",
+    "Track critical action items: active Long COVID claim, USA certificate deadline",
+    "Generate insurance overviews as instant apps or reports",
+    "Handle ZIP archives containing multiple insurance documents"
+  ],
+
+  "routing_keywords": ["insurance", "verzekering", "polis", "claim", "schade", "BA", "D&O", "aansprakelijkheid", "inkomen", "gewaarborgd", "Ethias", "AG Insurance", "DAS", "certificaat", "dekking", "premie", "verzekeraar", "franchise"],
+
+  "routing_matrix": [
+    {
+      "query_type": "Simple policy lookups",
+      "example_queries": ["Wat is het polisnummer van onze D&O?", "Wie is onze verzekeraar voor BA?", "Wanneer vervalt onze verzekering?"],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Document search and correspondence",
+      "example_queries": ["Zoek alle emails over onze schade claim", "Welke documenten hebben we voor Gewaarborgd Inkomen?", "Geef een overzicht van onze verzekeringen"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "Full document parsing and indexing",
+      "example_queries": ["Parse alle verzekeringsdocumenten in Drive", "Laad volledige PDF-inhoud in Supabase", "OCR scanned insurance docs"],
+      "intelligence_needed": "expert",
+      "handles_subagent": "insurance-deep-extract.md",
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    }
+  ],
+
+  "subagents": [
+    {
+      "filename": "insurance-content-extractor.md",
+      "purpose": "Downloads all insurance PDFs from Google Drive and extracts full text content via pdftotext, uploading results to Supabase insurance_documents table.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": ["Extract content from Drive insurance docs", "Load PDF text into Supabase"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Drive", "Supabase"],
+        "tables": ["insurance_documents"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "insurance-deep-extract.md",
+      "purpose": "Deep extraction with OCR (tesseract) for scanned PDFs and ZIP archive handling. Re-extracts truncated large documents at full length.",
+      "task_types": ["file_processing", "analysis"],
+      "query_patterns": ["OCR scanned insurance docs", "Full re-extraction of large policies"],
+      "intelligence_needed": "expert",
+      "dependencies": {
+        "connections": ["Google Drive", "Supabase"],
+        "tables": ["insurance_documents"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "slow"
+    },
+    {
+      "filename": "insurance-doc-parser.md",
+      "purpose": "Parses individual insurance documents and loads structured metadata and content into Supabase. Used for single-file processing.",
+      "task_types": ["file_processing", "api_call"],
+      "query_patterns": ["Parse this specific insurance document"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Google Drive", "Supabase"],
+        "tables": ["insurance_documents"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "network-listener.md",
+      "purpose": "Legacy subagent that checked Notion for broadcast directives and Supabase/Airtable for Tim responses. Now dormant after Directive #28 kill switch.",
+      "task_types": ["api_call"],
+      "query_patterns": [],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Notion", "Supabase", "Airtable"],
+        "tables": ["agent_requests", "shared_knowledge"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "update-briefing.md",
+      "purpose": "Updates the Insurance Manager briefing page in Notion with latest status, resources, and workflow changes after each session.",
+      "task_types": ["report_generation", "api_call"],
+      "query_patterns": ["Update briefing", "Sync Notion briefing"],
+      "intelligence_needed": "advanced",
+      "dependencies": {
+        "connections": ["Notion"],
+        "tables": [],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "medium"
+    },
+    {
+      "filename": "submit-audit-response.md",
+      "purpose": "Posts agent audit self-assessment to Supabase audit tables (agent_audit or shared_knowledge fallback).",
+      "task_types": ["api_call"],
+      "query_patterns": ["Submit audit", "Post audit to Supabase"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["agent_audit", "shared_knowledge"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    }
+  ],
+
+  "connections": [
+    {
+      "service": "Gmail",
+      "connection_id": "conn_rqbhxnbt4b242v34h9hh",
+      "what_for": "Search Qualico BV email for insurance correspondence, claims, and policy updates",
+      "tools_activated": ["gmail_search_threads", "gmail_get_threads", "gmail_get_messages"]
+    },
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Maintain Insurance Database in Dataroom, update AI Agent Briefing page",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page", "notion-create-database", "notion-move-pages"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Store 55 parsed insurance documents for full-text search, read/write shared_knowledge, log agent_requests",
+      "tools_activated": ["execute_sql", "list_tables"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Manage insurance document folders, download and parse PDFs, organize files with naming convention",
+      "tools_activated": ["google_drive_search_documents", "google_drive_get_document", "google_drive_create_folder", "google_drive_move_file", "google_drive_download_file", "google_drive_list_drives"]
+    },
+    {
+      "service": "Airtable",
+      "connection_id": "conn_jr26b33r1azf9ys1nh4p",
+      "what_for": "Agent request coordination and responses from Tim",
+      "tools_activated": ["remote_http_call"]
+    },
+    {
+      "service": "GitHub",
+      "connection_id": "conn_rf4te6wqncg18hn7dn13",
+      "what_for": "Push agent briefings and DNA to qualicoagents repo",
+      "tools_activated": ["github_push_to_branch"]
+    }
+  ],
+
+  "triggers": [],
+
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "Webhook trigger was deleted per Directive #28 (7 Apr 2026) — old inter-agent hub is dead"
+  },
+
+  "key_rules": [
+    "File naming convention: QCO_INS_[Category]_[DocType]_[Year].pdf",
+    "Drive location: Dataroom → 08 Legal & Compliance → Insurance",
+    "Supabase agent identity must be exactly '🛡️ Insurance' to match agents table",
+    "Protocol v3.0: read shared_knowledge before acting, write findings back after",
+    "Domain tag for all Supabase entries: 'company'"
+  ],
+
+  "input_format": {
+    "accepts": "Insurance policy questions in Dutch or English, document search requests, claim status queries, Drive/Notion organization tasks, Supabase document indexing requests",
+    "example_queries": [
+      "Geef een overzicht van al onze verzekeringen",
+      "Zoek emails over onze Long COVID claim",
+      "Welke documenten hebben we voor D&O?",
+      "Parse alle verzekeringsdocumenten en laad ze in Supabase",
+      "Wat is de status van onze USA Certificate of Insurance?"
+    ]
+  },
+
+  "output_format": {
+    "returns": "Policy overviews, document content, email summaries, organized Drive folders, Notion database entries, Supabase indexed documents, instant apps with insurance data",
+    "response_time": "medium",
+    "typical_token_usage": "high"
+  },
+
+  "cooperation_partners": [
+    {
+      "agent": "Multi-Agent Manager Hub",
+      "how": "Registered in shared Supabase brain, publishes findings to shared_knowledge table",
+      "direction": "Bidirectional"
+    }
+  ],
+
+  "databases_tables": [
+    {"table": "insurance_documents", "access": "read+write", "what_for": "Full-text storage of 55 parsed insurance PDFs for instant search"},
+    {"table": "shared_knowledge", "access": "read+write", "what_for": "Publishing insurance findings to multi-agent shared brain"},
+    {"table": "agent_requests", "access": "read+write", "what_for": "Logging questions for Tim and reading responses"},
+    {"table": "agents", "access": "read+write", "what_for": "Updating last_seen heartbeat in agent directory"},
+    {"table": "Agents_Overview", "access": "read+write", "what_for": "Agent DNA and capabilities registry"},
+    {"table": "Agent_Audit_Status", "access": "read+write", "what_for": "Audit self-assessment submissions"}
+  ],
+
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Agent briefings and DNA files"}
+  ],
+
+  "files_and_paths": [
+    {"/agent/home/insurance-files-manifest.json": "Complete manifest of 55 insurance documents across 9 Drive categories"},
+    {"/agent/home/apps/insurance-mgr-deliverables/": "Pinned app showing all 16 deliverables"},
+    {"/agent/home/apps/insurance-overview/": "Insurance overview instant app"},
+    {"/agent/home/ins_docs/": "Downloaded insurance PDFs (55 files)"},
+    {"/agent/home/ins_ocr/": "OCR-processed scanned documents"},
+    {"/agent/subagents/insurance-deep-extract.md": "OCR + full extraction subagent"},
+    {"/agent/subagents/insurance-content-extractor.md": "Standard PDF extractor subagent"},
+    {"/agent/subagents/update-briefing.md": "Notion briefing updater"}
+  ],
+
+  "known_issues": [
+    "Supabase SSE transport connection intermittently fails — requires reauthorization",
+    "1 document (Vragenlijst GI Voorstel_Ondertekend.pdf, ID 32) is missing from Drive and cannot be parsed",
+    "Woningpolis Maatschappelijke Zetel status unknown — only a 2021 document exists"
+  ]
+}
