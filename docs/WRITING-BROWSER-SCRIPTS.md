@@ -442,13 +442,40 @@ In Handsontable, `Enter` moves the cursor **down** (risky — might edit wrong c
 
 ---
 
-## Quick Reference — Existing Scripts
+## Quick Reference — Production Scripts (May 2026)
 
-| Script | task_type(s) | What it does |
-|---|---|---|
-| `flieber-forecast-updater.js` v8.9 | `forecast-sync` | Pushes Puzzlup forecasts → Flieber (5 stores, 13 months) |
-| `flieber-forecast-verifier.js` v2.4 | `forecast-verify` | Exports Flieber CSV, compares to Supabase (±10 tolerance) |
-| `flieber-replenishment-simulator.js` v3.0 | `po-simulation`, `to-simulation` | Runs PO/TO simulation in Flieber, fetches results via GraphQL |
+**Live list:** `SELECT * FROM "Browser_Task_Registry" WHERE available = true`
+
+| Script | task_type(s) | Mode | Notes |
+|--------|--------------|------|-------|
+| `bol-price-update.js` | `bol-price-update` | Standalone | Tijdelijke prijs; `BOL_NO_PROXY=1`; bol-storage-state.json |
+| `bol-cases-scrape.js` | `bol-cases-scrape` | Standalone | Stealth + proxy; CS cases |
+| `price-monitor-scraper.js` | `price-scrape` | Standalone | Amazon + Bol + Webshop; ~45–60 min |
+| `flieber-forecast-updater.js` | `forecast-sync` | Standalone | 5 stores; auto-chains verify |
+| `flieber-forecast-verifier.js` | `forecast-verify` | Standalone | After forecast-sync |
+| `flieber-replenishment-simulator.js` | `po-simulation`, `to-simulation` | Standalone | RUN_MODE via executor |
+| `inventory-sync-kamps.js` | `inventory-sync-kamps` | Standalone | Corax/Kamps SSO |
+| `inventory-sync-mintsoft.js` | `inventory-sync-mintsoft` | Standalone | UK 3PL |
+| `inventory-sync-forceget.js` | `inventory-sync-forceget`, `inventory-forceget` | module.exports | US/CA 3PL |
+| `sellerboard-pl-export.js` | `sellerboard-pl-export` | module.exports | P&L export |
+| `mintsoft-product-export.js` | `mintsoft-product-export` | module.exports | Product + stock |
+| `forceget-inventory-export.js` | `forceget-inventory-export` | module.exports | Live inventory |
+| `corax-wms-stock-export.js` | `corax-stock-export` | module.exports | Stock per artikel |
+
+### Removed — do not rebuild
+
+| Script / task_type | Reason |
+|--------------------|--------|
+| `inventory-sync-bol` | Bol LvB → API only |
+| `amazon-buyer-messages.js` | Amazon ToS risk |
+
+### Human overview
+
+Qualico OS: https://qualico-platform.vercel.app/it-tech/browser-automation
+
+### Dev workflow
+
+Develop in `scripts/` → test locally → push to GitHub **only after verified success**. See `.cursor/rules/playwright-automation-workflow.mdc`.
 
 ---
 

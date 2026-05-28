@@ -92,8 +92,9 @@ const SCRIPT_TASKS = {
   'inventory-sync-forceget':   'inventory-sync-forceget.js',
   'inventory-sync-kamps':      'inventory-sync-kamps.js',
   'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
-  'inventory-sync-bol':        'inventory-sync-bol.js',
   'price-scrape':              'price-monitor-scraper.js',
+  'bol-price-update':          'bol-price-update.js',
+  'bol-cases-scrape':          'bol-cases-scrape.js',
 };
 
 

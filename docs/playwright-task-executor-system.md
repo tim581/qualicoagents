@@ -1,227 +1,206 @@
 # Playwright Task Executor System — Complete Documentation
 
-**Version:** v3.0  
+**Version:** v3.4  
 **Location:** `C:\Users\Tim\playwright-render-service\` (Tim's PC)  
-**GitHub:** `tim581/qualicoagents` → `playwright-task-executor.js` (repo root)  
-**Status:** Altijd draaiend op Tim's PC
+**GitHub:** `tim581/qualicoagents` → `scripts/playwright-task-executor.js`  
+**Human overview:** https://qualico-platform.vercel.app/it-tech/browser-automation  
+**Status:** Must run continuously on Tim's PC for production tasks
 
 ---
 
 ## Overview
 
-Een Node.js process dat continu draait op Tim's Windows PC. Het pollt elke **30 seconden** de `Browser_Tasks` tabel in Supabase voor `status: 'pending'` taken. Wanneer het een taak vindt:
+A Node.js process polls every **30 seconds** the `Browser_Tasks` table in Supabase for `status = 'pending'`. When it finds a task:
 
-1. Markeert de taak als `status: 'running'`
-2. Resolved het juiste script (3-layer systeem)
-3. **Download automatisch de laatste versie van GitHub** (`raw.githubusercontent.com`)
-4. Voert het script uit
-5. Schrijft resultaat terug naar `Browser_Tasks` (`status: 'done'` of `status: 'failed'`)
+1. Marks the task `running`
+2. Resolves the script (3-layer system)
+3. Downloads the latest script from GitHub (`scripts/` on `main`) if needed
+4. Runs the script (standalone or module.exports)
+5. Writes `done` / `failed` + `result` / `error_message`
 
-## Locatie op Tim's PC
+---
+
+## Directory on Tim's PC
 
 ```
 C:\Users\Tim\playwright-render-service\
-├── playwright-task-executor.js      ← hoofd-executor (draait continu)
-├── .env                             ← SUPABASE_URL + SUPABASE_KEY
-├── bol-storage-state.json           ← cookies voor bol.com partner portal
-├── node_modules/                    ← npm packages
-├── package.json                     ← dependencies
-└── [scripts worden hier gedownload] ← auto-download van GitHub
+├── scripts/
+│   ├── playwright-task-executor.js   ← run this (canonical)
+│   ├── bol-price-update.js
+│   ├── price-monitor-scraper.js
+│   └── …
+├── .env                              ← SUPABASE_URL + SUPABASE_KEY
+├── bol-storage-state.json            ← Bol partner cookies
+├── package.json
+└── node_modules/
 ```
 
-**BELANGRIJK:** De executor clone NIET de `qualicoagents` repo. Hij download individuele scripts naar zijn eigen directory (`__dirname`) vanuit GitHub raw URL.
+**Run:**
 
-## Hoe een taak triggeren (voor agents)
-
-Insert een rij in `Browser_Tasks` in Supabase:
-
-```sql
-INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, status, priority)
-VALUES (
-  'customer-service',           -- welke agent triggert dit
-  'bol-cases-scrape',           -- task_type → wordt gematcht met script
-  'https://partner.bol.com',    -- informatief (niet altijd nodig)
-  '[]'::jsonb,                  -- actions array (leeg voor script-based taken)
-  'pending',                    -- MUST be 'pending' → executor pikt het op
-  1                             -- prioriteit (hoger = eerder)
-);
-```
-
-De executor pollt elke 30 seconden en pakt de taak op.
-
-## 3-Layer Script Resolution
-
-De executor zoekt scripts in 3 lagen (eerste match wint):
-
-### Layer 1: Hardcoded Map (in executor code)
-```javascript
-const SCRIPT_TASKS = {
-  'forecast-sync':            'flieber-forecast-updater.js',
-  'inventory-sync-bol':       'inventory-sync-bol.js',
-  'price-scrape':             'price-monitor-scraper.js',
-  // ... meer hardcoded mappings
-};
-```
-
-### Layer 2: Actions Array
-Als `actions[]` een entry heeft met `{ "script": "filename.js" }`, wordt dat script gebruikt.
-
-### Layer 3: Browser_Task_Registry (Supabase)
-```sql
-SELECT script_name FROM "Browser_Task_Registry" WHERE task_type = 'bol-cases-scrape';
--- → 'bol-cases-scrape.js'
-```
-
-**`bol-cases-scrape` is geregistreerd in Layer 3** (Browser_Task_Registry).
-
-## Auto-Download van GitHub
-
-**Kritiek detail:** Voordat een script wordt uitgevoerd, download de executor ALTIJD de laatste versie van GitHub:
-
-```
-URL: https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/{scriptName}
-Download naar: C:\Users\Tim\playwright-render-service\{scriptName}
-```
-
-Dus:
-- ✅ `git pull` is NIET nodig — scripts worden automatisch bijgewerkt
-- ✅ Push naar GitHub `main` branch = automatisch beschikbaar bij volgende taak
-- ⚠️ Als GitHub download faalt, valt hij terug op de lokale versie
-
-## Twee Script-Modi
-
-### 1. Standalone (geen `module.exports`)
-- Executor detecteert: geen `module.exports` in code → standalone
-- Wordt uitgevoerd met `node scriptPath`
-- Script maakt zijn **eigen browser** (stealth, proxy, etc.)
-- Output: schrijft JSON naar `{scriptName}-data.json` in executor dir
-- **`bol-cases-scrape.js` gebruikt dit patroon** (heeft stealth + proxy nodig)
-
-### 2. Module.exports Pattern
-- Executor detecteert: `module.exports = async function(...)` → module
-- Executor maakt browser en injecteert `{ page, context, supabase, dbShot }`
-- Script gebruikt de executor's browser (GEEN stealth/proxy mogelijk)
-- Return value = taak resultaat
-
-## Browser_Tasks Tabel Schema
-
-| Kolom | Type | Beschrijving |
-|---|---|---|
-| `id` | uuid (auto) | Primary key |
-| `agent_name` | text | Welke agent triggerde de taak |
-| `task_type` | text | Bepaalt welk script → 3-layer resolution |
-| `url` | text | Informatieve URL (niet altijd gebruikt) |
-| `actions` | jsonb | Actions array (voor action-based of script ref) |
-| `credentials_key` | text | Key voor Browser_Credentials tabel |
-| `status` | text | `pending` → `running` → `done` / `failed` |
-| `result` | jsonb | Resultaat JSON na voltooiing |
-| `error_message` | text | Foutmelding bij failure |
-| `created_at` | timestamp | Aangemaakt |
-| `completed_at` | timestamp | Afgerond |
-| `priority` | integer | Hoger = eerder opgepakt |
-
-## Browser_Task_Registry Schema
-
-| Kolom | Type | Beschrijving |
-|---|---|---|
-| `id` | integer (auto) | Primary key |
-| `task_type` | text (unique) | Matcht met Browser_Tasks.task_type |
-| `display_name` | text | Leesbare naam |
-| `description` | text | Wat doet dit script |
-| `script_name` | text | Bestandsnaam op GitHub (scripts/ map) |
-| `example_payload` | jsonb | Voorbeeld Browser_Tasks rij |
-| `created_at` | timestamp | Aangemaakt |
-
-## Geregistreerde Scripts
-
-| task_type | script_name | Status |
-|---|---|---|
-| `forecast-sync` | `flieber-forecast-updater.js` | ✅ Layer 1 (hardcoded) |
-| `inventory-sync-bol` | `inventory-sync-bol.js` | ✅ Layer 1 |
-| `price-scrape` | `price-monitor-scraper.js` | ✅ Layer 1 |
-| `bol-cases-scrape` | `bol-cases-scrape.js` | ✅ Layer 3 (registry) |
-
-## bol-cases-scrape.js — Details
-
-**Versie:** 1.2.0  
-**Modus:** Standalone (eigen browser met stealth + proxy)  
-**GitHub:** `scripts/bol-cases-scrape.js`
-
-### Wat het doet:
-1. Laadt `bol-storage-state.json` (cookies van partner portal)
-2. Start stealth Chromium browser met Decodo NL proxy
-3. Navigeert naar partner.bol.com (activeert cookies)
-4. Checkt of sessie nog geldig is (geen redirect naar login)
-5. Haalt case counts op via interne API
-6. Haalt OPEN cases lijst op
-7. Haalt NEW cases lijst op
-8. Per case: details + volledige email bodies
-9. Schrijft alles naar `bol-cases-scrape-data.json`
-
-### Dependencies (moeten geïnstalleerd zijn in executor dir):
-```bash
+```powershell
 cd C:\Users\Tim\playwright-render-service
-npm install playwright-extra puppeteer-extra-plugin-stealth
+node scripts/playwright-task-executor.js
 ```
 
-### Anti-detectie:
-- **Stealth plugin:** Verbergt headless browser fingerprint, WebDriver flag
-- **Decodo NL proxy:** Residentieel IP (nl.decodo.com:10001)
-- **Realistische headers:** NL locale, Chrome user agent, correct Sec-Fetch headers
+Scripts download from:
 
-### Cookie afhankelijkheid:
-- Cookies komen van `bol-partner-save-cookies.js` (apart script)
-- Cookies verlopen na onbekende periode
-- Als cookies verlopen → script returned error "Session expired"
-- Oplossing: handmatig `bol-partner-save-cookies.js` draaien (vereist 2FA SMS)
+```
+https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/{scriptName}
+```
 
-## Resultaat ophalen (voor agents)
+Push to GitHub `main` → available on next task (no agent git access needed).
 
-Na het inserten van een task, poll de agent de Browser_Tasks tabel:
+---
+
+## How agents trigger a task
 
 ```sql
-SELECT status, result, error_message, completed_at 
-FROM "Browser_Tasks" 
-WHERE id = '{task_id}';
+INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, credentials_key, status, priority)
+VALUES (
+  'customer-service',
+  'bol-cases-scrape',
+  'https://partner.bol.com',
+  '[]'::jsonb,
+  'bol_seller',
+  'pending',
+  1
+)
+RETURNING id;
 ```
 
-- `status = 'done'` → resultaat in `result` kolom (JSON)
-- `status = 'failed'` → foutmelding in `error_message`
-- `status = 'running'` → nog bezig, wacht en poll opnieuw
-- `status = 'pending'` → nog niet opgepakt door executor
+With parameters (e.g. Bol price update):
 
-**Typische wachttijd:** 30-120 seconden (30s poll + script executietijd)
+```sql
+INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, credentials_key, status)
+VALUES (
+  'pricing-agent',
+  'bol-price-update',
+  'https://partner.bol.com',
+  '[{"ean":"5419980414724","offer_uid":"c61305f7-ee7b-4c76-8ec3-2305a17bd6da","promotional_price":79.95,"start_date":"2026-05-28","end_date":"2026-09-30","action":"set","script":"bol-price-update.js"}]'::jsonb,
+  'bol_seller',
+  'pending'
+)
+RETURNING id;
+```
+
+---
+
+## 3-layer script resolution
+
+First match wins:
+
+### Layer 1: `SCRIPT_TASKS` (in executor code)
+
+Hardcoded map for common task types — see `scripts/playwright-task-executor.js`.
+
+### Layer 2: `actions[].script`
+
+If any object in `actions` has `"script": "filename.js"`, use that file.
+
+### Layer 3: `Browser_Task_Registry`
+
+```sql
+SELECT script_name FROM "Browser_Task_Registry" WHERE task_type = 'bol-price-update';
+```
+
+**Source of truth for agents:** query registry with `available = true`.
+
+---
+
+## Script modes
+
+### Standalone (no `module.exports`)
+
+- Executor runs `node scriptPath` with `BROWSER_TASK_ID` env
+- Script launches its **own** browser (stealth, proxy, cookies)
+- Examples: `bol-cases-scrape.js`, `bol-price-update.js`, `price-monitor-scraper.js`
+
+### module.exports (executor injects browser)
+
+- Executor creates browser context and calls exported function
+- Examples: `inventory-sync-forceget.js`, `sellerboard-pl-export.js`, `mintsoft-product-export.js`
+
+---
+
+## Browser_Tasks schema (key columns)
+
+| Column | Description |
+|--------|-------------|
+| `task_type` | Drives script resolution |
+| `actions` | JSON params; NOT NULL — use `[]` if empty |
+| `credentials_key` | Lookup in `Browser_Credentials` |
+| `status` | `pending` → `running` → `done` / `failed` |
+| `result` | JSON result on success |
+| `error_message` | Error text on failure |
+
+---
+
+## Registered production scripts (May 2026)
+
+Query live list:
+
+```sql
+SELECT task_type, script_name, description FROM "Browser_Task_Registry" WHERE available = true;
+```
+
+Includes: `bol-cases-scrape`, `bol-price-update`, `forecast-sync`, `forecast-verify`, `po-simulation`, `to-simulation`, `price-scrape`, inventory syncs (Kamps, Mintsoft, Forceget), exports (Sellerboard, Mintsoft, Corax, Forceget), cookie-save helpers.
+
+---
+
+## Removed (do not register or call)
+
+| task_type / script | Reason |
+|--------------------|--------|
+| `inventory-sync-bol` | Bol inventory via **API** — Playwright scraper removed May 2026 |
+| `amazon-buyer-messages.js` | Removed — Amazon Seller Central ToS risk |
+
+---
+
+## Dev & deploy workflow (May 2026)
+
+1. Develop in `scripts/` with Cursor on Tim's PC
+2. Test locally (`node scripts/….js` or via `Browser_Tasks`)
+3. **Push to GitHub only after successful run + verify** (e.g. scrape confirms live price)
+4. Executor picks up new script on next download
+
+See also: `.cursor/rules/playwright-automation-workflow.mdc` in this repo.
+
+---
 
 ## Troubleshooting
 
-| Probleem | Oorzaak | Oplossing |
-|---|---|---|
-| `module.exports is not a function` | Script heeft module.exports maar export is geen functie | Zorg dat script standalone is (geen module.exports) |
-| `Storage state not found` | `bol-storage-state.json` ontbreekt | Draai `bol-partner-save-cookies.js` |
-| `Session expired` | Cookies verlopen | Draai `bol-partner-save-cookies.js` (2FA nodig) |
-| Script niet gevonden | Niet in hardcoded map, actions, of registry | Registreer in Browser_Task_Registry |
-| Taak blijft `pending` | Executor draait niet | Start executor: `node playwright-task-executor.js` |
-| `Cannot find module 'playwright-extra'` | Package niet geïnstalleerd | `npm install playwright-extra puppeteer-extra-plugin-stealth` |
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| Task stays `pending` | Executor not running | `node scripts/playwright-task-executor.js` |
+| `Session expired` (Bol) | Cookies stale | Run `scripts/bol-partner-save-cookies.js` |
+| Bol SSO fails behind proxy | Decodo blocks login | Set `BOL_NO_PROXY=1` for bol-price-update |
+| Script not found | Missing registry / wrong task_type | Check `Browser_Task_Registry` |
+| Old script behaviour | Cached local file | Delete local copy or push fix to GitHub |
 
-## Flow Diagram
+---
+
+## Flow diagram
 
 ```
 Agent INSERT Browser_Tasks (pending)
         ↓
-Executor poll (elke 30s)
+Executor poll (~30s)
         ↓
-3-layer script resolution → vind script naam
+3-layer script resolution
         ↓
-Download latest van GitHub (raw.githubusercontent.com)
+Download script from GitHub scripts/
         ↓
-Detecteer modus: standalone of module.exports
+Standalone OR module.exports execution
         ↓
-[Standalone] → node script.js → eigen browser (stealth/proxy)
-[Module]     → executor browser → injecteer { page, context, supabase }
+UPDATE Browser_Tasks (done/failed)
         ↓
-Script uitvoeren → resultaat
-        ↓
-UPDATE Browser_Tasks (done/failed + result/error)
-        ↓
-Agent pollt resultaat en verwerkt
+Agent reads result
 ```
+
+---
+
+## See also
+
+- [BROWSER-AUTOMATION-SELF-SERVICE.md](./BROWSER-AUTOMATION-SELF-SERVICE.md) — agent quick start
+- [WRITING-BROWSER-SCRIPTS.md](./WRITING-BROWSER-SCRIPTS.md) — authoring scripts
+- [README.md](./README.md) — doc index

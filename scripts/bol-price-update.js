@@ -113,6 +113,125 @@ function formatPriceBol(price) {
   return price.toFixed(2).replace('.', ',');
 }
 
+function formatBolDateRange(startDate, endDate) {
+  const months = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+  const fmt = (iso) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    return `${d} ${months[m - 1]} ${y}`;
+  };
+  return `${fmt(startDate)} - ${fmt(endDate)}`;
+}
+
+function parseIsoDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+async function setReactInputValue(page, selector, value) {
+  return page.evaluate(({ sel, val }) => {
+    const input = document.querySelector(sel);
+    if (!input) return { ok: false, reason: 'input not found' };
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (!setter) return { ok: false, reason: 'no value setter' };
+    setter.call(input, val);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+    return { ok: true, value: input.value };
+  }, { sel: selector, val: value });
+}
+
+async function pickCalendarDay(page, date, dbLogFn) {
+  const monthsNl = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december'];
+  const monthName = monthsNl[date.getMonth()];
+  const year = date.getFullYear();
+  const day = date.getDate();
+
+  for (let attempt = 0; attempt < 24; attempt++) {
+    const headers = await page.locator('[class*="current-month"], [class*="caption"], [aria-live="polite"], h2, h3').allTextContents().catch(() => []);
+    const headerText = headers.join(' ').toLowerCase();
+    if (headerText.includes(monthName) && headerText.includes(String(year))) break;
+
+    const nextBtn = page.locator(
+      'button[name="next-month"], .react-datepicker__navigation--next, [aria-label*="volgende"], [aria-label*="Next"]'
+    ).first();
+    if (await nextBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await nextBtn.click();
+    } else {
+      await page.getByRole('button', { name: /›|→|next/i }).first().click({ timeout: 1000 }).catch(() => {});
+    }
+    await page.waitForTimeout(250);
+  }
+
+  const dayPatterns = [
+    new RegExp(`\\b${day}\\s+${monthName}\\b`, 'i'),
+    new RegExp(`\\b${day}\\s+${monthName.slice(0, 3)}`, 'i'),
+    new RegExp(`^${day}$`),
+  ];
+
+  for (const pattern of dayPatterns) {
+    const gridcell = page.getByRole('gridcell', { name: pattern }).first();
+    if (await gridcell.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await gridcell.click();
+      await dbLogFn('set-price', 'info', `Calendar day picked via gridcell: ${day} ${monthName} ${year}`);
+      return;
+    }
+    const btn = page.getByRole('button', { name: pattern }).first();
+    if (await btn.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await btn.click();
+      await dbLogFn('set-price', 'info', `Calendar day picked via button: ${day} ${monthName} ${year}`);
+      return;
+    }
+  }
+
+  const dayPadded = String(day).padStart(3, '0');
+  const reactDay = page.locator(`.react-datepicker__day--${dayPadded}:not(.react-datepicker__day--outside-month)`).first();
+  if (await reactDay.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await reactDay.click();
+    await dbLogFn('set-price', 'info', `Calendar day picked via react-datepicker: ${day}`);
+    return;
+  }
+
+  throw new Error(`Could not pick calendar day ${day} ${monthName} ${year}`);
+}
+
+async function setBolPromoDateRange(page, dateField, startDate, endDate) {
+  const rangeStr = formatBolDateRange(startDate, endDate);
+  const selector = 'input[name="promotions.0.dateRange"]';
+
+  const injected = await setReactInputValue(page, selector, rangeStr);
+  await dbLog('set-price', 'info', `React inject result: ${JSON.stringify(injected)}`);
+  let current = await dateField.inputValue().catch(() => '');
+  if (current && current !== 'Kies periode') {
+    await dbLog('set-price', 'success', `Date range set via React inject: ${current}`);
+    return;
+  }
+
+  await dbLog('set-price', 'info', 'React inject empty — opening calendar picker...');
+  await dateField.scrollIntoViewIfNeeded();
+  await dateField.click();
+  await page.waitForTimeout(1000);
+
+  const calendarOpen = await page.locator(
+    '[role="dialog"], .react-datepicker, [data-radix-popper-content-wrapper], [class*="calendar"], [class*="DatePicker"]'
+  ).first().isVisible({ timeout: 5000 }).catch(() => false);
+  if (!calendarOpen) {
+    await dateField.click({ force: true });
+    await page.waitForTimeout(1000);
+  }
+
+  await pickCalendarDay(page, parseIsoDate(startDate), dbLog);
+  await page.waitForTimeout(400);
+  await pickCalendarDay(page, parseIsoDate(endDate), dbLog);
+  await page.waitForTimeout(500);
+
+  current = await dateField.inputValue().catch(() => '');
+  if (!current || current === 'Kies periode') {
+    throw new Error(`Date range still empty after calendar pick (wanted: ${rangeStr})`);
+  }
+  await dbLog('set-price', 'success', `Date range set via calendar: ${current}`);
+}
+
 // ── MAIN ───────────────────────────────────────────────────────────────
 (async () => {
   let browser;
@@ -149,11 +268,17 @@ function formatPriceBol(price) {
 
     // ── 3. Launch browser ─────────────────────────────────────────────
     await dbLog('browser', 'info', 'Launching stealth browser...');
-    browser = await chromium.launch({
+    const launchOptions = {
       headless: false,
-      proxy: PROXY,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    };
+    if (process.env.BOL_NO_PROXY !== '1') {
+      launchOptions.proxy = PROXY;
+      await dbLog('browser', 'info', 'Using Decodo proxy');
+    } else {
+      await dbLog('browser', 'info', 'Proxy disabled (BOL_NO_PROXY=1)');
+    }
+    browser = await chromium.launch(launchOptions);
 
     const context = await browser.newContext({
       userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -207,58 +332,50 @@ function formatPriceBol(price) {
         await dbLog('sso', 'info', `Input[${i}]: name="${n}" type="${t}" value="${v}"`);
       }
 
-      // Fill username field — try j_username first, fall back to email/text
+      // Fill username/password — use fill() to avoid floating-label click intercepts
       let usernameField = page.locator('input[name="j_username"]').first();
       if (!await usernameField.isVisible({ timeout: 3000 }).catch(() => false)) {
         usernameField = page.locator('input[type="email"], input[type="text"]').first();
         await dbLog('sso', 'info', 'j_username not found — using generic input');
       }
-      await usernameField.click();
-      await page.waitForTimeout(300);
-      await usernameField.selectText().catch(() => {});
-      await page.keyboard.type(username, { delay: 80 });
-      await dbLog('sso', 'info', `Username typed: ${username}`);
+      await usernameField.fill(username);
 
-      // Fill password
       let passwordField = page.locator('input[name="j_password"]').first();
       if (!await passwordField.isVisible({ timeout: 3000 }).catch(() => false)) {
         passwordField = page.locator('input[type="password"]').first();
       }
-      await passwordField.click();
-      await page.waitForTimeout(300);
-      await passwordField.selectText().catch(() => {});
-      await page.keyboard.type(password, { delay: 80 });
-      await dbLog('sso', 'info', 'Password typed');
+      await passwordField.fill(password);
+      await dbLog('sso', 'info', `Credentials filled for: ${username}`);
+
+      const filledUser = await usernameField.inputValue().catch(() => '');
+      const filledPass = await passwordField.inputValue().catch(() => '');
+      if (!filledUser || !filledPass) {
+        throw new Error(`SSO fields empty after fill (user=${!!filledUser}, pass=${!!filledPass})`);
+      }
 
       await dbShot(page, 'sso-filled', 'SSO form filled — about to submit');
 
-      // Submit — press Enter directly on password field (ensures correct focus)
-      await passwordField.click();
-      await page.waitForTimeout(500);
-      await dbShot(page, 'sso-before-submit', 'SSO form filled — about to press Enter on password field');
-      await passwordField.press('Enter');
-      await dbLog('sso', 'info', 'Enter pressed on password field — sleeping 12s for redirect...');
-
-      // Use fixed sleep (NOT affected by Playwright global timeout settings)
-      await page.waitForTimeout(12000);
-      await dbShot(page, 'after-sso-sleep', `URL after 12s: ${page.url()}`);
-      await dbLog('sso', 'info', `URL after 12s sleep: ${page.url()}`);
-
-      if (page.url().includes('login.bol.com')) {
-        // Still on login — try button click as last resort
-        await dbLog('sso', 'warning', 'Still on login after Enter — trying submit button...');
-        const submitBtn = page.locator('button[type="submit"], input[type="submit"]').first();
-        const btnVisible = await submitBtn.isVisible().catch(() => false);
-        if (btnVisible) {
-          await submitBtn.click();
-          await dbLog('sso', 'info', 'Submit button clicked — sleeping 12s...');
-          await page.waitForTimeout(12000);
-          await dbShot(page, 'after-btn-sleep', `URL after button+sleep: ${page.url()}`);
-        }
+      const loginBtn = page.getByRole('button', { name: /inloggen|log in|aanmelden/i }).first();
+      if (await loginBtn.isVisible({ timeout: 5000 }).catch(() => false)) {
+        await dbLog('sso', 'info', 'Clicking Inloggen button...');
+        await Promise.all([
+          page.waitForURL((url) => !url.toString().includes('login.bol.com'), { timeout: 45000 }).catch(() => null),
+          loginBtn.click({ force: true }),
+        ]);
+      } else {
+        await dbLog('sso', 'info', 'No Inloggen button — pressing Enter on password field');
+        await passwordField.press('Enter');
+        await page.waitForTimeout(12000);
       }
+
+      await dbShot(page, 'after-sso-submit', `URL after submit: ${page.url()}`);
+      await dbLog('sso', 'info', `URL after submit: ${page.url()}`);
 
       // Final URL check
       if (page.url().includes('login.bol.com')) {
+        const loginError = await page.locator('[role="alert"], .error, .text-danger, [data-test*="error"]').first().textContent().catch(() => '');
+        const bodySnippet = await page.locator('body').innerText().catch(() => '');
+        await dbLog('sso', 'error', `Login page error: ${(loginError || bodySnippet).substring(0, 500)}`);
         await dbShot(page, 'sso-failed', 'Both methods failed — still on login page');
         throw new Error(`SSO login failed — still on login.bol.com after all attempts. URL: ${page.url()}`);
       }
@@ -314,20 +431,60 @@ function formatPriceBol(price) {
 
       await dbShot(page, 'prijs-section', 'Prijs section');
 
-      const priceField = page.locator('input[name="promotions.0.price"]');
-      const dateField = page.locator('input[name="promotions.0.dateRange"]');
+      // Codegen + screenshot confirmed this must target the temporary-price row field.
+      const promoRow = page.getByText('Tijdelijke prijs').locator('xpath=ancestor::section | ancestor::div').first();
+      const rowScopedPriceField = page
+        .getByRole('row')
+        .filter({ hasText: /(\d{1,3},\d{2}).*(\d{1,2}\s+\w+\s+\d{4}\s*-\s*\d{1,2}\s+\w+\s+\d{4})/i })
+        .getByLabel('Prijs')
+        .first();
+      const namedPromoField = page.locator('input[name="promotions.0.price"]').first();
+      const genericPriceField = page.locator('input[name="price"]').first();
+      const dateField = page.locator('input[name="promotions.0.dateRange"]').first();
+
+      let priceField = rowScopedPriceField;
+      if (!await priceField.isVisible({ timeout: 3000 }).catch(() => false)) {
+        priceField = namedPromoField;
+      }
+
+      if (!await priceField.isVisible({ timeout: 3000 }).catch(() => false)) {
+        const addPromoBtn = page.getByRole('button', { name: /tijdelijke prijs/i }).first();
+        if (await addPromoBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await dbLog('set-price', 'info', 'Adding Tijdelijke prijs row...');
+          await addPromoBtn.click();
+          await page.waitForTimeout(2000);
+        } else {
+          const addPromoText = page.getByText(/tijdelijke prijs toevoegen|voeg tijdelijke prijs toe/i).first();
+          if (await addPromoText.isVisible({ timeout: 2000 }).catch(() => false)) {
+            await dbLog('set-price', 'info', 'Clicking Tijdelijke prijs toevoegen...');
+            await addPromoText.click();
+            await page.waitForTimeout(2000);
+          }
+        }
+        if (await namedPromoField.isVisible({ timeout: 5000 }).catch(() => false)) {
+          priceField = namedPromoField;
+        } else if (await genericPriceField.isVisible({ timeout: 3000 }).catch(() => false)) {
+          priceField = genericPriceField;
+          await dbLog('set-price', 'info', 'No promo field — using base input[name="price"]');
+        }
+      }
 
       if (await priceField.isVisible({ timeout: 8000 }).catch(() => false)) {
-        await priceField.click({ clickCount: 3 });
+        const chosenName = await priceField.getAttribute('name').catch(() => '');
+        await dbLog('set-price', 'info', `Using field name: "${chosenName || '(unknown)'}"`);
+
+        await priceField.dblclick().catch(() => {});
         await priceField.fill('');
         await priceField.type(priceStr, { delay: 50 });
         await dbLog('set-price', 'success', `Price filled: ${priceStr}`);
 
-        const currentDateRange = await dateField.inputValue().catch(() => '');
-        await dbLog('set-price', 'info', `Date range: "${currentDateRange}"`);
+        if (chosenName !== 'price') {
+          const currentDateRange = await dateField.inputValue().catch(() => '');
+          await dbLog('set-price', 'info', `Date range: "${currentDateRange}"`);
 
-        if (!currentDateRange || currentDateRange === 'Kies periode') {
-          await dbLog('set-price', 'warning', 'Date range empty — needs manual date setting');
+          if (!currentDateRange || currentDateRange === 'Kies periode') {
+            await setBolPromoDateRange(page, dateField, start_date, end_date);
+          }
         }
       } else {
         await dbLog('set-price', 'error', 'promotions.0.price NOT found — page not ready');
@@ -336,6 +493,10 @@ function formatPriceBol(price) {
           const n = await inp2[i].getAttribute('name').catch(() => '');
           const v = await inp2[i].inputValue().catch(() => '');
           await dbLog('set-price', 'info', `Input[${i}]: name="${n}" value="${v}"`);
+        }
+        if (await genericPriceField.isVisible({ timeout: 1000 }).catch(() => false)) {
+          const basePriceVal = await genericPriceField.inputValue().catch(() => '');
+          await dbLog('set-price', 'warning', `Base price field exists with value "${basePriceVal}" (not used)`);
         }
         await dbShot(page, 'no-promo-field', 'promotions.0.price not found');
         throw new Error('promotions.0.price input not visible — check debug screenshots');
