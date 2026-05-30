@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js'
+import AppHeader from '@/components/AppHeader'
+import { createSupabaseClient } from '@/lib/supabase'
 import KpiCards from '@/components/KpiCards'
 import MatrixHeatmap from '@/components/MatrixHeatmap'
 import MarketSizing from '@/components/MarketSizing'
@@ -8,10 +9,7 @@ export const dynamic = 'force-dynamic'
 export const revalidate = 0
 
 async function fetchData() {
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  )
+  const supabase = createSupabaseClient()
 
   const [productsRes, channelsRes, marginsRes] = await Promise.all([
     supabase
@@ -104,27 +102,22 @@ export default async function SalesPage() {
 
   return (
     <main className="min-h-screen bg-[#0D1117]">
-      {/* Header */}
-      <div className="border-b border-[#30363D] bg-[#161B22]">
-        <div className="max-w-[1600px] mx-auto px-6 py-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold text-white">
-                <span className="text-[#00D4AA]">Puzzlup</span> Sales Opportunities
-              </h1>
-              <p className="text-[#8B949E] text-sm mt-1">
-                Product × Channel matrix • Live data from Supabase
-              </p>
-            </div>
-            <div className="text-right">
-              <div className="text-xs text-[#8B949E]">Last refreshed</div>
-              <div className="text-sm text-[#E6EDF3] font-mono">
-                {new Date().toLocaleString('en-GB', { timeZone: 'Europe/Brussels' })}
-              </div>
+      <AppHeader
+        title={
+          <>
+            <span className="text-[#00D4AA]">Puzzlup</span> Sales Opportunities
+          </>
+        }
+        subtitle="Product × Channel matrix • Live data from Supabase"
+        actions={
+          <div className="text-right">
+            <div className="text-xs text-[#8B949E]">Last refreshed</div>
+            <div className="text-sm text-[#E6EDF3] font-mono">
+              {new Date().toLocaleString('en-GB', { timeZone: 'Europe/Brussels' })}
             </div>
           </div>
-        </div>
-      </div>
+        }
+      />
 
       <div className="max-w-[1600px] mx-auto px-6 py-6 space-y-8">
         <KpiCards

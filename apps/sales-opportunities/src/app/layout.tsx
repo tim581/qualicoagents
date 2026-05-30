@@ -2,8 +2,8 @@ import type { Metadata } from 'next'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Puzzlup Sales Opportunities',
-  description: 'Sales opportunity matrix and market analysis for Puzzlup products',
+  title: 'Qualico Platform',
+  description: 'Company timeline, sales opportunities, and business dashboards',
 }
 
 export default function RootLayout({
