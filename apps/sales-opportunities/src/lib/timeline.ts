@@ -101,6 +101,7 @@ export function defaultEndDate(startDate: string, days = 30): string {
   return toISODate(addDays(parseDate(startDate), days))
 }
 
+export function parseDate(value: string): Date {
   const [y, m, d] = value.split('-').map(Number)
   return new Date(y, m - 1, d)
 }
