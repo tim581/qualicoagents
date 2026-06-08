@@ -495,68 +495,49 @@ async function setDeliveryLocation(page, channel, channelId) {
       console.log(`  📍 Popup not immediately visible, waiting...`);
     }
 
-    // ── NL-specific flow: country dropdown instead of postal code ──
-    // Codegen (May 2026) showed amazon.nl uses a country chooser, NOT a postcode input.
-    // Flow: click "Choose" span (nth=2) → select "Netherlands" option (nth=2) → click "Done"
-    // NOTE: .nth(2) is critical — there are 3 "Choose" spans and 3 "Netherlands" options on the page
+    // ── NL-specific flow: country <select> in popup (Dutch UI: "Nederland", not "Netherlands") ──
+    // amazon.nl has NO postcode field — only a country dropdown (België / Nederland).
     if (channel.domain === 'amazon.nl') {
-      console.log(`  📍 NL flow: selecting Netherlands via country dropdown...`);
+      console.log(`  📍 NL flow: selecting Nederland via country dropdown...`);
       let nlDone = false;
 
-      // Strategy 1: codegen-exact — nth(2) for both Choose span and Netherlands option
       try {
-        // Log how many "Choose" spans exist for debugging
-        const chooseCount = await page.locator('span').filter({ hasText: /^Choose$/ }).count();
-        console.log(`  📍 NL: found ${chooseCount} "Choose" spans`);
+        const popover = page.locator('.a-popover-wrapper').last();
+        const countrySelect = popover.locator('select').filter({
+          has: page.locator('option', { hasText: 'Nederland' }),
+        }).first();
 
-        // Try nth(2) first (codegen), then nth(1), then first()
-        for (const idx of [2, 1, 0]) {
-          const chooseSpan = page.locator('span').filter({ hasText: /^Choose$/ }).nth(idx);
-          if (await chooseSpan.isVisible({ timeout: 2000 }).catch(() => false)) {
-            console.log(`  📍 NL: clicking Choose span at index ${idx}`);
-            await chooseSpan.click();
-            await page.waitForTimeout(1000);
-
-            // Try nth(2), nth(1), nth(0) for the Netherlands option
-            for (const optIdx of [2, 1, 0]) {
-              const nlOption = page.getByRole('option', { name: 'Netherlands' }).nth(optIdx);
-              if (await nlOption.isVisible({ timeout: 2000 }).catch(() => false)) {
-                await nlOption.click();
-                await page.waitForTimeout(500);
-                console.log(`  ✅ Selected Netherlands via country dropdown (span[${idx}], option[${optIdx}])`);
-                nlDone = true;
-                break;
-              }
+        if (await countrySelect.isVisible({ timeout: 3000 }).catch(() => false)) {
+          await countrySelect.selectOption({ label: 'Nederland' });
+          await page.waitForTimeout(500);
+          console.log(`  ✅ Selected Nederland via country <select>`);
+          nlDone = true;
+        } else {
+          // Fallback: click visible Nederland option (custom dropdown)
+          for (const name of [/Nederland/i, /Netherlands/i]) {
+            const nlOption = page.getByRole('option', { name }).first();
+            if (await nlOption.isVisible({ timeout: 1500 }).catch(() => false)) {
+              await nlOption.click();
+              await page.waitForTimeout(500);
+              console.log(`  ✅ Selected ${name} via role=option`);
+              nlDone = true;
+              break;
             }
-
-            // Also try native <select> with selectOption as fallback
-            if (!nlDone) {
-              try {
-                const selectEl = page.locator('select').nth(idx);
-                if (await selectEl.isVisible({ timeout: 1000 }).catch(() => false)) {
-                  await selectEl.selectOption({ label: 'Netherlands' });
-                  console.log(`  ✅ Selected Netherlands via <select> element`);
-                  nlDone = true;
-                }
-              } catch(e2) {}
-            }
-
-            if (nlDone) break;
           }
         }
-      } catch (e) { console.log(`  ⚠️ NL country dropdown error: ${e.message}`); }
+      } catch (e) {
+        console.log(`  ⚠️ NL country dropdown error: ${e.message}`);
+      }
 
-      // Strategy 2: if no "Choose" found, maybe location is already NL — check widget text
       if (!nlDone) {
         const widgetText = await page.locator('#nav-global-location-popover-link, #glow-ingress-block').textContent().catch(() => '');
-        if (/netherlands|nederland/i.test(widgetText)) {
+        if (/nederland|amsterdam|netherlands/i.test(widgetText)) {
           console.log(`  ✅ NL: location already set to Netherlands — skipping`);
           nlDone = true;
         }
       }
 
-      // Click Done/Apply
-      for (const btnName of ['Done', 'Klaar', 'Toepassen', 'Apply']) {
+      for (const btnName of ['Gereed', 'Klaar', 'Done', 'Toepassen', 'Apply']) {
         const doneBtn = page.getByRole('button', { name: btnName });
         if (await doneBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
           await doneBtn.click();
@@ -565,7 +546,8 @@ async function setDeliveryLocation(page, channel, channelId) {
         }
       }
 
-      if (!nlDone) throw new Error('NL country dropdown flow failed — no Choose span or Netherlands option found');
+      if (!nlDone) throw new Error('NL country dropdown flow failed — could not select Nederland');
+      await page.waitForTimeout(2000);
       return; // Skip the postal code section below
     }
 
@@ -786,25 +768,71 @@ function parsePrice(priceStr) {
 }
 
 /**
- * Extract price from Amazon product page.
- * Looks for multiple price selectors in order of reliability.
+ * True when Amazon shows no direct buybox (multi-seller / suppressed listing).
  */
-async function extractPrice(page) {
-  // Selectors in order of reliability
-  const selectors = [
-    '.priceToPay .a-offscreen',
-    '#corePrice_feature_div .a-offscreen',
-    '#corePriceDisplay_desktop_feature_div .a-offscreen',
-    '.reinventPricePriceToPayMargin .priceToPay .a-offscreen',
-    '.a-price .a-offscreen',
-    '#priceblock_ourprice',
-    '#priceblock_dealprice',
-    '.a-color-price',
-    '#price_inside_buybox',
-    '#newBuyBoxPrice',
-    '#apex_offerDisplay_desktop .a-offscreen',
-  ];
+async function isBuyBoxSuppressed(page) {
+  try {
+    const hasCart = await page.locator('#add-to-cart-button').isVisible({ timeout: 1500 });
+    const hasBuy = await page.locator('#buy-now-button').isVisible({ timeout: 1000 });
+    if (!hasCart && !hasBuy) return true;
+  } catch (e) { /* continue */ }
 
+  try {
+    const otherSellers = await page.locator('#buybox-see-all-buying-choices, a[href*="offer-listing"]').first().isVisible({ timeout: 1000 });
+    if (otherSellers) return true;
+  } catch (e) { /* continue */ }
+
+  return false;
+}
+
+/**
+ * Parse lowest-offer price on suppressed listings (all Amazon locales).
+ * DE: "2 Optionen ab 59,95 €" | UK: "3 options from £52.95"
+ * FR: "2 options à partir de EUR 59,95" | ES: "3 opciones desde 52,95 €"
+ * IT: "3 opzioni a partire da 52,95 €" | NL: "3 opties vanaf € 52,95"
+ */
+async function extractOptionsFromPrice(page) {
+  try {
+    const centerText = (await page.locator('#centerCol').innerText().catch(() => '')).replace(/\u00a0/g, ' ');
+    const html = (await page.content().catch(() => '')).replace(/\u00a0/g, ' ');
+    const patterns = [
+      // German (incl. JSON embed: "3 Optionen ab 52,95 €")
+      /\d+\s+Optionen\s+ab\s+([\d][\d.,]*)\s*€/i,
+      /Optionen\s+ab\s+([\d][\d.,]*)\s*€/i,
+      /"(\d+)\s+Optionen\s+ab\s+([\d][\d.,]*)\s*€/i,
+      // English (UK/US/CA)
+      /\d+\s+options?\s+from\s+[€£$]?\s*([\d][\d.,]*)/i,
+      // French
+      /\d+\s+options?\s+à\s+partir\s+de\s+(?:EUR\s*)?([\d][\d.,]*)\s*€?/i,
+      /à\s+partir\s+de\s*[:\s]*([\d][\d.,]*)\s*€/i,
+      // Spanish
+      /\d+\s+opciones?\s+desde\s+[€]?\s*([\d][\d.,]*)/i,
+      // Italian
+      /\d+\s+opzioni\s+a\s+partire\s+da\s+(?:EUR\s*)?([\d][\d.,]*)\s*€?/i,
+      // Dutch
+      /\d+\s+opties\s+vanaf\s+€?\s*([\d][\d.,]*)/i,
+      // Belgian French/Dutch variants
+      /\d+\s+offres?\s+à\s+partir\s+de\s+([\d][\d.,]*)/i,
+    ];
+
+    for (const text of [centerText, html]) {
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (!match) continue;
+        const rawPart = match[0];
+        const pricePart = match[match.length - 1];
+        const price = parsePrice(pricePart);
+        if (price && price > 0 && price < 9999) {
+          return { price, raw: rawPart.replace(/"/g, '').trim() };
+        }
+      }
+    }
+  } catch (e) { /* no options-from price */ }
+
+  return null;
+}
+
+async function extractPriceFromSelectors(page, selectors) {
   for (const sel of selectors) {
     try {
       const elem = page.locator(sel).first();
@@ -817,10 +845,51 @@ async function extractPrice(page) {
       }
     } catch (e) { /* try next selector */ }
   }
+  return null;
+}
 
-  // Fallback 1: try .a-offscreen textContent (may be hidden but present in DOM)
+/**
+ * Extract price from Amazon product page.
+ * Buybox-scoped first; never use carousel "alternative items" prices.
+ */
+async function extractPrice(page) {
+  const suppressed = await isBuyBoxSuppressed(page);
+
+  // Buybox / core price area only — avoids "Consider these alternative items" carousel
+  const buyboxSelectors = [
+    '#corePrice_feature_div .a-offscreen',
+    '#corePriceDisplay_desktop_feature_div .a-offscreen',
+    '#apex_offerDisplay_desktop .a-offscreen',
+    '#buybox .priceToPay .a-offscreen',
+    '#buybox .a-price .a-offscreen',
+    '#qualifiedBuybox .a-offscreen',
+    '.apexPriceToPay .a-offscreen',
+    '.reinventPricePriceToPayMargin .priceToPay .a-offscreen',
+    '#price_inside_buybox',
+    '#newBuyBoxPrice',
+    '#priceblock_ourprice',
+    '#priceblock_dealprice',
+    '.priceToPay .a-offscreen',
+  ];
+
+  const buyboxPrice = await extractPriceFromSelectors(page, buyboxSelectors);
+  if (buyboxPrice) return buyboxPrice;
+
+  if (suppressed) {
+    const fromPrice = await extractOptionsFromPrice(page);
+    if (fromPrice) {
+      console.log(`    📌 Suppressed buybox — using lowest-offer price: ${fromPrice.raw}`);
+      return fromPrice;
+    }
+    console.log('    ⚠️ Suppressed buybox — no buybox or "options from" price found');
+    return { price: null, raw: null };
+  }
+
+  // Non-suppressed fallback: center column only, skip recommendation carousels
   try {
-    const allOffscreen = await page.locator('.a-price .a-offscreen').allTextContents();
+    const allOffscreen = await page.locator(
+      '#centerCol .a-price:not(.a-carousel-container .a-price) .a-offscreen'
+    ).allTextContents();
     for (const text of allOffscreen) {
       const price = parsePrice(text);
       if (price && price > 5 && price < 9999) {
@@ -829,21 +898,25 @@ async function extractPrice(page) {
     }
   } catch (e) { /* no price found */ }
 
-  // Fallback 2: try innerText of .a-price (visible price without .a-offscreen)
-  try {
-    const priceElem = page.locator('.a-price').first();
-    if (await priceElem.isVisible({ timeout: 1000 })) {
-      const text = await priceElem.innerText();
-      const price = parsePrice(text);
-      if (price && price > 0 && price < 9999) {
-        return { price, raw: text.trim() };
-      }
-    }
-  } catch (e) { /* no price found */ }
-
-  // Fallback 3: regex search in page content for price patterns
+  // Last resort regex — still scoped to centerCol, prefer multi-locale "from" pattern
   try {
     const bodyText = await page.locator('#centerCol').innerText();
+    const fromPatterns = [
+      /\d+\s+Optionen\s+ab\s+([\d][\d.,]*)\s*€/i,
+      /\d+\s+options?\s+from\s+[€£$]?\s*([\d][\d.,]*)/i,
+      /\d+\s+opciones?\s+desde\s+[€]?\s*([\d][\d.,]*)/i,
+      /\d+\s+opzioni\s+a\s+partire\s+da\s+([\d][\d.,]*)/i,
+      /\d+\s+opties\s+vanaf\s+€?\s*([\d][\d.,]*)/i,
+      /\d+\s+options?\s+à\s+partir\s+de\s+([\d][\d.,]*)/i,
+    ];
+    for (const pattern of fromPatterns) {
+      const fromMatch = bodyText.match(pattern);
+      if (!fromMatch) continue;
+      const price = parsePrice(fromMatch[1]);
+      if (price && price > 5 && price < 9999) {
+        return { price, raw: fromMatch[0] };
+      }
+    }
     const priceMatch = bodyText.match(/[€£$]\s*(\d{1,3}[.,]\d{2})/);
     if (priceMatch) {
       const price = parsePrice(priceMatch[0]);
