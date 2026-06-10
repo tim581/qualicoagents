@@ -92,6 +92,11 @@ const SCRIPT_TASKS = {
   'inventory-sync-forceget':   'inventory-sync-forceget.js',
   'inventory-sync-kamps':      'inventory-sync-kamps.js',
   'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
+  'forceget-inventory':        'forceget-inventory.js',
+  'glc-inventory':             'glc-inventory.js',
+  'kamps-inventory':           'kamps-inventory.js',
+  'mintsoft-inventory':        'mintsoft-inventory.js',
+  'sync-inventory':            'sync-inventory.js',
   'price-scrape':              'price-monitor-scraper.js',
   'bol-price-update':          'bol-price-update.js',
   'bol-cases-scrape':          'bol-cases-scrape.js',
@@ -108,40 +113,50 @@ const STORAGE_STATE_MAP = {
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
+// Never overwrite local-only scripts until pushed to qualicoagents
+const NEVER_DOWNLOAD_FROM_GITHUB = new Set(['price-monitor-scraper.js']);
 
 function downloadFromGitHub(scriptName) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     const url = GITHUB_RAW + scriptName;
     const filePath = path.join(__dirname, scriptName);
+    let settled = false;
+    const finish = (msg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (msg) console.log(msg);
+      resolve();
+    };
+
+    const timer = setTimeout(() => finish(`⚠️ GitHub download timed out — using local ${scriptName}`), 15000);
     console.log(`📥 Downloading latest ${scriptName} from GitHub...`);
-    https.get(url, (res) => {
-      if (res.statusCode === 301 || res.statusCode === 302) {
-        https.get(res.headers.location, (res2) => {
-          const chunks = [];
-          res2.on('data', (d) => chunks.push(d));
-          res2.on('end', () => {
-            fs.writeFileSync(filePath, Buffer.concat(chunks));
-            const firstLine = fs.readFileSync(filePath, 'utf-8').split('\n')[0];
-            console.log(`✅ Downloaded: ${firstLine}`);
-            resolve();
-          });
-        }).on('error', reject);
-        return;
-      }
-      if (res.statusCode === 404) {
-        console.log(`⚠️ Script not found on GitHub: ${scriptName}`);
-        resolve();
-        return;
-      }
+
+    const saveResponse = (res) => {
       const chunks = [];
       res.on('data', (d) => chunks.push(d));
       res.on('end', () => {
         fs.writeFileSync(filePath, Buffer.concat(chunks));
         const firstLine = fs.readFileSync(filePath, 'utf-8').split('\n')[0];
-        console.log(`✅ Downloaded: ${firstLine}`);
-        resolve();
+        finish(`✅ Downloaded: ${firstLine}`);
       });
-    }).on('error', reject);
+      res.on('error', (e) => finish(`⚠️ GitHub download failed, using local: ${e.message}`));
+    };
+
+    const req = https.get(url, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        https.get(res.headers.location, saveResponse).on('error', (e) =>
+          finish(`⚠️ GitHub download failed, using local: ${e.message}`)
+        );
+        return;
+      }
+      if (res.statusCode === 404) {
+        finish(`⚠️ Script not found on GitHub: ${scriptName}`);
+        return;
+      }
+      saveResponse(res);
+    });
+    req.on('error', (e) => finish(`⚠️ GitHub download failed, using local: ${e.message}`));
   });
 }
 
@@ -179,10 +194,18 @@ async function resolveScript(task) {
 async function executeScriptTask(task, scriptName) {
   const scriptPath = path.join(__dirname, scriptName);
   
-  try {
-    await downloadFromGitHub(scriptName);
-  } catch (e) {
-    console.log(`⚠️ GitHub download failed, using local: ${e.message}`);
+  const localSrc = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf8') : '';
+  const useLocal = process.env.USE_LOCAL_SCRIPTS === '1'
+    || NEVER_DOWNLOAD_FROM_GITHUB.has(scriptName)
+    || localSrc.includes('listing_content_puzzlup');
+  if (useLocal) {
+    console.log(`   📂 Using local ${scriptName} (skip GitHub sync)`);
+  } else {
+    try {
+      await downloadFromGitHub(scriptName);
+    } catch (e) {
+      console.log(`⚠️ GitHub download failed, using local: ${e.message}`);
+    }
   }
   
   if (!fs.existsSync(scriptPath)) {
@@ -262,6 +285,12 @@ async function executeScriptTask(task, scriptName) {
     
     const env = { ...process.env };
     env.BROWSER_TASK_ID = String(task.id);
+
+    // Always use real Playwright browsers (not Cursor sandbox cache paths).
+    if (process.env.LOCALAPPDATA) {
+      const browsersPath = path.join(process.env.LOCALAPPDATA, 'ms-playwright');
+      if (fs.existsSync(browsersPath)) env.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+    }
     
     // Pass task-specific env variables
     if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
@@ -454,7 +483,11 @@ async function pollTasks() {
 }
 
 async function main() {
-  console.log('🎬 Browser Task Executor v3.4 (stealth)');
+  console.log('══════════════════════════════════════════════════');
+  console.log('  🎬 Playwright Task Executor v3.4 (stealth)');
+  console.log('  ✅ Running — polling Supabase every 30s');
+  console.log('  🖥️  Chromium opens when a task is queued');
+  console.log('══════════════════════════════════════════════════');
   console.log(`📍 Supabase: ${SUPABASE_URL}`);
   console.log('📋 Task types:', Object.keys(SCRIPT_TASKS).join(', '));
   console.log('');
