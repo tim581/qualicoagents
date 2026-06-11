@@ -146,12 +146,12 @@ Use the Asana Full API connection (`conn_0xmnk6abnh2jpa58hmmc`, tool `remote_htt
     "name": "🍪 Bol.com cookies vernieuwen — scraper geblokkeerd",
     "notes": "De Playwright scraper kon niet inloggen op partner.bol.com.\n\nFout: {error_message}\n\nStappen:\n1. Open Chrome en log in op https://partner.bol.com\n2. Gebruik Cookie-Editor extensie → exporteer cookies als JSON\n3. Plak de JSON in Tasklet Customer Svc chat\n4. Agent converteert en deployt automatisch\n\nDatum: {datum}",
     "projects": ["1211747104695838"],
-    "due_on": "{morgen_datum_YYYY-MM-DD}"
+    "due_on": "{vandaag_datum_YYYY-MM-DD}"
   }
 }
 ```
 
-Set `Content-Type: application/json` via `extraHeaders`. Due date = tomorrow.
+Set `Content-Type: application/json` via `extraHeaders`. Due date = today (current date when task runs).
 
 After posting to Slack (and creating the Asana task if needed), return a brief summary as your final message (for internal logging only — not sent to anyone):
 - How many cases processed
