@@ -1,7 +1,8 @@
 /**
- * price-monitor-scraper.js  v1.0
+ * price-monitor-scraper.js  v1.1
  *
  * Standalone Playwright script for weekly Puzzlup price & Buy Box monitoring.
+ * v1.1: also scrapes listing titles, bullets & descriptions → listing_content_puzzlup.
  * Scrapes ~62 product variants across 11 sales channels:
  *   - 10 Amazon marketplaces (Playwright browser automation)
  *   - Bol.com (HTTP scraping)
@@ -25,6 +26,15 @@ require('dotenv').config();
 const path = require('path');
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
+const {
+  extractAmazonListingContent,
+  extractBolListingContent,
+  extractWebshopListingContent,
+  pushContentRecord,
+  buildContentDiscrepancies,
+  writeListingContentToSupabase,
+  writeContentDiscrepanciesToSupabase,
+} = require('./listing-content-helpers');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const RUN_ID = `price_${Date.now()}`;
@@ -257,8 +267,15 @@ function isInternationalShipping(pageText) {
 // ── RESULTS COLLECTOR ────────────────────────────────────────────────────────
 
 const results = [];     // Collected price data
+const contentResults = []; // Listing titles, bullets, descriptions
 const alerts = [];      // Buy Box alerts
 const priceChanges = []; // Price changes vs last scrape
+
+const ALL_CHANNELS = {
+  ...CHANNELS,
+  33: { name: 'BOL.COM' },
+  36: { name: 'WEBSHOP' },
+};
 
 // ── DEBUG LOGGING ────────────────────────────────────────────────────────────
 
@@ -1128,7 +1145,19 @@ async function scrapeCurrentVariant(page, channelId, variant, channel) {
     });
   }
 
-  console.log(`    ✅ ${variant.name}: ${raw || 'NO PRICE'} | BB: ${buyboxSeller} | ★${rating || '-'} | ${inStock ? 'In Stock' : 'OOS'}`);
+  const listingContent = await extractAmazonListingContent(page);
+  pushContentRecord(contentResults, RUN_ID, {
+    product_id: variant.productId,
+    channel_id: channelId,
+    channel_name: channel.name,
+    variant_name: variant.name,
+    listing_url: listingUrl,
+    asin: variant.asin,
+    scrape_source: 'amazon',
+    ...listingContent,
+  });
+
+  console.log(`    ✅ ${variant.name}: ${raw || 'NO PRICE'} | BB: ${buyboxSeller} | ★${rating || '-'} | ${inStock ? 'In Stock' : 'OOS'} | title: ${(listingContent.listing_title || '').slice(0, 40) || '—'}`);
   return result;
 }
 
@@ -1373,6 +1402,18 @@ async function scrapeBolcom() {
         last_updated: new Date().toISOString(),
       });
 
+      const bolContent = extractBolListingContent(html, product.name);
+      pushContentRecord(contentResults, RUN_ID, {
+        product_id: product.productId,
+        channel_id: 33,
+        channel_name: 'BOL.COM',
+        variant_name: product.name,
+        listing_url: product.url,
+        asin: null,
+        scrape_source: 'bol',
+        ...bolContent,
+      });
+
       console.log(`    ✅ ${product.name}: €${price || 'N/A'} | ${inStock ? 'In Stock' : 'OOS'}`);
 
     } catch (err) {
@@ -1481,6 +1522,31 @@ async function scrapeWebshop() {
           listing_url: productUrl,
           asin: null,
           last_updated: new Date().toISOString(),
+        });
+
+        let webContent = { listing_title: mapped.name, bullet_points: [], description: '' };
+        try {
+          const prodResp = await fetch(productUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+              'Accept': 'text/html,application/xhtml+xml',
+              'Accept-Language': 'en-GB,en;q=0.9,nl;q=0.8',
+            },
+          });
+          if (prodResp.ok) {
+            webContent = extractWebshopListingContent(await prodResp.text());
+          }
+        } catch (e) { /* content optional */ }
+
+        pushContentRecord(contentResults, RUN_ID, {
+          product_id: mapped.productId,
+          channel_id: 36,
+          channel_name: 'WEBSHOP',
+          variant_name: mapped.name,
+          listing_url: productUrl,
+          asin: null,
+          scrape_source: 'webshop',
+          ...webContent,
         });
 
         console.log(`    ✅ ${mapped.name}: €${price}`);
@@ -1702,7 +1768,7 @@ async function writeToSharedKnowledge() {
 
 async function main() {
   console.log('\n╔════════════════════════════════════════════════════════════════╗');
-  console.log('║     📊 PUZZLUP PRICE MONITOR — Playwright Scraper v1.0      ║');
+  console.log('║     📊 PUZZLUP PRICE MONITOR — Playwright Scraper v1.1      ║');
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log(`\n⏰ Started: ${new Date().toISOString()}`);
 
@@ -1715,7 +1781,7 @@ async function main() {
   const userDataDir = path.join(__dirname, '.browser-data');
   console.log(`\n🚀 Launching browser (persistent context: ${userDataDir})...`);
   const context = await chromium.launchPersistentContext(userDataDir, {
-    headless: false, // Use visible browser on Tim's PC
+    headless: true,
     args: ['--disable-blink-features=AutomationControlled'],
     viewport: { width: 1920, height: 1080 },
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
@@ -1750,6 +1816,11 @@ async function main() {
     // Step 7: Write to Supabase
     await writeToSupabase();
 
+    // Step 7.5: Write listing content + discrepancies (v1.1)
+    const contentDiscrepancies = buildContentDiscrepancies(contentResults, RUN_ID, ALL_CHANNELS);
+    await writeListingContentToSupabase(supabase, contentResults, dbLog);
+    await writeContentDiscrepanciesToSupabase(supabase, contentDiscrepancies, dbLog);
+
     // Step 8: Update margins
     await updateMargins();
 
@@ -1761,6 +1832,8 @@ async function main() {
     console.log('║                        📊 SUMMARY                            ║');
     console.log('╚════════════════════════════════════════════════════════════════╝');
     console.log(`  Total variants scraped: ${results.length}`);
+    console.log(`  Listing content records: ${contentResults.length}`);
+    console.log(`  Content discrepancies: ${contentDiscrepancies.length}`);
     console.log(`  Price changes: ${priceChanges.length}`);
     console.log(`  Buy Box alerts: ${alerts.length}`);
     console.log(`  Channels: ${new Set(results.map(r => r.channel_id)).size}`);
@@ -1794,6 +1867,8 @@ async function main() {
       success: true,
       data: {
         total_scraped: results.length,
+        content_records: contentResults.length,
+        content_discrepancies: contentDiscrepancies.length,
         price_changes: priceChanges.length,
         buybox_alerts: alerts.length,
         channels: new Set(results.map(r => r.channel_id)).size,
@@ -1806,7 +1881,7 @@ async function main() {
   } catch (err) {
     console.error(`\n❌ FATAL: ${err.message}`);
     await dbLog('fatal', 'error', err.message);
-    try { await browser.close(); } catch (e) { /* already closed */ }
+    try { await context.close(); } catch (e) { /* already closed */ }
     return { success: false, error: err.message };
   }
 }
