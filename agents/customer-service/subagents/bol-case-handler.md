@@ -136,14 +136,7 @@ _Case ID: {caseId} | {datum}_
 
 **If no new cases found**, post nothing — no Slack message needed.
 
-**If the scrape failed**, post a short error message to the same channel:
-```
-@Karlien — ⚠️ Bol.com klantvragen check mislukt ({datum})
-Fout: {error_message}
-Actie nodig: cookies waarschijnlijk verlopen — Tim moet bol-storage-state.json vernieuwen.
-```
-
-**If the scrape failed due to cookies/session**, also create an Asana task to alert Tim:
+**If the scrape failed**, create an Asana task to alert Tim (no Slack message needed on failure):
 
 Use the Asana Full API connection (`conn_0xmnk6abnh2jpa58hmmc`, tool `remote_http_call`) to POST to `https://app.asana.com/api/1.0/tasks`:
 
@@ -170,5 +163,5 @@ After posting to Slack (and creating the Asana task if needed), return a brief s
 - The Playwright executor runs on Tim's local PC and is always on
 - If the task stays pending for >5 min, it likely means the executor is not running
 - Cookie expiry will show as a failed task with "Session expired" in the error
-- When cookies expire: post Slack error + create Asana task in "🤖 AI & Tech" project
+- When cookies expire: create Asana task only — do NOT post to Slack
 - Asana project GID for "🤖 AI & Tech": `1211747104695838` (workspace: `1200582454226194` / qualico.be)
