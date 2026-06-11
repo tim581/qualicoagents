@@ -143,13 +143,32 @@ Fout: {error_message}
 Actie nodig: cookies waarschijnlijk verlopen — Tim moet bol-storage-state.json vernieuwen.
 ```
 
-After posting to Slack, return a brief summary as your final message (for internal logging only — not sent to anyone):
+**If the scrape failed due to cookies/session**, also create an Asana task to alert Tim:
+
+Use the Asana Full API connection (`conn_0xmnk6abnh2jpa58hmmc`, tool `remote_http_call`) to POST to `https://app.asana.com/api/1.0/tasks`:
+
+```json
+{
+  "data": {
+    "name": "🍪 Bol.com cookies vernieuwen — scraper geblokkeerd",
+    "notes": "De Playwright scraper kon niet inloggen op partner.bol.com.\n\nFout: {error_message}\n\nStappen:\n1. Open Chrome en log in op https://partner.bol.com\n2. Gebruik Cookie-Editor extensie → exporteer cookies als JSON\n3. Plak de JSON in Tasklet Customer Svc chat\n4. Agent converteert en deployt automatisch\n\nDatum: {datum}",
+    "projects": ["1211747104695838"],
+    "due_on": "{morgen_datum_YYYY-MM-DD}"
+  }
+}
+```
+
+Set `Content-Type: application/json` via `extraHeaders`. Due date = tomorrow.
+
+After posting to Slack (and creating the Asana task if needed), return a brief summary as your final message (for internal logging only — not sent to anyone):
 - How many cases processed
 - How many Slack messages sent
+- Whether an Asana task was created
 - Any errors
 
 ### Important Notes
 - The Playwright executor runs on Tim's local PC and is always on
 - If the task stays pending for >5 min, it likely means the executor is not running
 - Cookie expiry will show as a failed task with "Session expired" in the error
-- When cookies expire, post the error message to Slack so Karlien can alert Tim
+- When cookies expire: post Slack error + create Asana task in "🤖 AI & Tech" project
+- Asana project GID for "🤖 AI & Tech": `1211747104695838` (workspace: `1200582454226194` / qualico.be)
