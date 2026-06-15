@@ -85,6 +85,7 @@ const SCRIPT_TASKS = {
   'forecast-verify':           'flieber-forecast-verifier.js',
   'po-simulation':             'flieber-replenishment-simulator.js',
   'to-simulation':             'flieber-replenishment-simulator.js',
+  'inventory-forecast-sync':   'flieber-inventory-forecast-sync.js',
   'corax-stock-export':        'corax-wms-stock-export.js',
   'mintsoft-product-export':   'mintsoft-product-export.js',
   'forceget-inventory-export': 'forceget-inventory-export.js',
@@ -94,12 +95,15 @@ const SCRIPT_TASKS = {
   'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
   'forceget-inventory':        'forceget-inventory.js',
   'glc-inventory':             'glc-inventory.js',
+  'glc_inventory':             'glc-inventory.js',
   'kamps-inventory':           'kamps-inventory.js',
   'mintsoft-inventory':        'mintsoft-inventory.js',
   'sync-inventory':            'sync-inventory.js',
   'price-scrape':              'price-monitor-scraper.js',
   'bol-price-update':          'bol-price-update.js',
   'bol-cases-scrape':          'bol-cases-scrape.js',
+  'amazon-buyer-messages':     'amazon-buyer-messages.js',
+  'amz-price-update':          'amz-price-update.js',
 };
 
 
@@ -108,13 +112,14 @@ const STORAGE_STATE_MAP = {
   'vanthiel_corax_wms': 'corax-wms-storage-state.json',
   'mintsoft_login': 'mintsoft-storage-state.json',
   'forceget_login': 'forceget-storage-state.json',
+  'glc_wms': 'glc-storage-state.json',
   'sellerboard_login': 'sellerboard-storage-state.json',
   'flieber_login': 'flieber-storage-state.json',
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
 // Never overwrite local-only scripts until pushed to qualicoagents
-const NEVER_DOWNLOAD_FROM_GITHUB = new Set(['price-monitor-scraper.js']);
+const NEVER_DOWNLOAD_FROM_GITHUB = new Set(['price-monitor-scraper.js', 'amz-price-update.js']);
 
 function downloadFromGitHub(scriptName) {
   return new Promise((resolve) => {
@@ -314,6 +319,20 @@ async function executeScriptTask(task, scriptName) {
         env.TASK_ACTIONS = JSON.stringify(stringActions);
       }
     }
+
+    // Amazon price update: pass object actions as TASK_PARAMS (same pattern as bol-price-update loadTask)
+    if (task.task_type === 'amz-price-update' && Array.isArray(task.actions) && task.actions.length > 0) {
+      const objAction = task.actions.find((a) => typeof a === 'object' && a !== null && (a.asin || a.channel_name));
+      if (objAction) {
+        env.TASK_PARAMS = JSON.stringify(objAction);
+        console.log(`   🏷️ TASK_PARAMS = ${env.TASK_PARAMS.substring(0, 200)}`);
+      }
+    }
+    if (task.task_type === 'amz-price-update') {
+      env.AMAZON_NO_PROXY = env.AMAZON_NO_PROXY || '1';
+      env.AMAZON_PRICE_DIRECT = env.AMAZON_PRICE_DIRECT || '1';
+      env.AMAZON_PRICE_SKIP_CHANNELS = env.AMAZON_PRICE_SKIP_CHANNELS || 'AMZ BE';
+    }
     
     try {
       const output = execSync(`node "${scriptPath}"`, {
@@ -332,6 +351,8 @@ async function executeScriptTask(task, scriptName) {
         path.join(__dirname, 'mintsoft-product-data.json'),
         path.join(__dirname, 'forceget-inventory-data.json'),
         path.join(__dirname, 'sellerboard-pl-data.json'),
+        path.join(__dirname, 'bol-cases-scrape-data.json'),
+        path.join(__dirname, 'amazon-buyer-messages-data.json'),
       ];
       
       for (const f of possibleFiles) {
