@@ -1,159 +1,195 @@
-# Cursor Briefing: Channel Name SSOT Fix
+# Cursor Briefing: Channel & Product SSOT Fix
 
-**Date**: 2026-06-16  
-**Priority**: HIGH — blocks BOL.COM pricing visibility in Vercel margins app  
-**Impact**: `price_targets_ready` view returns empty for BOL.COM; Vercel margins page shows no BOL set points
+**Date**: 2026-06-16
+**Priority**: HIGH — Vercel margins app shows empty set points for BOL.COM + all channels can't JOIN properly
+**Scope**: Database schema + View rebuild + Vercel app
 
 ---
 
-## Problem
+## Problem Summary
 
-`puzzlup_channels` is the SSOT for channel names and IDs. Most tables correctly link via `channel_id` FK. However, two tables use **text-only** channel names with **no FK** — and their BOL channel name doesn't match the SSOT.
+Two systemic issues prevent the margins app from showing price targets:
 
-### Channel Name Mismatch
+### Issue 1: Channel Name Mismatch
+`puzzlup_channels` is SSOT for channel names, but two tables use different names:
 
-| Source | BOL channel name | Links via |
+| Table | BOL channel value | SSOT (`puzzlup_channels`) |
 |---|---|---|
-| `puzzlup_channels` (SSOT) | `BOL.COM` (id=33) | — |
-| `puzzlup_margins` | `BOL.COM` ✅ | `channel_id` FK + redundant `channel` text |
-| `price_targets` | `BOL.COM NL` ❌ | text only (`channel_name`), no FK |
-| `product_channel_content` | `BOL.COM NL` ❌ | text only (`channel`), no FK |
+| `price_targets.channel_name` | `BOL.COM NL` ❌ | `BOL.COM` |
+| `product_channel_content.channel` | `BOL.COM NL` ❌ | `BOL.COM` |
 
-### Additional Issue: `price_targets_ready` View
+All other tables JOIN via `channel_id` FK → no mismatch.
 
-This view has 3 filters that **exclude all BOL.COM products**:
-1. `pt.asin IS NOT NULL` — BOL products have no ASIN
-2. `pcc.fulfillment = 'FBA'` — BOL uses LvB, not FBA
-3. Text JOIN `pcc.channel = pt.channel_name` — fails due to name mismatch
+### Issue 2: No ID-based JOINs Between price_targets and margins_connected
 
----
+- `margins_connected` only exposes text columns: `product_name` ("Puzzlup MAT BLACK GIFT 1000"), `channel` ("AMZ DE"), `margin_id` (row PK)
+- `price_targets` uses marketplace listing titles: "1000 Puzzelmat Gift", "Sorting Trays Noir 1500", etc.
+- **Product names NEVER match** → all JOINs return NULL → empty set points in app
 
-## Tables Correctly Linked (no changes needed)
-
-These all use `channel_id` FK → `puzzlup_channels.id`:
-- `puzzlup_margins` ✅
-- `puzzlup_sales_actuals` ✅
-- `Puzzlup_sales_Forecast` ✅
-- `puzzlup_pricing_adjustments` ✅
-- `flieber_product_skus` ✅
-- `puzzlup_channel_products` ✅
-- `amazon_monitor_puzzlup` ✅
-- `amazon_monitor_fba_puzzlup` ✅
-- `amazon_monitor_fbm_puzzlup` ✅
+The underlying `puzzlup_margins` table HAS `product_id` and `channel_id` FKs — the view just doesn't expose them.
 
 ---
 
-## Fix Required
+## Fix Plan (5 Steps)
 
-### Step 1: Add `channel_id` FK to broken tables
+### Step 1: Expose `product_id` and `channel_id` in `margins_connected` view
 
-**`price_targets`** — add `channel_id` integer column with FK to `puzzlup_channels.id`:
+Add these two columns to the view's SELECT list from the base CTE:
+
 ```sql
-ALTER TABLE price_targets ADD COLUMN channel_id integer REFERENCES puzzlup_channels(id);
+-- In the base CTE, these already exist:
+--   m.product_id  (from puzzlup_margins)
+--   m.channel_id  (from puzzlup_margins)
+-- Just add them to the final SELECT:
 
--- Populate from puzzlup_channels using best-effort text match
+-- Add after "margin_id," in the final SELECT:
+--   product_id,
+--   channel_id,
+```
+
+The view already computes from `puzzlup_margins m JOIN Puzzlup_Product_Info p ON p.id = m.product_id JOIN puzzlup_channels ch ON ch.id = m.channel_id`. Just expose them.
+
+### Step 2: Add `channel_id` FK to `price_targets`
+
+```sql
+-- Add column
+ALTER TABLE price_targets ADD COLUMN channel_id INTEGER REFERENCES puzzlup_channels(id);
+
+-- Backfill from puzzlup_channels using channel_name
 UPDATE price_targets pt
-SET channel_id = c.id
-FROM puzzlup_channels c
-WHERE c.channel_name = pt.channel_name;
+SET channel_id = ch.id
+FROM puzzlup_channels ch
+WHERE ch.channel_name = pt.channel_name;
 
 -- Handle BOL.COM NL → BOL.COM mismatch
 UPDATE price_targets
-SET channel_id = 33, channel_name = 'BOL.COM'
+SET channel_id = (SELECT id FROM puzzlup_channels WHERE channel_name = 'BOL.COM'),
+    channel_name = 'BOL.COM'
 WHERE channel_name = 'BOL.COM NL';
 ```
 
-**`product_channel_content`** — add `channel_id` integer column with FK to `puzzlup_channels.id`:
+### Step 3: Fix `product_channel_content` channel name
+
 ```sql
-ALTER TABLE product_channel_content ADD COLUMN channel_id integer REFERENCES puzzlup_channels(id);
-
--- Populate from puzzlup_channels
-UPDATE product_channel_content pcc
-SET channel_id = c.id
-FROM puzzlup_channels c
-WHERE c.channel_name = pcc.channel;
-
--- Handle BOL.COM NL → BOL.COM mismatch
 UPDATE product_channel_content
-SET channel_id = 33, channel = 'BOL.COM'
+SET channel = 'BOL.COM'
 WHERE channel = 'BOL.COM NL';
+
+-- Also add channel_id FK if not present
+ALTER TABLE product_channel_content ADD COLUMN IF NOT EXISTS channel_id INTEGER REFERENCES puzzlup_channels(id);
+
+UPDATE product_channel_content pcc
+SET channel_id = ch.id
+FROM puzzlup_channels ch
+WHERE ch.channel_name = pcc.channel;
 ```
 
-### Step 2: Update text values to match SSOT
+### Step 4: Rebuild `price_targets_ready` view
 
-After populating `channel_id`, ensure all text `channel` / `channel_name` fields match `puzzlup_channels.channel_name`. The only known mismatch is `BOL.COM NL` → `BOL.COM` (handled above).
+Current view has 3 filters that exclude BOL.COM:
+- `pt.asin IS NOT NULL` — BOL products have no ASIN
+- `pcc.fulfillment = 'FBA'` — BOL uses LvB
+- Text-based JOIN on channel name (mismatched)
 
-### Step 3: Rebuild `price_targets_ready` view
-
-The view must:
-1. JOIN via `channel_id` instead of text matching
-2. **Remove** the `asin IS NOT NULL` filter (BOL products have no ASIN)
-3. **Remove** the `fulfillment = 'FBA'` filter (BOL uses LvB)
-4. Use `COALESCE(pt.asin, pt.offer_ref)` as the product identifier
+New view should JOIN via `product_id` + `channel_id`:
 
 ```sql
 CREATE OR REPLACE VIEW price_targets_ready AS
 SELECT
     pt.id,
     pt.product_id,
+    pt.channel_id,
     pt.product_name,
     pt.channel_name,
-    pt.channel_id,
+    pt.ean,
     pt.asin,
     pt.offer_ref,
-    pt.ean,
     pt.currency,
-    pt.target_price AS sale_price_target,
-    pt.regular_price,
-    pcc.list_price,
+    pt.target_price,
     pt.sale_start_date,
     pt.sale_end_date,
     pt.status,
     pt.target_set_at,
-    pt.target_set_by
+    pt.target_set_by,
+    pcc.list_price AS regular_price,
+    pcc.fulfillment,
+    pi.sku AS product_sku
 FROM price_targets pt
 LEFT JOIN product_channel_content pcc
     ON pcc.product_id = pt.product_id
     AND pcc.channel_id = pt.channel_id
-WHERE pt.status IN ('pending', 'synced', 'failed');
+LEFT JOIN "Puzzlup_Product_Info" pi
+    ON pi.id = pt.product_id
+WHERE pt.status = 'pending';
+-- NO asin/fulfillment filters — works for both Amazon AND BOL
 ```
 
-### Step 4: Update Vercel app `MarginsModule.tsx`
+### Step 5: Update Vercel Margins App (`MarginsModule.tsx`)
 
-If the margins page JOINs `margins_connected` to `price_targets` via text channel name, update to JOIN via `channel_id` instead:
+The margins page must JOIN `price_targets` to `margins_connected` via `product_id` + `channel_id` (NOT text names):
 
 ```typescript
-// Before (text match — breaks on BOL.COM vs BOL.COM NL):
-// .eq('channel_name', row.channel)
+// When fetching set points alongside margins:
+// JOIN on product_id + channel_id, not product_name + channel text
 
-// After (proper FK join):
-// .eq('channel_id', row.channel_id)
+// Option A: Separate query, match client-side by product_id + channel_id
+const { data: targets } = await supabase
+  .from('price_targets')
+  .select('product_id, channel_id, target_price, status')
+  .eq('status', 'pending');
+
+// Then match: margin.product_id === target.product_id && margin.channel_id === target.channel_id
+
+// Option B: Database view that pre-joins them (preferred)
 ```
-
-### Step 5: Remove redundant `channel` text from `puzzlup_margins` (optional, low priority)
-
-`puzzlup_margins` has both `channel_id` (FK) and `channel` (text). The text column is redundant. Consider:
-- Removing it from the table
-- Or at minimum, keeping it in sync via a trigger
 
 ---
 
 ## Verification
 
-After applying, verify:
+After applying all fixes:
+
 ```sql
--- Should return BOL.COM rows now
-SELECT * FROM price_targets_ready WHERE channel_name = 'BOL.COM' LIMIT 5;
+-- This should return rows for ALL channels including BOL.COM:
+SELECT mc.product_name, mc.channel, mc.product_id, mc.channel_id,
+       pt.target_price, pt.status
+FROM margins_connected mc
+LEFT JOIN price_targets pt
+    ON pt.product_id = mc.product_id
+    AND pt.channel_id = mc.channel_id
+    AND pt.status = 'pending'
+WHERE mc.channel = 'BOL.COM'
+LIMIT 10;
 
--- Should show no orphaned channel names
-SELECT DISTINCT pt.channel_name 
-FROM price_targets pt 
-LEFT JOIN puzzlup_channels c ON pt.channel_id = c.id 
-WHERE c.id IS NULL;
-
--- Same for product_channel_content
-SELECT DISTINCT pcc.channel 
-FROM product_channel_content pcc 
-LEFT JOIN puzzlup_channels c ON pcc.channel_id = c.id 
-WHERE c.id IS NULL;
+-- And for Amazon (should still work):
+SELECT mc.product_name, mc.channel, pt.target_price
+FROM margins_connected mc
+LEFT JOIN price_targets pt
+    ON pt.product_id = mc.product_id
+    AND pt.channel_id = mc.channel_id
+    AND pt.status = 'pending'
+WHERE mc.channel = 'AMZ DE'
+LIMIT 10;
 ```
+
+---
+
+## Tables Already Properly Linked (No Fix Needed)
+
+These 9 tables use `channel_id` FK → correct:
+- `puzzlup_margins` ✅
+- `puzzlup_sales_actuals` ✅
+- `Puzzlup_sales_Forecast` ✅
+- `puzzlup_pricing_adjustments` ✅
+- `flieber_product_skus` ✅
+- `puzzlup_channel_products` ✅
+- `amazon_monitor_*` (3 tables) ✅
+
+---
+
+## Key Principle Going Forward
+
+**ALL table JOINs must use `product_id` + `channel_id` integer FKs.**
+Text-based `product_name` and `channel_name` are display labels only — never JOIN on them.
+`puzzlup_channels` = SSOT for channel names/IDs.
+`Puzzlup_Product_Info` = SSOT for product names/IDs.
