@@ -18,7 +18,7 @@ INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, status, priori
 VALUES (
   'customer-service',
   'amazon-buyer-messages',
-  'https://sellercentral.amazon.co.uk/messaging/inbox',
+  'https://sellercentral.amazon.de/messaging/inbox',
   '[]'::jsonb,
   'pending',
   1
@@ -59,7 +59,7 @@ New messages are also POSTed to the Tasklet CS webhook automatically by the scri
 
 ### Cookie refresh
 
-If login fails, export cookies from **sellercentral.amazon.co.uk** (logged in, Messages inbox open) via Cookie-Editor → save as `amazon-cookies-raw.json` in repo root → run:
+If login fails, export cookies from **sellercentral.amazon.de** (logged in, Messages inbox open) via Cookie-Editor → save as `amazon-cookies-raw.json` in repo root → run:
 
 ```
 node scripts/convert-amazon-cookies.js

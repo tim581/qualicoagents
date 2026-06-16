@@ -106,6 +106,42 @@ const SCRIPT_TASKS = {
   'amz-price-update':          'amz-price-update.js',
 };
 
+// Standalone scripts write JSON here; executor must match by task_type (not first-recent-file)
+const TASK_OUTPUT_FILES = {
+  'corax-stock-export':        'corax-stock-data.json',
+  'mintsoft-product-export':   'mintsoft-product-data.json',
+  'forceget-inventory-export': 'forceget-inventory-data.json',
+  'sellerboard-pl-export':     'sellerboard-pl-data.json',
+  'bol-cases-scrape':          'bol-cases-scrape-data.json',
+  'amazon-buyer-messages':     'amazon-buyer-messages-data.json',
+};
+
+function parseStdoutJson(output) {
+  const lines = output.trim().split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line.startsWith('{')) continue;
+    try {
+      return JSON.parse(line);
+    } catch {
+      /* keep scanning */
+    }
+  }
+  return null;
+}
+
+function readRecentJsonFile(filePath, maxAgeMs = 600000) {
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const stat = fs.statSync(filePath);
+    if (Date.now() - stat.mtimeMs > maxAgeMs) return null;
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } catch (e) {
+    console.log(`⚠️ Could not parse ${filePath}: ${e.message}`);
+    return null;
+  }
+}
+
 
 // ── COOKIE/STORAGE STATE MAPPING ──────────────────────────────────────────────
 const STORAGE_STATE_MAP = {
@@ -330,7 +366,6 @@ async function executeScriptTask(task, scriptName) {
     }
     if (task.task_type === 'amz-price-update') {
       env.AMAZON_NO_PROXY = env.AMAZON_NO_PROXY || '1';
-      env.AMAZON_PRICE_DIRECT = env.AMAZON_PRICE_DIRECT || '1';
       env.AMAZON_PRICE_SKIP_CHANNELS = env.AMAZON_PRICE_SKIP_CHANNELS || 'AMZ BE';
     }
     
@@ -344,28 +379,33 @@ async function executeScriptTask(task, scriptName) {
       });
       console.log(output);
       
-      // ── Detect JSON output files ──
+      // ── Read task-specific JSON output (never cross-contaminate bol ↔ amazon) ──
       let jsonData = null;
-      const possibleFiles = [
-        path.join(__dirname, 'corax-stock-data.json'),
-        path.join(__dirname, 'mintsoft-product-data.json'),
-        path.join(__dirname, 'forceget-inventory-data.json'),
-        path.join(__dirname, 'sellerboard-pl-data.json'),
-        path.join(__dirname, 'bol-cases-scrape-data.json'),
-        path.join(__dirname, 'amazon-buyer-messages-data.json'),
-      ];
-      
-      for (const f of possibleFiles) {
-        if (fs.existsSync(f)) {
-          try {
-            const stat = fs.statSync(f);
-            if (Date.now() - stat.mtimeMs < 600000) {
-              jsonData = JSON.parse(fs.readFileSync(f, 'utf-8'));
-              console.log(`📄 Found output: ${path.basename(f)} (${(stat.size/1024).toFixed(0)}KB)`);
-              break;
-            }
-          } catch (e) {
-            console.log(`⚠️ Could not parse ${f}: ${e.message}`);
+      const outputFile = TASK_OUTPUT_FILES[task.task_type];
+      if (outputFile) {
+        const filePath = path.join(__dirname, outputFile);
+        jsonData = readRecentJsonFile(filePath);
+        if (jsonData) {
+          console.log(`📄 Task output: ${outputFile} (task ${task.id}, type ${task.task_type})`);
+        }
+      }
+
+      // Fallback: last JSON line on stdout (amazon-buyer-messages, etc.)
+      if (!jsonData) {
+        jsonData = parseStdoutJson(output);
+        if (jsonData) {
+          console.log(`📄 Parsed JSON from stdout (task ${task.id}, type ${task.task_type})`);
+        }
+      }
+
+      // Legacy fallback for unmapped export tasks only
+      if (!jsonData) {
+        for (const name of Object.values(TASK_OUTPUT_FILES)) {
+          const filePath = path.join(__dirname, name);
+          jsonData = readRecentJsonFile(filePath);
+          if (jsonData) {
+            console.log(`📄 Legacy output fallback: ${name}`);
+            break;
           }
         }
       }
@@ -480,6 +520,11 @@ async function pollTasks() {
           completed_at: new Date().toISOString()
         })
         .eq('id', task.id);
+
+      if (result.data) {
+        const preview = JSON.stringify(result.data).substring(0, 120);
+        console.log(`💾 Saved result to task ${task.id}: ${preview}...`);
+      }
 
       // ═══ AUTO-CHAIN: forecast-sync → forecast-verify ═══
       if (task.task_type === 'forecast-sync' && result.success) {

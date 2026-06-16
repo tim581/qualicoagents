@@ -15,11 +15,10 @@
  * and Browser_Task_Registry. Trigger via Browser_Tasks or:
  *   node scripts/amazon-buyer-messages.js
  *
- * Cookie setup (UK Seller Central):
- *   1. Open headed Chrome, log into Seller Central UK (sellercentral.amazon.co.uk)
- *   2. Confirm Messages inbox loads — EU messages appear in this single inbox (stck: EU cookie)
- *   3. Export cookies via Cookie-Editor → amazon-cookies-raw.json (repo root)
- *   4. node scripts/convert-amazon-cookies.js → scripts/amazon-storage-state.json
+ * Cookie setup (EU Seller Central — amazon.de or amazon.co.uk):
+ *   1. Log into Seller Central (e.g. sellercentral.amazon.de), open Messages inbox
+ *   2. Export cookies via Cookie-Editor → amazon-cookies-raw.json (repo root)
+ *   3. node scripts/convert-amazon-cookies.js → scripts/amazon-storage-state.json
  *
  * Prerequisites:
  *   - scripts/amazon-storage-state.json (from UK Seller Central session above)
@@ -47,8 +46,8 @@ const PROXY_CONFIG = {
     password: process.env.DECODO_PROXY_PASS || 'BHrGlyvt9mRqv2=j62'
 };
 
-// UK Seller Central — EU buyer messages consolidated via UK login (stck: EU)
-const AMAZON_BASE = 'https://sellercentral.amazon.co.uk';
+// EU Seller Central — inbox is EU-consolidated (stck: EU). Default DE portal; override with AMAZON_SELLER_CENTRAL_BASE.
+const AMAZON_BASE = process.env.AMAZON_SELLER_CENTRAL_BASE || 'https://sellercentral.amazon.de';
 const INBOX_URL = `${AMAZON_BASE}/messaging/inbox`; // may redirect to /messaging/inbox-v3
 const MARKETPLACE = 'EU'; // inbox is EU-consolidated; session is sellercentral.amazon.co.uk
 
@@ -421,6 +420,7 @@ async function run() {
     const results = {
         success: false,
         run_id: RUN_ID,
+        browser_task_id: process.env.BROWSER_TASK_ID || null,
         scraped_at: scrapedAt,
         marketplace: MARKETPLACE,
         messages_scraped: 0,
