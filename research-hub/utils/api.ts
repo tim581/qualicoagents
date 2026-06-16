@@ -1115,94 +1115,89 @@ export async function synthesizeAnswer(query: string, allResults: Record<string,
     }
   } catch { /* enrichment is optional, continue without */ }
 
-  const prompt = `Je bent een senior research analist. Geef een professioneel antwoord EXACT in het volgende 4-secties format.
+  // Build context first, truncate to 8000 chars BEFORE constructing the prompt
+  const rawContext = contextParts.join('\n\n');
+  const truncatedContext = rawContext.length > 8000 ? rawContext.substring(0, 8000) + '\n[...context afgekapt voor lengte]' : rawContext;
 
-CRUCIALE REGELS:
-- Voor bedrijfsinfo: gebruik ALTIJD de Apollo-data als die beschikbaar is — die is geverifieerd
-- URLs moeten ECHT zijn — uit bronnen of Apollo-data. Verzin NOOIT URLs of contactinfo
-- GEEN genummerde referenties zoals [1], [2], [3] — die zijn VERBODEN
-- GEEN inline links in de Samenvatting sectie — die moet puur clean tekst zijn (geen URLs)
-- Links ALLEEN in de Bedrijven & Merken sectie (bij 🌐 Website) en in Praktisch Advies (enkel als het echt een nuttige URL is, bv. official website of Google Maps link)
-- Antwoord in het Nederlands als de vraag Nederlands is
-- Maak het scanbaar: korte zinnen, bullet points
+  const finalPrompt = [
+    'Je bent een senior research analist. Geef een professioneel antwoord EXACT in het volgende 4-secties format.',
+    '',
+    'CRUCIALE REGELS:',
+    '- Voor bedrijfsinfo: gebruik ALTIJD de Apollo-data als die beschikbaar is — die is geverifieerd',
+    '- URLs moeten ECHT zijn — uit bronnen of Apollo-data. Verzin NOOIT URLs of contactinfo',
+    '- GEEN genummerde referenties zoals [1], [2], [3] — die zijn VERBODEN',
+    '- GEEN inline links in de Samenvatting sectie — die moet puur clean tekst zijn (geen URLs)',
+    '- Links ALLEEN in de Bedrijven & Merken sectie (bij 🌐 Website) en in Praktisch Advies',
+    '- Antwoord in het Nederlands als de vraag Nederlands is',
+    '- Maak het scanbaar: korte zinnen, bullet points',
+    '',
+    'JE MOET EXACT DEZE 4 SECTIES GEBRUIKEN:',
+    '',
+    '## 📋 Samenvatting',
+    'Kernboodschap in 3-5 bullet points. Wat is het antwoord op de vraag?',
+    '',
+    '## 🏢 Bedrijven & Merken',
+    'Per bedrijf een informatieblok:',
+    '**Bedrijfsnaam**',
+    '- 🌐 Website: echte URL als klikbare link',
+    '- 📞 Telefoon: echt nummer uit bronnen',
+    '- 📍 Locatie + Google Maps link',
+    '- 🕐 Openingsuren: indien gevonden',
+    '- 🏭 Sector: branche',
+    '- 📝 Omschrijving: korte samenvatting',
+    'Als er geen bedrijven relevant zijn: "Geen specifieke bedrijven gevonden."',
+    '',
+    '## 💡 Praktisch Advies',
+    'Concrete, actionable tips. Stappen, do\'s/don\'ts.',
+    '',
+    '## 📌 Conclusie',
+    '2-3 zinnen eindconclusie.',
+    '',
+    `Vraag: ${query}`,
+    '',
+    'Bronnen:',
+    truncatedContext,
+    apolloSection,
+    geminiSection,
+    '',
+    'Geef nu je antwoord in exact het 4-secties format:',
+  ].join('\n');
 
-JE MOET EXACT DEZE 4 SECTIES GEBRUIKEN (met exact deze headers):
-
-## 📋 Samenvatting
-Kernboodschap in 3-5 bullet points. Wat is het antwoord op de vraag? Belangrijkste inzichten.
-
-## 🏢 Bedrijven & Merken
-Per bedrijf/winkel een informatieblok. Gebruik ALLE beschikbare bronnen voor dit blok — Apollo voor B2B-data, maar haal adres/telefoon/openingsuren VOORAL uit Gemini, Perplexity en andere bronnen als die beschikbaar zijn.
-**Bedrijfsnaam**
-- 🌐 Website: echte URL (uit Apollo of bronnen — klikbare link)
-- 📞 Telefoon: echt nummer (uit bronnen of Apollo)
-- 📍 Locatie: specifiek straat + huisnummer + stad als die in de bronnen staat — NIET gewoon de stad alleen. Maak een Google Maps zoeklink met bedrijfsnaam + adres: [📍 Bekijk op Google Maps](https://www.google.com/maps/search/BEDRIJFSNAAM+STRAAT+HUISNUMMER+STAD) — vervang spaties door + en gebruik echte data. Als je alleen de bedrijfsnaam + stad weet: [📍 Zoek op Google Maps](https://www.google.com/maps/search/BEDRIJFSNAAM+STAD)
-- 🕐 Openingsuren: indien gevonden in bronnen
-- 🏭 Sector: branche
-- 📝 Omschrijving: korte samenvatting
-(Laat velden WEG als er echt geen data is — toon NOOIT "niet beschikbaar" of "onbekend")
-BELANGRIJK: Voor bekende winkelketens en merken ZIJN er adressen en telefoonnummers in de brondata — zoek die goed op en gebruik ze!
-Als er geen bedrijven relevant zijn, schrijf "Geen specifieke bedrijven gevonden in de resultaten."
-
-## 💡 Praktisch Advies
-Concrete, actionable tips en aanbevelingen. Wat kan de gebruiker DOEN met deze info? Stappen, tips, do's/don'ts.
-
-## 📌 Conclusie
-2-3 zinnen eindconclusie. Kernboodschap + eventueel vervolgstap.
-
-BELANGRIJK: Gebruik ALLEEN deze 4 secties, geen andere headers. Elke sectie MOET aanwezig zijn.
-
-Vraag: ${query}
-
-Bronnen:
-${contextParts.join('\n\n')}${apolloSection}${geminiSection}
-
-Geef nu je antwoord in exact het 4-secties format:`;
-
-  // Truncate prompt to avoid oversized requests (max ~8000 chars of context)
-  const maxContextLen = 8000;
-  const truncatedContext = contextParts.join('\n\n').substring(0, maxContextLen);
-  const finalPrompt = prompt.replace(contextParts.join('\n\n'), truncatedContext);
-
-  // Try Perplexity first, Claude as fallback
-  const tryPerplexity = async (): Promise<string | null> => {
-    try {
-      const res = await callHttpTool('conn_j0wpcjv8ce3v6cxx29ps', 'POST',
-        'https://api.perplexity.ai/chat/completions',
-        {},
-        { model: 'perplexity/sonar', messages: [{ role: 'user', content: finalPrompt }] },
-        60
-      );
-      const body = (res as Record<string, unknown>).body as Record<string, unknown> | undefined;
-      const choices = (body?.choices || (res as Record<string, unknown>).choices) as Array<Record<string, unknown>> | undefined;
-      const text = ((choices?.[0]?.message as Record<string, unknown>)?.content as string) || null;
-      return text;
-    } catch {
-      return null;
+  // Try Perplexity first (sonar), Claude as fallback
+  let text = '';
+  try {
+    const res = await callHttpTool('conn_j0wpcjv8ce3v6cxx29ps', 'POST',
+      'https://api.perplexity.ai/chat/completions',
+      {},
+      { model: 'sonar', messages: [{ role: 'user', content: finalPrompt }] },
+      60
+    );
+    const body = (res as Record<string, unknown>)?.body as Record<string, unknown> | undefined;
+    const choices = (body?.choices ?? (res as Record<string, unknown>)?.choices) as Array<Record<string, unknown>> | undefined;
+    const extracted = ((choices?.[0]?.message as Record<string, unknown>)?.content as string) ?? '';
+    if (extracted && extracted.length > 10) {
+      text = extracted;
     }
-  };
+  } catch { /* fall through to Claude */ }
 
-  const tryClaudeFallback = async (): Promise<string> => {
+  // Claude fallback if Perplexity gave nothing
+  if (!text) {
     try {
       const res = await callHttpTool('conn_zbr9g639g6g466mmde8k', 'POST',
         'https://api.anthropic.com/v1/messages',
         { 'x-api-key': 'process.env.CLAUDE_API_KEY', 'anthropic-version': '2023-06-01' },
-        {
-          model: 'claude-sonnet-4-6',
-          max_tokens: 2048,
-          messages: [{ role: 'user', content: finalPrompt }]
-        },
+        { model: 'claude-sonnet-4-6', max_tokens: 2048, messages: [{ role: 'user', content: finalPrompt }] },
         60
       );
-      const body = (res as Record<string, unknown>).body as Record<string, unknown> | undefined;
-      const content = (body?.content || (res as Record<string, unknown>).content) as Array<Record<string, unknown>> | undefined;
-      return (content?.[0]?.text as string) || 'Kon geen samenvatting genereren.';
-    } catch {
-      return 'Samenvatting niet beschikbaar. Probeer de zoekopdracht opnieuw.';
-    }
-  };
+      const body = (res as Record<string, unknown>)?.body as Record<string, unknown> | undefined;
+      const content = (body?.content ?? (res as Record<string, unknown>)?.content) as Array<Record<string, unknown>> | undefined;
+      const extracted = (content?.[0]?.text as string) ?? '';
+      if (extracted && extracted.length > 10) text = extracted;
+    } catch { /* both failed */ }
+  }
 
-  const text = (await tryPerplexity()) ?? (await tryClaudeFallback());
+  if (!text) text = 'Kon geen samenvatting genereren. Probeer minder bronnen te selecteren of verfijn je zoekvraag.';
+
   // IGNORE Perplexity's own citations — use our real source URLs instead
   return { text, citations: realCitations };
 }
