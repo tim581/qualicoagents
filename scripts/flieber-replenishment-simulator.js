@@ -1,5 +1,5 @@
 /**
- * flieber-replenishment-simulator.js  v3.0 — Fully rewritten pickDate: scoped to popover, simple > click, day click by text.
+ * flieber-replenishment-simulator.js  v3.1 — Fixed GraphQL field names (introspect arg + correct fields), flexible TO label matching.
  *
  * Runs PO (Purchase) and TO (Transfer) simulations in Flieber, then fetches
  * results via GraphQL API and logs everything to Supabase Flieber_Debug_Log.
@@ -598,24 +598,54 @@ function extractSimId(url) {
 async function fetchSimulationResults(simId, type) {
   console.log(`\n📡 Fetching ${type} simulation results for ${simId}...`);
   await dbLog(`api-${type}`, 'info', `Fetching results for sim ${simId}`);
-  
+
+  // ── INTROSPECT: discover correct argument name for simulation ID ──────────
+  let simArgName = 'replenishmentSimulationId'; // best guess based on API error hints
+  try {
+    const introQuery = `{ __schema { queryType { fields { name args { name } } } } }`;
+    const introResp = await fetch(GRAPHQL_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': GRAPHQL_TOKEN },
+      body: JSON.stringify({ query: introQuery }),
+    });
+    const introJson = await introResp.json();
+    const simField = introJson.data?.__schema?.queryType?.fields?.find(
+      f => f.name === 'replenishment_simulation_products'
+    );
+    if (simField) {
+      const argNames = simField.args.map(a => a.name);
+      await dbLog(`api-${type}`, 'info', `Query args discovered: ${JSON.stringify(argNames)}`);
+      const idArg = argNames.find(a => a.toLowerCase().includes('simulation') || a === 'id');
+      if (idArg) simArgName = idArg;
+    }
+  } catch (e) {
+    await dbLog(`api-${type}`, 'warning', `Introspection failed: ${e.message}. Using default arg: ${simArgName}`);
+  }
+  await dbLog(`api-${type}`, 'info', `Using arg name: ${simArgName}`);
+  // ─────────────────────────────────────────────────────────────────────────
+
   const allItems = [];
   let hasNext = true;
   let offset = 0;
   const limit = 100;
   
   while (hasNext) {
+    // v3.1 FIX: Corrected field names based on GraphQL schema errors:
+    //   productName     → product { name }
+    //   locationName    → originName
+    //   replenishmentUnits → replenishmentNeedsUnits
+    //   onHandUnits     → orderUnits
+    //   coverageDays    → removed (field does not exist)
     const query = `{
       replenishment_simulation_products(
-        simulationId: "${simId}",
+        ${simArgName}: "${simId}",
         pagination: { limit: ${limit}, offset: ${offset} }
       ) {
         items {
-          productName
-          locationName
-          replenishmentUnits
-          onHandUnits
-          coverageDays
+          product { name }
+          originName
+          replenishmentNeedsUnits
+          orderUnits
         }
         pageInfo {
           hasNext
@@ -663,12 +693,12 @@ async function fetchSimulationResults(simId, type) {
 
 async function logResults(items, type, simId) {
   // Log a summary + full JSON to debug log
-  const summary = items.map(i => `${i.productName} @ ${i.locationName}: ${i.replenishmentUnits} units (on-hand: ${i.onHandUnits}, coverage: ${i.coverageDays}d)`);
+  const summary = items.map(i => `${i.product?.name || i.product} @ ${i.originName}: ${i.replenishmentNeedsUnits} units (order: ${i.orderUnits})`);
   
   await dbLog(`results-${type}`, 'success', 
     `Simulation ${simId}\n` +
     `Total items: ${items.length}\n` +
-    `Total replenishment units: ${items.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)}\n\n` +
+    `Total replenishment units: ${items.reduce((s, i) => s + (i.replenishmentNeedsUnits || 0), 0)}\n\n` +
     summary.slice(0, 50).join('\n') + 
     (summary.length > 50 ? `\n... and ${summary.length - 50} more` : '')
   );
@@ -678,13 +708,13 @@ async function logResults(items, type, simId) {
   
   console.log(`\n📊 ${type.toUpperCase()} Summary:`);
   console.log(`   Items: ${items.length}`);
-  console.log(`   Total reorder units: ${items.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)}`);
+  console.log(`   Total reorder units: ${items.reduce((s, i) => s + (i.replenishmentNeedsUnits || 0), 0)}`);
   
   // Print top items
-  const sorted = [...items].sort((a, b) => (b.replenishmentUnits || 0) - (a.replenishmentUnits || 0));
+  const sorted = [...items].sort((a, b) => (b.replenishmentNeedsUnits || 0) - (a.replenishmentNeedsUnits || 0));
   console.log('   Top 10 by replenishment units:');
   for (const item of sorted.slice(0, 10)) {
-    console.log(`     ${item.productName} @ ${item.locationName}: ${item.replenishmentUnits} units`);
+    console.log(`     ${item.product?.name || item.product} @ ${item.originName}: ${item.replenishmentNeedsUnits} units`);
   }
 }
 
@@ -827,11 +857,40 @@ async function runTOSimulation(page) {
   await dbShot(page, 'to-5-origins', 'Origins selected');
   
   // Step 5: Set Target shipment departure date
-  await pickDate(page, TO_DEPARTURE_DATE, 'Target shipment departure');
+  // v3.1 FIX: Label text may vary — try multiple variants + log all visible labels for debugging
+  {
+    const departureVariants = ['Target shipment departure', 'Departure date', 'Departure', 'Shipment departure'];
+    let foundLabel = null;
+    for (const lbl of departureVariants) {
+      const c = await page.getByText(lbl, { exact: false }).count();
+      if (c > 0) { foundLabel = lbl; break; }
+    }
+    if (!foundLabel) {
+      // Log all visible label-like elements for future debugging
+      const visibleLabels = await page.evaluate(() =>
+        [...document.querySelectorAll('label, [class*="label"], [class*="Label"], p, span')]
+          .map(el => el.textContent?.trim()).filter(t => t && t.length > 2 && t.length < 60)
+          .filter((v, i, a) => a.indexOf(v) === i).slice(0, 40)
+      );
+      await dbLog('to-label-debug', 'info', `Departure label not found. Visible labels: ${JSON.stringify(visibleLabels)}`);
+      await dbShot(page, 'to-label-not-found', 'Departure label not found — see debug log');
+      throw new Error(`Could not find departure label. Tried: ${departureVariants.join(', ')}. Labels: ${JSON.stringify(visibleLabels).substring(0, 200)}`);
+    }
+    await pickDate(page, TO_DEPARTURE_DATE, foundLabel);
+  }
   await dbShot(page, 'to-6-departure', `Departure date set: ${formatDate(TO_DEPARTURE_DATE)}`);
   
-  // Step 6: Set Target shipment arrival date
-  await pickDate(page, TO_ARRIVAL_DATE, 'Target shipment arrival');
+  // Step 6: Set Target shipment arrival date (v3.1: flexible label matching)
+  {
+    const arrivalVariants = ['Target shipment arrival', 'Arrival date', 'Arrival', 'Shipment arrival'];
+    let foundLabel = null;
+    for (const lbl of arrivalVariants) {
+      const c = await page.getByText(lbl, { exact: false }).count();
+      if (c > 0) { foundLabel = lbl; break; }
+    }
+    if (!foundLabel) foundLabel = 'Target shipment arrival'; // fall through to pickDate error
+    await pickDate(page, TO_ARRIVAL_DATE, foundLabel);
+  }
   await dbShot(page, 'to-7-arrival', `Arrival date set: ${formatDate(TO_ARRIVAL_DATE)}`);
   
   // Step 7: Set Days of coverage
@@ -897,7 +956,7 @@ async function runTOSimulation(page) {
   const page = await context.newPage();
   
   try {
-    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v3.0 — simplified pickDate, env RUN_MODE');
+    await dbLog('version', 'info', 'flieber-replenishment-simulator.js v3.1 — fixed GraphQL fields (introspect+correct names), flexible TO label matching');
     console.log('📌 Script version: v3.0');
     await login(page);
     
@@ -920,13 +979,13 @@ async function runTOSimulation(page) {
     if (poResult) {
       console.log(`\n📦 PO Simulation ID: ${poResult.simId}`);
       console.log(`   Results: ${poResult.results.length} items`);
-      console.log(`   Total reorder: ${poResult.results.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)} units`);
+      console.log(`   Total reorder: ${poResult.results.reduce((s, i) => s + (i.replenishmentNeedsUnits || 0), 0)} units`);
     }
     
     if (toResult) {
       console.log(`\n🚚 TO Simulation ID: ${toResult.simId}`);
       console.log(`   Results: ${toResult.results.length} items`);
-      console.log(`   Total transfer: ${toResult.results.reduce((s, i) => s + (i.replenishmentUnits || 0), 0)} units`);
+      console.log(`   Total transfer: ${toResult.results.reduce((s, i) => s + (i.replenishmentNeedsUnits || 0), 0)} units`);
     }
     
     await dbLog('main', 'success', `Done! PO: ${poResult ? poResult.results.length + ' items' : 'skipped'}, TO: ${toResult ? toResult.results.length + ' items' : 'skipped'}`);
