@@ -1,0 +1,328 @@
+{
+  "version": "2026-06-17",
+  "repository": "tim581/qualicoagents",
+  "branch": "main",
+  "scripts_path": "scripts",
+  "automations": [
+    {
+      "task_type": "bol-price-sync-all",
+      "script_name": "bol-price-sync-all.js",
+      "title": "Bol.com — Sync All Price Targets",
+      "summary": "Push every BOL price_targets row to Bol Partner Portal.",
+      "description": "Reads all BOL.COM rows from Supabase price_targets, resolves offer UIDs, and sets tijdelijke prijs + date range on partner.bol.com for each product. Use this after updating target prices in Supabase.",
+      "category": "pricing",
+      "duration": "15–25 min",
+      "queue": { "url": "https://partner.bol.com", "credentials_key": "bol_seller", "actions": [], "priority": 8 }
+    },
+    {
+      "task_type": "bol-price-update",
+      "script_name": "bol-price-update.js",
+      "title": "Bol.com — Single Price Update",
+      "summary": "Set or remove one Bol promotional price.",
+      "description": "Sets or removes tijdelijke prijs on a single Bol offer. Pass EAN, offer_uid, price and dates in actions[0]. For bulk sync use Bol Sync All instead.",
+      "category": "pricing",
+      "duration": "1–2 min",
+      "queue": { "url": "https://partner.bol.com", "credentials_key": "bol_seller", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "amz-price-sync-all",
+      "script_name": "amz-price-sync-all.js",
+      "title": "Amazon — Sync All Price Targets",
+      "runnable": false,
+      "summary": "Still being built — mapping and scripts not on GitHub yet.",
+      "description": "Loops amz-price-update.js across UK, DE, FR, ES, IT, NL, BE, USA and CA until price_targets_ready is empty. Use after updating Amazon targets in Supabase.",
+      "category": "pricing",
+      "duration": "30–90 min",
+      "queue": { "url": "https://sellercentral.amazon.co.uk", "credentials_key": null, "actions": [], "priority": 8 }
+    },
+    {
+      "task_type": "amz-price-update",
+      "script_name": "amz-price-update.js",
+      "title": "Amazon — Single Price Update",
+      "runnable": false,
+      "summary": "Still being built — run locally only until Amazon pricing is verified.",
+      "description": "Navigates Seller Central inventory, sets sale price for one ASIN/channel. Pass params in actions[0]. For bulk use Amazon Sync All.",
+      "category": "pricing",
+      "duration": "2–5 min",
+      "queue": { "url": "https://sellercentral.amazon.co.uk", "credentials_key": null, "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "price-scrape",
+      "script_name": "price-monitor-scraper.js",
+      "title": "Listing Monitor — Price & Buy Box Scrape",
+      "summary": "Scrape all Puzzlup prices across 11 sales channels.",
+      "description": "Scrapes ~73 product variants on 10 Amazon markets (Playwright), Bol.com and puzzlup.be. Updates amazon_monitor_fba_puzzlup, listing content, margins and pricing adjustments.",
+      "category": "monitoring",
+      "duration": "45–60 min",
+      "queue": { "url": "https://www.amazon.de", "credentials_key": null, "actions": [], "priority": 3 }
+    },
+    {
+      "task_type": "forecast-sync",
+      "script_name": "flieber-forecast-updater.js",
+      "title": "Flieber — Sync Forecasts",
+      "summary": "Push Puzzlup sales forecasts to Flieber.",
+      "description": "Updates Flieber forecast grid for all 5 stores (~481 data points). Executor auto-chains forecast-verify when complete.",
+      "category": "flieber",
+      "duration": "~5 min",
+      "queue": { "url": "https://app.flieber.com", "credentials_key": "flieber_login", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "forecast-verify",
+      "script_name": "flieber-forecast-verifier.js",
+      "title": "Flieber — Verify Forecasts",
+      "summary": "Verify forecast upload after sync.",
+      "description": "Checks Flieber UI that forecast values match expected data. Usually triggered automatically after forecast-sync.",
+      "category": "flieber",
+      "duration": "~2 min",
+      "queue": { "url": "https://app.flieber.com", "credentials_key": "flieber_login", "actions": [], "priority": 4 }
+    },
+    {
+      "task_type": "inventory-forecast-sync",
+      "script_name": "flieber-inventory-forecast-sync.js",
+      "title": "Flieber — Inventory Forecast Sync",
+      "summary": "Pull inventory forecast grid from Flieber to Supabase.",
+      "description": "Scrapes Flieber inventory forecast (stock, days of stock, stockout dates, replenishment needs) into flieber_inventory_forecast table.",
+      "category": "flieber",
+      "duration": "5–10 min",
+      "queue": { "url": "https://app.flieber.com/app/inventory-forecast", "credentials_key": "flieber_login", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "po-simulation",
+      "script_name": "flieber-replenishment-simulator.js",
+      "title": "Flieber — PO Simulation",
+      "summary": "Create a new Purchase Order simulation in Flieber.",
+      "description": "Runs PO simulation (arrival +120d, coverage 120d) via Flieber GraphQL. Returns simulation ID and product suggestions.",
+      "category": "flieber",
+      "duration": "~2 min",
+      "queue": { "url": "https://app.flieber.com", "credentials_key": "flieber_login", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "to-simulation",
+      "script_name": "flieber-replenishment-simulator.js",
+      "title": "Flieber — TO Simulation",
+      "summary": "Create a new Transfer Order simulation in Flieber.",
+      "description": "Runs TO simulation (departure +7wd, arrival +17wd, coverage 70d) via Flieber GraphQL. Returns simulation ID and product suggestions.",
+      "category": "flieber",
+      "duration": "~2 min",
+      "queue": { "url": "https://app.flieber.com", "credentials_key": "flieber_login", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "inventory-sync-kamps",
+      "script_name": "inventory-sync-kamps.js",
+      "title": "Inventory — Kamps / Corax EU",
+      "summary": "Sync EU 3PL stock from Kamps/Corax WMS.",
+      "description": "Scrapes Vanthiel Corax WMS and writes on-hand + in-transit to Inventory_Levels. Microsoft SSO — MFA may be required.",
+      "category": "inventory",
+      "duration": "3–10 min",
+      "queue": { "url": "https://corax.vanthiel.eu", "credentials_key": "vanthiel_corax_wms", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "inventory-sync-mintsoft",
+      "script_name": "inventory-sync-mintsoft.js",
+      "title": "Inventory — Mintsoft UK",
+      "summary": "Sync UK 3PL stock from Mintsoft.",
+      "description": "Scrapes Mintsoft (WePrepFBA) portal and updates Inventory_Levels for UK warehouse.",
+      "category": "inventory",
+      "duration": "3–10 min",
+      "queue": { "url": "https://om.mintsoft.co.uk", "credentials_key": "mintsoft", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "inventory-sync-forceget",
+      "script_name": "inventory-sync-forceget.js",
+      "title": "Inventory — Forceget CA + US",
+      "summary": "Sync North America 3PL inventory from Forceget.",
+      "description": "Logs into Forceget portal and syncs CA + US warehouse stock to Inventory_Levels. Executor injects browser context.",
+      "category": "inventory",
+      "duration": "3–5 min",
+      "queue": { "url": "https://app.forceget.com", "credentials_key": "forceget", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "inventory-forceget",
+      "script_name": "inventory-sync-forceget.js",
+      "title": "Inventory — Forceget (legacy task type)",
+      "summary": "Alias for Forceget inventory sync.",
+      "description": "Same script as inventory-sync-forceget. Kept for backward compatibility with older agent tasks.",
+      "category": "inventory",
+      "duration": "3–5 min",
+      "queue": { "url": "https://app.forceget.com", "credentials_key": "forceget", "actions": [], "priority": 4 }
+    },
+    {
+      "task_type": "kamps-inventory",
+      "script_name": "kamps-inventory.js",
+      "title": "Inventory — Kamps discovery export",
+      "summary": "Legacy Kamps inventory scrape.",
+      "description": "Standalone Kamps/Corax inventory export. Prefer inventory-sync-kamps for production Inventory_Levels sync.",
+      "category": "inventory",
+      "duration": "5–10 min",
+      "queue": { "url": "https://corax.vanthiel.eu", "credentials_key": "vanthiel_corax_wms", "actions": [], "priority": 3 }
+    },
+    {
+      "task_type": "mintsoft-inventory",
+      "script_name": "mintsoft-inventory.js",
+      "title": "Inventory — Mintsoft discovery export",
+      "summary": "Legacy Mintsoft inventory scrape.",
+      "description": "Standalone Mintsoft export. Prefer inventory-sync-mintsoft for production sync.",
+      "category": "inventory",
+      "duration": "5–10 min",
+      "queue": { "url": "https://om.mintsoft.co.uk", "credentials_key": "mintsoft", "actions": [], "priority": 3 }
+    },
+    {
+      "task_type": "glc-inventory",
+      "script_name": "glc-inventory.js",
+      "title": "Inventory — GLC warehouse",
+      "summary": "Scrape GLC WMS inventory.",
+      "description": "Exports stock levels from GLC warehouse portal to JSON / Inventory_Levels pipeline.",
+      "category": "inventory",
+      "duration": "5–10 min",
+      "queue": { "url": "https://wms.glc-inc.com", "credentials_key": "glc_wms", "actions": [], "priority": 3 }
+    },
+    {
+      "task_type": "forceget-inventory",
+      "script_name": "forceget-inventory.js",
+      "title": "Inventory — Forceget legacy export",
+      "summary": "Legacy Forceget inventory script.",
+      "description": "Older Forceget inventory export. Prefer inventory-sync-forceget for production.",
+      "category": "inventory",
+      "duration": "5–10 min",
+      "queue": { "url": "https://app.forceget.com", "credentials_key": "forceget", "actions": [], "priority": 3 }
+    },
+    {
+      "task_type": "sync-inventory",
+      "script_name": "sync-inventory.js",
+      "title": "Inventory — Multi-warehouse sync",
+      "summary": "Orchestrate multiple inventory sources.",
+      "description": "Legacy orchestrator for inventory sync across warehouses.",
+      "category": "inventory",
+      "duration": "10–20 min",
+      "queue": { "url": "https://app.flieber.com", "credentials_key": "flieber_login", "actions": [], "priority": 3 }
+    },
+    {
+      "task_type": "sellerboard-pl-export",
+      "script_name": "sellerboard-pl-export.js",
+      "title": "Sellerboard — P&L Export",
+      "summary": "Export P&L and per-ASIN reports from Sellerboard.",
+      "description": "Downloads main P&L and per-ASIN CSV/JSON for EU and NA Amazon marketplaces from Sellerboard.",
+      "category": "exports",
+      "duration": "5–15 min",
+      "queue": { "url": "https://app.sellerboard.com", "credentials_key": "sellerboard_login", "actions": ["eu"], "priority": 5 }
+    },
+    {
+      "task_type": "mintsoft-product-export",
+      "script_name": "mintsoft-product-export.js",
+      "title": "Mintsoft — Product Export",
+      "summary": "Export all Mintsoft products and stock.",
+      "description": "Exports SKU, name, carton sizes, weight and per-warehouse inventory from Mintsoft WMS.",
+      "category": "exports",
+      "duration": "5–10 min",
+      "queue": { "url": "https://om.mintsoft.co.uk", "credentials_key": "mintsoft", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "forceget-inventory-export",
+      "script_name": "forceget-inventory-export.js",
+      "title": "Forceget — Live Inventory Export",
+      "summary": "Export live Toronto warehouse inventory.",
+      "description": "Scrapes Forceget for SKU, ASIN, on-hand, allocated and available units.",
+      "category": "exports",
+      "duration": "2–5 min",
+      "queue": { "url": "https://app.forceget.com", "credentials_key": "forceget", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "corax-stock-export",
+      "script_name": "corax-wms-stock-export.js",
+      "title": "Corax — Stock Export",
+      "summary": "Export raw stock per article from Corax WMS.",
+      "description": "Scrapes Vanthiel Corax WMS stock levels per artikel. Returns JSON in task result.",
+      "category": "exports",
+      "duration": "2–5 min",
+      "queue": { "url": "https://corax.vanthiel.eu", "credentials_key": "vanthiel_corax_wms", "actions": [], "priority": 5 }
+    },
+    {
+      "task_type": "bol-cases-scrape",
+      "script_name": "bol-cases-scrape.js",
+      "title": "Bol.com — Customer Cases Scraper",
+      "summary": "Scrape open Bol partner cases for customer service.",
+      "description": "Logs into partner.bol.com, scrapes open/new customer cases with full email bodies for CS agent processing.",
+      "category": "customer-service",
+      "duration": "1–3 min",
+      "queue": { "url": "https://partner.bol.com", "credentials_key": "bol_seller", "actions": [], "priority": 6 }
+    }
+  ],
+  "helpers": [
+    {
+      "script_name": "bol-partner-save-cookies.js",
+      "title": "Bol — Save Session Cookies",
+      "summary": "Manual Bol login → bol-storage-state.json",
+      "description": "Opens Bol partner login in browser. Complete SSO manually; saves cookies for automated Bol scripts.",
+      "category": "setup",
+      "runnable": false
+    },
+    {
+      "task_type": "corax-save-cookies",
+      "script_name": "corax-wms-save-cookies.js",
+      "title": "Corax — Save Session Cookies",
+      "summary": "Manual Corax login for Kamps scrapers.",
+      "description": "Saves Corax WMS storage state after manual Microsoft SSO login.",
+      "category": "setup",
+      "runnable": true,
+      "duration": "manual",
+      "queue": { "url": "https://corax.vanthiel.eu", "credentials_key": "vanthiel_corax_wms", "actions": [], "priority": 2 }
+    },
+    {
+      "script_name": "mintsoft-save-cookies.js",
+      "title": "Mintsoft — Save Session Cookies",
+      "summary": "Refresh Mintsoft browser session.",
+      "description": "Manual login to Mintsoft; saves storage state for inventory scripts.",
+      "category": "setup",
+      "runnable": false
+    },
+    {
+      "script_name": "forceget-save-cookies.js",
+      "title": "Forceget — Save Session Cookies",
+      "summary": "Refresh Forceget browser session.",
+      "description": "Manual Forceget login; saves cookies for inventory export scripts.",
+      "category": "setup",
+      "runnable": false
+    },
+    {
+      "script_name": "sellerboard-save-cookies.js",
+      "title": "Sellerboard — Save Session Cookies",
+      "summary": "Refresh Sellerboard browser session.",
+      "description": "Manual Sellerboard login; saves storage state for P&L export.",
+      "category": "setup",
+      "runnable": false
+    },
+    {
+      "script_name": "convert-amazon-cookies.js",
+      "title": "Amazon — Convert Cookie File",
+      "summary": "Convert raw cookies to Playwright storage state.",
+      "description": "CLI utility — run locally between Amazon price sync passes. Not queued via executor.",
+      "category": "setup",
+      "runnable": false
+    }
+  ],
+  "internal": [
+    { "script_name": "playwright-task-executor.js", "title": "Task Executor", "summary": "Core orchestrator — always running on Tim PC, not queued." },
+    { "script_name": "playwright-render-service.js", "title": "Page Renderer", "summary": "Render JS pages to Supabase cache for agents." },
+    { "script_name": "listing-content-helpers.js", "title": "Listing Content Helpers", "summary": "Shared module for listing monitor content extraction." },
+    { "script_name": "inventory-helpers.js", "title": "Inventory Helpers", "summary": "Shared EAN/product mapping for inventory scripts." },
+    { "script_name": "register-browser-tasks.js", "title": "Registry Sync", "summary": "Syncs browser-automation-manifest.json to Supabase." },
+    { "script_name": "bol-seller-template.js", "title": "Bol Script Template", "summary": "Starter template for new Bol automations." },
+    { "script_name": "amazon-seller-template.js", "title": "Amazon Script Template", "summary": "Starter template for new Amazon automations." }
+  ],
+  "removed": [
+    {
+      "script_name": "amazon-buyer-messages.js",
+      "title": "Amazon Buyer Messages",
+      "summary": "Removed — Amazon Seller Central ToS risk.",
+      "description": "Do not run. Replaced by manual CS workflow.",
+      "category": "customer-service"
+    },
+    {
+      "script_name": "inventory-sync-bol.js",
+      "title": "Bol Inventory Scrape",
+      "summary": "Removed — use Bol API sync instead.",
+      "description": "Playwright Bol LvB scrape deprecated May 2026.",
+      "category": "inventory"
+    }
+  ]
+}

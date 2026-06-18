@@ -1,4 +1,4 @@
-// playwright-task-executor.js v3.4 — stealth plugin (playwright-extra)
+// playwright-task-executor.js v3.6 — always complete Browser_Tasks after script runs
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 chromium.use(StealthPlugin());
@@ -12,7 +12,91 @@ const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const POLL_INTERVAL = 30000;
+const STALE_RUNNING_MS = 2 * 60 * 60 * 1000; // reclaim running tasks older than 2h on startup
+const EXEC_SYNC_MAX_BUFFER = 50 * 1024 * 1024; // long scripts (forecast-sync) can exceed 1MB stdout
 let browser;
+let pollInFlight = false;
+let currentTaskId = null;
+
+async function completeBrowserTask(taskId, { success, data, error }) {
+  const payload = {
+    status: success ? 'done' : 'failed',
+    result: data ?? null,
+    error_message: error ? String(error).substring(0, 3000) : null,
+    completed_at: new Date().toISOString(),
+  };
+
+  // Prefer transitioning running → done/failed (idempotent if already terminal)
+  let { data: updated, error: updateError } = await supabase
+    .from('Browser_Tasks')
+    .update(payload)
+    .eq('id', taskId)
+    .eq('status', 'running')
+    .select('id');
+
+  if (updateError) {
+    console.error(`❌ Failed to update Browser_Tasks id=${taskId}: ${updateError.message}`);
+    return false;
+  }
+
+  if (updated?.length) {
+    console.log(`✅ Task ${taskId} → ${payload.status}`);
+    return true;
+  }
+
+  const { data: row, error: readError } = await supabase
+    .from('Browser_Tasks')
+    .select('status')
+    .eq('id', taskId)
+    .maybeSingle();
+
+  if (readError) {
+    console.error(`❌ Could not read Browser_Tasks id=${taskId}: ${readError.message}`);
+    return false;
+  }
+
+  if (row?.status === 'done' || row?.status === 'failed') {
+    console.log(`ℹ️ Task ${taskId} already ${row.status}`);
+    return true;
+  }
+
+  // Still pending/running but running-filter missed — force terminal update
+  const { error: forceError } = await supabase
+    .from('Browser_Tasks')
+    .update(payload)
+    .eq('id', taskId);
+
+  if (forceError) {
+    console.error(`❌ Force-complete failed for task ${taskId}: ${forceError.message}`);
+    return false;
+  }
+  console.log(`✅ Task ${taskId} → ${payload.status} (force)`);
+  return true;
+}
+
+async function reclaimStaleRunningTasks() {
+  const cutoff = new Date(Date.now() - STALE_RUNNING_MS).toISOString();
+  const { data: stale, error } = await supabase
+    .from('Browser_Tasks')
+    .select('id, task_type, created_at')
+    .eq('status', 'running')
+    .lt('created_at', cutoff);
+
+  if (error) {
+    console.log(`⚠️ Stale-task reclaim skipped: ${error.message}`);
+    return;
+  }
+  if (!stale?.length) return;
+
+  for (const task of stale) {
+    console.log(`🧹 Reclaiming stale running task ${task.id} (${task.task_type})`);
+    await completeBrowserTask(task.id, {
+      success: false,
+      data: { reclaimed: true, task_type: task.task_type },
+      error: 'Executor restarted or task timed out — marked failed (was stuck in running)',
+    });
+  }
+}
 
 async function initBrowser() {
   if (!browser) {
@@ -101,9 +185,11 @@ const SCRIPT_TASKS = {
   'sync-inventory':            'sync-inventory.js',
   'price-scrape':              'price-monitor-scraper.js',
   'bol-price-update':          'bol-price-update.js',
+  'bol-price-sync-all':        'bol-price-sync-all.js',
   'bol-cases-scrape':          'bol-cases-scrape.js',
   'amazon-buyer-messages':     'amazon-buyer-messages.js',
   'amz-price-update':          'amz-price-update.js',
+  'amz-price-sync-all':        'amz-price-sync-all.js',
 };
 
 // Standalone scripts write JSON here; executor must match by task_type (not first-recent-file)
@@ -155,7 +241,12 @@ const STORAGE_STATE_MAP = {
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
 // Never overwrite local-only scripts until pushed to qualicoagents
-const NEVER_DOWNLOAD_FROM_GITHUB = new Set(['price-monitor-scraper.js', 'amz-price-update.js']);
+const NEVER_DOWNLOAD_FROM_GITHUB = new Set([
+  'price-monitor-scraper.js',
+  'amz-price-update.js',
+  'bol-price-sync-all.js',
+  'amz-price-sync-all.js',
+]);
 
 function downloadFromGitHub(scriptName) {
   return new Promise((resolve) => {
@@ -368,12 +459,22 @@ async function executeScriptTask(task, scriptName) {
       env.AMAZON_NO_PROXY = env.AMAZON_NO_PROXY || '1';
       env.AMAZON_PRICE_SKIP_CHANNELS = env.AMAZON_PRICE_SKIP_CHANNELS || 'AMZ BE';
     }
+    if (task.task_type === 'bol-price-sync-all') {
+      env.BOL_NO_PROXY = env.BOL_NO_PROXY || '1';
+      env.BOL_SYNC_ALL = '1';
+      env.BOL_FORCE_DATE_RANGE = '1';
+    }
+    if (task.task_type === 'amz-price-sync-all') {
+      env.AMAZON_NO_PROXY = env.AMAZON_NO_PROXY || '1';
+      env.AMAZON_PRICE_SKIP_CHANNELS = 'none';
+    }
     
     try {
       const output = execSync(`node "${scriptPath}"`, {
         env,
         cwd: __dirname,
         timeout: 14400000,
+        maxBuffer: EXEC_SYNC_MAX_BUFFER,
         stdio: 'pipe',
         encoding: 'utf-8',
       });
@@ -429,6 +530,23 @@ async function executeScriptTask(task, scriptName) {
         }
         return { success: true, data: jsonData };
       }
+
+      // Structured summary for long-running scripts without JSON output files
+      if (task.task_type === 'forecast-sync') {
+        const runMatch = output.match(/Debug run ID: (run_\d+)/);
+        const doneMatch = output.match(/Done! (\d+) products updated, (\d+) skipped/);
+        const errMatch = output.match(/(\d+) errors:/);
+        return {
+          success: true,
+          data: {
+            run_id: runMatch?.[1] || null,
+            products_updated: doneMatch ? parseInt(doneMatch[1], 10) : null,
+            products_skipped: doneMatch ? parseInt(doneMatch[2], 10) : null,
+            error_count: errMatch ? parseInt(errMatch[1], 10) : 0,
+          },
+        };
+      }
+
       return { success: true, data: { output: output.substring(0, 2000) } };
     } catch (error) {
       const stderr = error.stderr ? error.stderr.substring(0, 2000) : error.message;
@@ -487,6 +605,9 @@ async function executeTask(task) {
 }
 
 async function pollTasks() {
+  if (pollInFlight) return;
+  pollInFlight = true;
+
   console.log(`\n⏰ Polling... (${new Date().toLocaleTimeString()})`);
 
   try {
@@ -504,26 +625,32 @@ async function pollTasks() {
     }
 
     for (const task of tasks) {
-      await supabase
+      currentTaskId = task.id;
+
+      const { error: runError } = await supabase
         .from('Browser_Tasks')
         .update({ status: 'running' })
-        .eq('id', task.id);
+        .eq('id', task.id)
+        .eq('status', 'pending');
 
-      const result = await executeTask(task);
+      if (runError) {
+        console.error(`❌ Could not mark task ${task.id} running: ${runError.message}`);
+        continue;
+      }
 
-      await supabase
-        .from('Browser_Tasks')
-        .update({
-          status: result.success ? 'done' : 'failed',
-          result: result.data || null,
-          error_message: result.error || null,
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', task.id);
+      let result = { success: false, error: 'Task execution did not return a result' };
+      try {
+        result = await executeTask(task);
+      } catch (execErr) {
+        console.error(`❌ executeTask threw: ${execErr.message}`);
+        result = { success: false, error: execErr.message };
+      } finally {
+        await completeBrowserTask(task.id, result);
+      }
 
       if (result.data) {
         const preview = JSON.stringify(result.data).substring(0, 120);
-        console.log(`💾 Saved result to task ${task.id}: ${preview}...`);
+        console.log(`💾 Result for task ${task.id}: ${preview}...`);
       }
 
       // ═══ AUTO-CHAIN: forecast-sync → forecast-verify ═══
@@ -542,15 +669,26 @@ async function pollTasks() {
         if (chainErr) console.error('⚠️ Chain failed:', chainErr.message);
         else console.log('✅ Verification queued');
       }
+
+      currentTaskId = null;
     }
   } catch (error) {
     console.error('Poll error:', error.message);
+    if (currentTaskId) {
+      await completeBrowserTask(currentTaskId, {
+        success: false,
+        error: `Poll error: ${error.message}`,
+      }).catch(() => {});
+      currentTaskId = null;
+    }
+  } finally {
+    pollInFlight = false;
   }
 }
 
 async function main() {
   console.log('══════════════════════════════════════════════════');
-  console.log('  🎬 Playwright Task Executor v3.4 (stealth)');
+  console.log('  🎬 Playwright Task Executor v3.6');
   console.log('  ✅ Running — polling Supabase every 30s');
   console.log('  🖥️  Chromium opens when a task is queued');
   console.log('══════════════════════════════════════════════════');
@@ -563,12 +701,20 @@ async function main() {
     process.exit(1);
   }
 
+  await reclaimStaleRunningTasks();
+
   setInterval(() => pollTasks(), POLL_INTERVAL);
   await pollTasks();
 }
 
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down...');
+  if (currentTaskId) {
+    await completeBrowserTask(currentTaskId, {
+      success: false,
+      error: 'Executor interrupted (SIGINT)',
+    }).catch(() => {});
+  }
   if (browser) await browser.close();
   process.exit(0);
 });

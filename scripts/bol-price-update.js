@@ -122,6 +122,18 @@ function formatBolDateRange(startDate, endDate) {
   return `${fmt(startDate)} - ${fmt(endDate)}`;
 }
 
+function dateRangeNeedsUpdate(current, startDate, endDate) {
+  if (!current || current === 'Kies periode') return true;
+  if (process.env.BOL_FORCE_DATE_RANGE === '1') return true;
+  return !dateRangeMatches(current, startDate, endDate);
+}
+
+function dateRangeMatches(current, startDate, endDate) {
+  const want = formatBolDateRange(startDate, endDate);
+  const norm = (s) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  return norm(current) === norm(want);
+}
+
 function parseIsoDate(iso) {
   const [y, m, d] = iso.split('-').map(Number);
   return new Date(y, m - 1, d);
@@ -195,6 +207,81 @@ async function pickCalendarDay(page, date, dbLogFn) {
   throw new Error(`Could not pick calendar day ${day} ${monthName} ${year}`);
 }
 
+async function removeExistingPromo(page) {
+  const scopedRemove = page
+    .locator('div, section, form')
+    .filter({ has: page.locator('input[name="promotions.0.price"]') })
+    .getByRole('button', { name: /^Verwijderen$/i })
+    .first();
+  const removeButtons = [
+    scopedRemove,
+    page.getByRole('button', { name: /^Verwijderen$/i }).first(),
+    page.getByText('Tijdelijke prijs verwijderen').first(),
+    page.getByText('Actieprijs verwijderen').first(),
+  ];
+
+  for (const btn of removeButtons) {
+    if (await btn.isVisible({ timeout: 1500 }).catch(() => false)) {
+      await btn.click();
+      await page.waitForTimeout(1500);
+      for (const confirm of [
+        page.getByRole('button', { name: /bevestigen|ja|ok|verwijderen/i }).first(),
+        page.getByText(/^Bevestigen$/i).first(),
+      ]) {
+        if (await confirm.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await confirm.click();
+          await page.waitForTimeout(1500);
+          break;
+        }
+      }
+      await page.waitForTimeout(2000);
+      const stillThere = await page.locator('input[name="promotions.0.price"]').isVisible({ timeout: 1000 }).catch(() => false);
+      if (!stillThere) {
+        await dbLog('set-price', 'info', 'Removed existing Tijdelijke prijs row');
+        return true;
+      }
+      await dbLog('set-price', 'warning', 'Verwijderen clicked but promotions.0 still visible');
+    }
+  }
+  return false;
+}
+
+async function addPromoRow(page) {
+  for (const add of [
+    page.getByRole('button', { name: /tijdelijke prijs/i }).first(),
+    page.getByText(/tijdelijke prijs toevoegen|voeg tijdelijke prijs toe/i).first(),
+  ]) {
+    if (await add.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await add.click();
+      await page.waitForTimeout(2000);
+      await dbLog('set-price', 'info', 'Added fresh Tijdelijke prijs row');
+      return true;
+    }
+  }
+  return false;
+}
+
+async function clearDateRangeField(page, dateField, selector) {
+  await dateField.scrollIntoViewIfNeeded();
+  await dateField.click({ clickCount: 3 });
+  await page.keyboard.press('Control+A');
+  await page.keyboard.press('Backspace');
+  await page.waitForTimeout(300);
+  await setReactInputValue(page, selector, '');
+  await page.waitForTimeout(300);
+  await page.evaluate((sel) => {
+    const input = document.querySelector(sel);
+    if (!input) return;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (setter) setter.call(input, '');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.dispatchEvent(new Event('blur', { bubbles: true }));
+  }, selector);
+  await page.waitForTimeout(400);
+  return dateField.inputValue().catch(() => '');
+}
+
 async function setBolPromoDateRange(page, dateField, startDate, endDate) {
   const rangeStr = formatBolDateRange(startDate, endDate);
   const selector = 'input[name="promotions.0.dateRange"]';
@@ -202,32 +289,41 @@ async function setBolPromoDateRange(page, dateField, startDate, endDate) {
   const injected = await setReactInputValue(page, selector, rangeStr);
   await dbLog('set-price', 'info', `React inject result: ${JSON.stringify(injected)}`);
   let current = await dateField.inputValue().catch(() => '');
-  if (current && current !== 'Kies periode') {
+  if (current && dateRangeMatches(current, startDate, endDate)) {
     await dbLog('set-price', 'success', `Date range set via React inject: ${current}`);
     return;
   }
 
-  await dbLog('set-price', 'info', 'React inject empty — opening calendar picker...');
-  await dateField.scrollIntoViewIfNeeded();
-  await dateField.click();
+  await dbLog(
+    'set-price',
+    'info',
+    `React inject did not set correct range (got "${current}", want "${rangeStr}") — opening calendar picker...`,
+  );
+
+  current = await clearDateRangeField(page, dateField, selector);
+  await dbLog('set-price', 'info', `After clear: "${current}"`);
+
+  const calendarBtn = page.locator(
+    'input[name="promotions.0.dateRange"] ~ button, input[name="promotions.0.dateRange"] + button, [data-testid*="date"] button',
+  ).first();
+  if (await calendarBtn.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await calendarBtn.click();
+  } else {
+    await dateField.click();
+  }
   await page.waitForTimeout(1000);
 
-  const calendarOpen = await page.locator(
-    '[role="dialog"], .react-datepicker, [data-radix-popper-content-wrapper], [class*="calendar"], [class*="DatePicker"]'
-  ).first().isVisible({ timeout: 5000 }).catch(() => false);
-  if (!calendarOpen) {
-    await dateField.click({ force: true });
-    await page.waitForTimeout(1000);
-  }
-
   await pickCalendarDay(page, parseIsoDate(startDate), dbLog);
-  await page.waitForTimeout(400);
-  await pickCalendarDay(page, parseIsoDate(endDate), dbLog);
-  await page.waitForTimeout(500);
-
+  await page.waitForTimeout(800);
   current = await dateField.inputValue().catch(() => '');
-  if (!current || current === 'Kies periode') {
-    throw new Error(`Date range still empty after calendar pick (wanted: ${rangeStr})`);
+  await dbLog('set-price', 'info', `Date range after start pick: "${current}"`);
+
+  await pickCalendarDay(page, parseIsoDate(endDate), dbLog);
+  await page.waitForTimeout(800);
+  current = await dateField.inputValue().catch(() => '');
+
+  if (!current || !dateRangeMatches(current, startDate, endDate)) {
+    throw new Error(`Date range still incorrect after calendar pick (got "${current}", wanted: ${rangeStr})`);
   }
   await dbLog('set-price', 'success', `Date range set via calendar: ${current}`);
 }
@@ -479,11 +575,13 @@ async function setBolPromoDateRange(page, dateField, startDate, endDate) {
         await dbLog('set-price', 'success', `Price filled: ${priceStr}`);
 
         if (chosenName !== 'price') {
-          const currentDateRange = await dateField.inputValue().catch(() => '');
+          let currentDateRange = await dateField.inputValue().catch(() => '');
           await dbLog('set-price', 'info', `Date range: "${currentDateRange}"`);
 
-          if (!currentDateRange || currentDateRange === 'Kies periode') {
+          if (dateRangeNeedsUpdate(currentDateRange, start_date, end_date)) {
             await setBolPromoDateRange(page, dateField, start_date, end_date);
+          } else {
+            await dbLog('set-price', 'info', 'Date range already correct — skipping calendar');
           }
         }
       } else {
