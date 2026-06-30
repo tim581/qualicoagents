@@ -101,7 +101,13 @@ async function reclaimStaleRunningTasks() {
 async function initBrowser() {
   if (!browser) {
     console.log('🚀 Initializing Chromium (stealth mode)...');
-    browser = await chromium.launch({ headless: false });
+    try {
+      // Prefer installed Chrome to avoid per-session Playwright cache misses.
+      browser = await chromium.launch({ channel: 'chrome', headless: false });
+    } catch (e) {
+      console.log(`⚠️ Chrome channel launch failed: ${e.message}`);
+      browser = await chromium.launch({ headless: false });
+    }
   }
   return browser;
 }
@@ -184,6 +190,7 @@ const SCRIPT_TASKS = {
   'mintsoft-inventory':        'mintsoft-inventory.js',
   'sync-inventory':            'sync-inventory.js',
   'price-scrape':              'price-monitor-scraper.js',
+  'competitor-mat-scrape':     'competitor-mat-scraper.js',
   'bol-price-update':          'bol-price-update.js',
   'bol-price-sync-all':        'bol-price-sync-all.js',
   'bol-cases-scrape':          'bol-cases-scrape.js',
@@ -246,6 +253,10 @@ const NEVER_DOWNLOAD_FROM_GITHUB = new Set([
   'amz-price-update.js',
   'bol-price-sync-all.js',
   'amz-price-sync-all.js',
+  'competitor-mat-scraper.js',
+  'inventory-sync-kamps.js',
+  'inventory-sync-mintsoft.js',
+  'inventory-sync-forceget.js',
 ]);
 
 function downloadFromGitHub(scriptName) {
@@ -396,8 +407,16 @@ async function executeScriptTask(task, scriptName) {
         throw new Error('module.exports is not a function');
       }
       
+      const credentials = task.credentials_key
+        ? await getCredentials(task.credentials_key).catch(() => null)
+        : null;
+      const log = async (step, message) => {
+        console.log(`   [${step}] ${message}`);
+        try { await dbShot(page, step, message); } catch (_) {}
+      };
+
       // ✅ v3.2: Pass full task object so scripts can read task.actions, task.task_type etc.
-      const result = await scriptFn({ page, context, supabase, dbShot, task });
+      const result = await scriptFn({ page, context, supabase, dbShot, task, credentials, log });
       console.log(`✅ Script returned:`, JSON.stringify(result || {}).substring(0, 500));
       
       await page.close();

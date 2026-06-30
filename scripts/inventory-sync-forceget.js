@@ -18,8 +18,8 @@
  * credentials_key: forceget
  */
 
-const SUPABASE_URL = 'https://zlteahycfmpiaxdbnlvr.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpsdGVhaHljZm1waWF4ZGJubHZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDEwMTY3ODIsImV4cCI6MjA1NjU5Mjc4Mn0.LSAZrrjFnMPMnR9Zx5H17T_Hhy-S7CLFOjRyqGG1CPs';
+const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.supabase.co';
+const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
 
 // Product name mapping
 const PRODUCT_MAP = {
@@ -74,7 +74,14 @@ function matchProduct(rawName) {
 function matchWarehouse(rawWarehouse) {
   if (!rawWarehouse) return null;
   const lower = rawWarehouse.toLowerCase().trim();
-  for (const [key, val] of Object.entries(WAREHOUSE_CHANNEL)) {
+  const entries = Object.entries(WAREHOUSE_CHANNEL).sort((a, b) => b[0].length - a[0].length);
+  for (const [key, val] of entries) {
+    // Short keys like "us" must match as whole words to avoid matching "...warehouse".
+    if (key.length <= 2) {
+      const pattern = new RegExp(`\\b${key}\\b`, 'i');
+      if (pattern.test(lower)) return val;
+      continue;
+    }
     if (lower.includes(key)) return val;
   }
   if (lower.includes('us') || lower.includes('america')) return '3PL US';
@@ -528,27 +535,39 @@ module.exports = async function run({ page, credentials, log }) {
     // Parse inventory
     const inventoryItems = [];
     
+    const headersLower = (tableData.headers || []).map((h) => (h || '').toLowerCase());
+    const skuHeaderIdx = headersLower.findIndex((h) => h.includes('sku'));
+    const nameHeaderIdx = headersLower.findIndex((h) => h.includes('product name'));
+    const warehouseHeaderIdx = headersLower.findIndex((h) => h.includes('warehouse name'));
+    const qtyHeaderIdx = headersLower.findIndex((h) => h.includes('stock on hand unit'));
+
     for (const row of tableData.rows) {
       const cells = row.cells;
       if (cells.length < 3) continue;
       
-      // Find numeric quantity
-      let qty = 0, qtyIdx = -1;
-      for (let i = cells.length - 1; i >= 0; i--) {
-        const num = parseInt(cells[i].replace(/[,.\s]/g, ''));
-        if (!isNaN(num) && num >= 0) {
-          qty = num;
-          qtyIdx = i;
-          break;
-        }
-      }
-      if (qtyIdx === -1) continue;
-      
+      // Prefer header-based extraction for Forceget table.
       let sku = '', warehouse = '', productName = '';
-      if (cells.length >= 4) {
-        sku = cells[0]; warehouse = cells[1]; productName = cells[2];
+      if (skuHeaderIdx >= 0 && skuHeaderIdx < cells.length) sku = cells[skuHeaderIdx];
+      if (nameHeaderIdx >= 0 && nameHeaderIdx < cells.length) productName = cells[nameHeaderIdx];
+      if (warehouseHeaderIdx >= 0 && warehouseHeaderIdx < cells.length) warehouse = cells[warehouseHeaderIdx];
+
+      // Fallback for unexpected layouts.
+      if (!sku && cells.length >= 5) sku = cells[4];
+      if (!productName && cells.length >= 7) productName = cells[6];
+      if (!warehouse && cells.length >= 4) warehouse = cells[3];
+      if (!warehouse) warehouse = 'unknown';
+
+      let qty = 0;
+      if (qtyHeaderIdx >= 0 && qtyHeaderIdx < cells.length) {
+        qty = parseInt((cells[qtyHeaderIdx] || '').replace(/[,.\s]/g, ''), 10) || 0;
       } else {
-        sku = cells[0]; productName = cells[1]; warehouse = 'unknown';
+        for (let i = cells.length - 1; i >= 0; i--) {
+          const num = parseInt((cells[i] || '').replace(/[,.\s]/g, ''), 10);
+          if (!isNaN(num) && num >= 0) {
+            qty = num;
+            break;
+          }
+        }
       }
       
       const productMatch = matchProduct(productName) || matchProduct(sku);
@@ -584,17 +603,27 @@ module.exports = async function run({ page, credentials, log }) {
           const existing = await checkRes.json();
           
           if (existing && existing.length > 0) {
-            await fetch(
+            const updateRes = await fetch(
               `${SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(item.product_name)}&channel=eq.${encodeURIComponent(item.channel)}`,
               {
                 method: 'PATCH',
                 headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-                body: JSON.stringify({ on_hand: item.qty, last_synced_at: now, source: 'forceget_playwright' })
+                body: JSON.stringify({
+                  on_hand: item.qty,
+                  warehouse: item.raw_warehouse || (item.channel === '3PL CA' ? 'Forceget Toronto Warehouse' : 'Forceget US Warehouse'),
+                  region: item.channel === '3PL CA' ? 'CA' : 'US',
+                  last_synced_at: now,
+                  source: 'forceget_playwright'
+                })
               }
             );
+            if (!updateRes.ok) {
+              const msg = await updateRes.text();
+              throw new Error(`Update failed ${updateRes.status}: ${msg}`);
+            }
             await log('updated', `${item.product_name} (${item.channel}): ${item.qty}`);
           } else {
-            await fetch(
+            const insertRes = await fetch(
               `${SUPABASE_URL}/rest/v1/Inventory_Levels`,
               {
                 method: 'POST',
@@ -602,10 +631,18 @@ module.exports = async function run({ page, credentials, log }) {
                 body: JSON.stringify({
                   product_name: item.product_name,
                   channel: item.channel, channel_type: '3PL',
-                  on_hand: item.qty, last_synced_at: now, source: 'forceget_playwright'
+                  warehouse: item.raw_warehouse || (item.channel === '3PL CA' ? 'Forceget Toronto Warehouse' : 'Forceget US Warehouse'),
+                  region: item.channel === '3PL CA' ? 'CA' : 'US',
+                  on_hand: item.qty,
+                  last_synced_at: now,
+                  source: 'forceget_playwright'
                 })
               }
             );
+            if (!insertRes.ok) {
+              const msg = await insertRes.text();
+              throw new Error(`Insert failed ${insertRes.status}: ${msg}`);
+            }
             await log('inserted', `${item.product_name} (${item.channel}): ${item.qty}`);
           }
         } catch (e) {

@@ -16,11 +16,14 @@
 'use strict';
 require('dotenv').config();
 const { chromium } = require('playwright');
+const fs = require('fs');
+const path = require('path');
 
 const SITE_URL      = 'https://kampspijnacker.coraxwms.nl';
 const SITE_EMAIL    = 'qualico@coraxwms.nl';
-const SITE_PASSWORD = 'Jt_58bEAKP!iJyW';
+const SITE_PASSWORD = 'GXE.NYeUJX6.f!J';
 const WAREHOUSE_NAME = 'Kamps/Vanthiel';
+const STORAGE_STATE_PATH = path.join(__dirname, 'corax-wms-storage-state.json');
 
 
 function matchProductName(text) {
@@ -100,6 +103,67 @@ async function updateTaskResult(resultData) {
   } catch (e) { console.log(`⚠️ Failed to update task result: ${e.message}`); }
 }
 
+async function writeInventoryLevels(products) {
+  if (!Array.isArray(products) || products.length === 0) return 0;
+  const now = new Date().toISOString();
+  let written = 0;
+  for (const p of products) {
+    try {
+      const res = await fetch(
+        `${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(p.product_name)}&channel=eq.${encodeURIComponent('3PL EU')}&select=id`,
+        {
+          headers: {
+            'apikey': process.env.SUPABASE_KEY,
+            'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+          },
+        }
+      );
+      const existing = await res.json();
+      const payload = {
+        product_name: p.product_name,
+        channel: '3PL EU',
+        channel_type: '3PL',
+        warehouse: p.warehouse || WAREHOUSE_NAME,
+        region: 'EU',
+        on_hand: p.units_on_hand || 0,
+        last_synced_at: now,
+        source: 'playwright_kamps',
+      };
+      if (Array.isArray(existing) && existing.length > 0) {
+        await fetch(
+          `${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(p.product_name)}&channel=eq.${encodeURIComponent('3PL EU')}`,
+          {
+            method: 'PATCH',
+            headers: {
+              'apikey': process.env.SUPABASE_KEY,
+              'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+              'Content-Type': 'application/json',
+              'Prefer': 'return=minimal',
+            },
+            body: JSON.stringify(payload),
+          }
+        );
+      } else {
+        await fetch(`${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels`, {
+          method: 'POST',
+          headers: {
+            'apikey': process.env.SUPABASE_KEY,
+            'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+          body: JSON.stringify(payload),
+        });
+      }
+      written++;
+    } catch (e) {
+      await dbLog('inventory-write', 'error', `Failed ${p.product_name}: ${e.message}`);
+    }
+  }
+  await dbLog('inventory-write', 'success', `Wrote ${written}/${products.length} EU rows`);
+  return written;
+}
+
 
 // ── MICROSOFT SSO LOGIN ──────────────────────────────────────────────────────
 // Microsoft SSO has a multi-step flow:
@@ -114,6 +178,20 @@ async function login(page) {
   console.log('\n🔐 Logging in via Microsoft SSO...');
   await dbLog('login', 'info', 'Navigating to Kamps portal...');
   
+  // Try cookie session first to skip SSO/MFA when possible.
+  try {
+    if (fs.existsSync(STORAGE_STATE_PATH)) {
+      const raw = fs.readFileSync(STORAGE_STATE_PATH, 'utf8');
+      const state = JSON.parse(raw);
+      if (Array.isArray(state.cookies) && state.cookies.length > 0) {
+        await page.context().addCookies(state.cookies);
+        await dbLog('cookies', 'info', `Loaded ${state.cookies.length} cookies from storage-state`);
+      }
+    }
+  } catch (e) {
+    await dbLog('cookies', 'error', `Cookie preload failed: ${e.message}`);
+  }
+
   await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(5000);
   
@@ -220,6 +298,9 @@ async function login(page) {
     }
   }
   
+  if (page.url().includes('microsoftonline.com')) {
+    throw new Error('Kamps login did not complete (still on Microsoft login). MFA/manual approval required.');
+  }
   await dbLog('login', 'success', `Post-login URL: ${page.url()}`);
   await dbShot(page, 'login-done', 'After login');
 }
@@ -230,6 +311,11 @@ async function scrapeInventory(page) {
   
   // Try common Corax WMS inventory URLs
   const stockUrls = [
+    SITE_URL + '/#/Stock',
+    SITE_URL + '/#/Inventory',
+    SITE_URL + '/#/Products',
+    SITE_URL + '/#/Artikelen',
+    SITE_URL + '/#/Voorraad',
     SITE_URL + '/Voorraad',
     SITE_URL + '/Stock',
     SITE_URL + '/Inventory',
@@ -278,6 +364,30 @@ async function scrapeInventory(page) {
   
   await dbLog('inventory', 'info', `On page: ${page.url()}`);
   await dbShot(page, 'inventory-page', 'Stock page loaded');
+
+  // In Corax SPA, "Voorraad" is often a menu action that must be clicked.
+  try {
+    const voorraadLink = page.locator('a:has-text("Voorraad"), button:has-text("Voorraad"), [role="menuitem"]:has-text("Voorraad")').first();
+    if (await voorraadLink.isVisible({ timeout: 2000 })) {
+      await voorraadLink.click();
+      await page.waitForTimeout(4000);
+      await dbLog('inventory', 'info', `Clicked Voorraad menu; now on ${page.url()}`);
+    }
+  } catch (e) {
+    await dbLog('inventory', 'info', `Voorraad click skipped: ${e.message}`);
+  }
+
+  try {
+    const stocksPerArtikel = page.locator('a:has-text("Stocks per artikel"), button:has-text("Stocks per artikel"), [role="menuitem"]:has-text("Stocks per artikel")').first();
+    if (await stocksPerArtikel.isVisible({ timeout: 2000 })) {
+      await stocksPerArtikel.click();
+      await page.waitForTimeout(5000);
+      await dbLog('inventory', 'info', `Clicked Stocks per artikel; now on ${page.url()}`);
+      await dbShot(page, 'inventory-stocks-per-artikel', 'After opening Stocks per artikel');
+    }
+  } catch (e) {
+    await dbLog('inventory', 'info', `Stocks per artikel click skipped: ${e.message}`);
+  }
   
   
   // ── DISCOVERY: Log page structure ──
@@ -403,11 +513,13 @@ async function scrapeInventory(page) {
     await login(page);
     const products = await scrapeInventory(page);
 
+    const written = await writeInventoryLevels(products);
     const result = {
       warehouse: 'kamps',
       run_id: RUN_ID,
       timestamp: new Date().toISOString(),
       products,
+      inventory_levels_written: written,
       total_units: products.reduce((s, r) => s + r.units_on_hand, 0),
       product_count: products.length,
       note: 'Kamps may report colli (cartons) not units — verify and multiply by units_per_master if needed',

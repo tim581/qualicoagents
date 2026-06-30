@@ -250,13 +250,15 @@ async function run() {
       const units = product.wp_raeburn;
       
       const { error } = await supabase.from('Inventory_Levels').upsert({
-        product_id: mapping.product_id,
         product_name: mapping.product_name,
         channel: '3PL UK',
         channel_type: '3PL',
-        units_on_hand: units,
+        on_hand: units,
+        warehouse: 'WP_Raeburn',
+        region: 'UK',
+        source: 'mintsoft_playwright',
         last_synced_at: now
-      }, { onConflict: 'product_id,channel' });
+      }, { onConflict: 'product_name,channel' });
 
       if (error) {
         await logDebug('inventory-write', 'error', `Failed to write ${mapping.product_name}: ${error.message}`);
