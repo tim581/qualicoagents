@@ -161,6 +161,18 @@ async function writeInventoryLevels(products) {
     }
   }
   await dbLog('inventory-write', 'success', `Wrote ${written}/${products.length} EU rows`);
+  if (written > 0) {
+    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels?channel=eq.3PL%20EU&source=eq.playwright_kamps`, {
+      method: 'PATCH',
+      headers: {
+        'apikey': process.env.SUPABASE_KEY,
+        'Authorization': `Bearer ${process.env.SUPABASE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      },
+      body: JSON.stringify({ last_synced_at: now }),
+    });
+  }
   return written;
 }
 

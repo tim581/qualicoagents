@@ -256,7 +256,7 @@ async function run() {
         on_hand: units,
         warehouse: 'WP_Raeburn',
         region: 'UK',
-        source: 'mintsoft_playwright',
+        source: 'playwright_mintsoft',
         last_synced_at: now
       }, { onConflict: 'product_name,channel' });
 
@@ -270,6 +270,12 @@ async function run() {
 
     const totalUnits = products.reduce((s, p) => s + p.wp_raeburn, 0);
     await logDebug('inventory-write', 'success', `Wrote ${written} products to Inventory_Levels (${totalUnits} total units)`);
+    if (written > 0) {
+      await supabase.from('Inventory_Levels')
+        .update({ last_synced_at: now })
+        .eq('channel', '3PL UK')
+        .eq('source', 'playwright_mintsoft');
+    }
     console.log(`\n✅ Found ${products.length} products, wrote ${written} to Inventory_Levels (${totalUnits} total units)`);
     await logDebug('complete', 'success', `Finished: ${products.length} products, ${written} written, ${totalUnits} units`);
     ss = await page.screenshot(); await logDebug('complete', 'screenshot', 'Final state', ss);

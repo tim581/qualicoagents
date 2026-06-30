@@ -18,8 +18,23 @@
  * credentials_key: forceget
  */
 
+const { COGS_BY_PRODUCT } = require('./inventory-helpers');
+
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+
+function inventoryProductName(rawName) {
+  if (!rawName) return rawName;
+  if (COGS_BY_PRODUCT[rawName]) return COGS_BY_PRODUCT[rawName];
+  return rawName
+    .replace(/^PUZZLUP MAT /i, 'MAT ')
+    .replace(/^PUZZLUP TRAYS /i, 'TRAYS ')
+    .replace(/^PUZZLUP /i, '');
+}
+
+function sourceForChannel(channel) {
+  return channel === '3PL US' ? 'playwright_forceget_us' : 'playwright_forceget';
+}
 
 // Product name mapping
 const PRODUCT_MAP = {
@@ -575,7 +590,7 @@ module.exports = async function run({ page, credentials, log }) {
       
       if (productMatch && qty > 0) {
         inventoryItems.push({
-          product_name: productMatch.product_name,
+          product_name: inventoryProductName(productMatch.product_name),
           product_id: productMatch.product_id,
           channel: channel || '3PL US',
           qty, raw_sku: sku, raw_warehouse: warehouse, raw_name: productName
@@ -613,7 +628,7 @@ module.exports = async function run({ page, credentials, log }) {
                   warehouse: item.raw_warehouse || (item.channel === '3PL CA' ? 'Forceget Toronto Warehouse' : 'Forceget US Warehouse'),
                   region: item.channel === '3PL CA' ? 'CA' : 'US',
                   last_synced_at: now,
-                  source: 'forceget_playwright'
+                  source: sourceForChannel(item.channel)
                 })
               }
             );
@@ -635,7 +650,7 @@ module.exports = async function run({ page, credentials, log }) {
                   region: item.channel === '3PL CA' ? 'CA' : 'US',
                   on_hand: item.qty,
                   last_synced_at: now,
-                  source: 'forceget_playwright'
+                  source: sourceForChannel(item.channel)
                 })
               }
             );
@@ -650,6 +665,17 @@ module.exports = async function run({ page, credentials, log }) {
         }
       }
       await log('write_done', `Wrote ${inventoryItems.length} items to Inventory_Levels`);
+      const touchedChannels = [...new Set(inventoryItems.map((i) => i.channel))];
+      for (const ch of touchedChannels) {
+        await fetch(
+          `${SUPABASE_URL}/rest/v1/Inventory_Levels?channel=eq.${encodeURIComponent(ch)}&source=eq.${encodeURIComponent(sourceForChannel(ch))}`,
+          {
+            method: 'PATCH',
+            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+            body: JSON.stringify({ last_synced_at: now }),
+          }
+        );
+      }
     }
     
     // Final screenshot
