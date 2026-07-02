@@ -2,12 +2,15 @@
 // Scrapes main P&L table → filters 2026 month columns → upserts monthly_pl to Supabase
 // Skips per-ASIN. June (and current month) may be partial.
 
-// CRITICAL: Load .env FIRST so SUPABASE_KEY is available
-try { require('dotenv').config(); } catch (e) { /* dotenv not installed — use hardcoded fallback */ }
-
-const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
+
+// CRITICAL: Load .env from repo root so SUPABASE_KEY works from any cwd
+try {
+  require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+} catch (e) { /* dotenv not installed — use hardcoded fallback */ }
+
+const { chromium } = require('playwright');
 
 // --- CONFIG ---
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.supabase.co';

@@ -1,7 +1,10 @@
 // Sellerboard — Save Cookies
 // Run once, log in manually, press Enter to save storage state.
 
+const path = require('path');
 const { chromium } = require('playwright');
+
+const OUTPUT = path.join(__dirname, 'sellerboard-storage-state.json');
 
 (async () => {
   const browser = await chromium.launch({ headless: false });
@@ -44,8 +47,8 @@ const { chromium } = require('playwright');
     process.exit(1);
   }
 
-  await context.storageState({ path: 'sellerboard-storage-state.json' });
-  console.log('✅ Cookies opgeslagen: sellerboard-storage-state.json');
+  await context.storageState({ path: OUTPUT });
+  console.log(`✅ Cookies opgeslagen: ${OUTPUT}`);
 
   await browser.close();
 })();
