@@ -388,15 +388,15 @@ async function setDeliveryLocation(page, channel, channelId) {
   // WRONG countries = any country that isn't this market's country.
   // We maintain a blocklist per domain of strings that indicate WRONG location.
   const WRONG_LOCATION_STRINGS = {
-    'amazon.de':     ['belgi', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
-    'amazon.fr':     ['belgi', 'deutschland', 'germany', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
-    'amazon.es':     ['belgi', 'deutschland', 'germany', 'france', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'milan', 'amsterdam', 'toronto', 'nyc'],
-    'amazon.it':     ['belgi', 'deutschland', 'germany', 'france', 'españa', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.de':     ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.fr':     ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.es':     ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'france', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'milan', 'amsterdam', 'toronto', 'nyc'],
+    'amazon.it':     ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'france', 'españa', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'amsterdam', 'toronto', 'nyc'],
     'amazon.com.be': ['deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc'],
-    'amazon.nl':     ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'toronto', 'nyc'],
-    'amazon.com':    ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto'],
-    'amazon.ca':     ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'nyc', 'new york'],
-    'amazon.co.uk':  ['belgi', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc', 'new york'],
+    'amazon.nl':     ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'france', 'españa', 'italia', 'united states', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'toronto', 'nyc'],
+    'amazon.com':    ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'canada', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto'],
+    'amazon.ca':     ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'united kingdom', 'london', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'nyc', 'new york'],
+    'amazon.co.uk':  ['belgi', 'antwerpen', 'wilrijk', 'floormax', 'duffel', 'deutschland', 'germany', 'france', 'españa', 'italia', 'nederland', 'united states', 'canada', 'paris', 'berlin', 'madrid', 'milan', 'amsterdam', 'toronto', 'nyc', 'new york'],
   };
 
   // "Update location" in all Amazon languages
