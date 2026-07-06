@@ -1,0 +1,205 @@
+{
+  "cookies": [
+    {
+      "name": "ak_bmsc",
+      "value": "A3F4EFC4FD8D2F4040C47B575FF671A0~000000000000000000000000000000~YAAQL8YRAvBNoySfAQAAZVLQNgBxCZwGvrAp4e8aPpvnHGVyQbD7UoOqv1K2jwjP/TTjY2yP9m1GC1e1Q728XQxfhwvCUvjdpcJOR4YUMVUF9+qCUY461oN6TS/mheuuPPX44+v6UndcgOd3imMhPjbZ/sHwIMZ0LhoIG3kg/8UEWwRGX3js1SZ01NZf5I+3Um2jHP5IoCVxqkC721fuo2yFAEOUQ4SzHZvR0EpPKkQLMneYsRu9VMDeI0baGhnS9rFLZMcBNMVEIm8M2RiAkIX5ncSyFZkoLDwDX9zgUE6vMXgF4xG1KH4m7TSMMyj1rbnyF2yI2luP3K5N6r1Sx9JAImcUnAlK/NZkPpGMe+u1JCFbp75PNxStA+1IX6rZwtUfTKsCjZsz",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1783338250,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "s_fid",
+      "value": "340995C8CDC58339-149A6DB3E3D7978F",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1817891054,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "s_cc",
+      "value": "true",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "USER-TRACE",
+      "value": "08254234-ec17-4d3e-b51c-c0dbf7069037",
+      "domain": "partner.bol.com",
+      "path": "/",
+      "expires": 1783417454,
+      "httpOnly": true,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "_ga_L65VHZD1XR",
+      "value": "GS2.1.s1781692349$o14$g1$t1781692364$j47$l0$h0",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1816252364,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "_ga",
+      "value": "GA1.1.819504169.1742307938",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1817891053,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "_uetmsclkid",
+      "value": "_uet4ac99eb7edf11753c335f4842c8e3e68",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1790862864,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "__eoi",
+      "value": "ID=5eedfd6a504a6bbf:T=1776675583:RT=1783086877:S=AA-AfjbwkMs-Ejzr1pHKGsURGEIF",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1792227583,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_abck",
+      "value": "21975A745D048DCC43054163E35FD78D~-1~YAAQLsYRAv8RNaudAQAAFbZ6ug9HIBFFXkE13HiiEAFNtIKSXzlbRmN+e1NIZ1JPH1xpUPv4dF6oqhNuRs/r2FDkU7vytfCqPXxO7LTKOr+3OeRaentJdozbFeySIwmdtMqTROxeV6bIMLRRdkCerAM8JshptEPtCQaiOQ/EKeK0rWhEvfhfC8wRqh/0raxLVBZOuXJJGd46tCcaev+HAwAa1oNDemfIHIjFagsyYe2dO6BqEqErhTkse2ILJf6h2ll6SFRsiv6mMIJLkZwvu8T6cFfsiZzJRYxAHZsmgNqFnwW46TJC6Sfg+/tL1P2JL/CRi+fk9xw2C2lKr9HCDKBtcb+Cj0A/iTKI/GghLeNIVktvIR/XglKqZZEJMoMw2htcgWLc7j2pbfqgzNClgH2nrBq6LO4/GCBiYxgr6hvbT6mkFFpoKh2nC4jsJI7McVZAd7uVyLsVPVXrdtEqY1j6thwPwKIQg/Ib4ieuCxYzJDVIEdZp/ZEfzkNlK9l+s4J4ij5jlsZ/hvL8OuEfC4ePEmdSPka1VPG6Dy90iHrB3ExGZ7XeX008h98Gvqwe1Tki5mN/q7Cdq/gZRJePFl2Ijxnhe45dmcL+oxZadu7V2MvFrhpd3IwenmDgAC01XiFPvVm3n83elPskHkZiXh2o1BHmismr5l/Ant1ii6nDSx600HUUpqFan2k4A799Vm4J7rjGs8DejD2BzlMPRVy7XURDKl5Ll+3NmIWs8f9PND9rbXhWJqR52Nf8DcO7ErxdZIdFQompeiHCwgQUyqaXDDWzxmNwAiHwlxlDcmNH2XByyX8hnR1QHTRkfWLsCiI=~0~-1~-1~AAQAAAAF%2f%2f%2f%2f%2f2uCJfbaBhG4dMjxK3DdGgI3+WhttdznwS+%2fbE45aJEel69qWkYtcIAcw1BXJ5hQsoJMH35Vfzske4eadicOuJ+W0m23hOfsiwWZ~-1",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1808486097,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_ga_MY1G523SMZ",
+      "value": "GS2.1.s1783086835$o65$g1$t1783087010$j50$l0$h0",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1817647011,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "_ga_PYL9LBHN6E",
+      "value": "GS2.1.s1783331053$o75$g0$t1783331053$j60$l0$h0",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1817891054,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "_gcl_au",
+      "value": "1.1.1467038712.1776675585",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1784451585,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "_uetvid",
+      "value": "63b11cb0325c11f0a8a513d50e25a587",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1816782864,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "GATEKEEPER-u",
+      "value": "ngREQ4ULOT0pywxk4vkUiROKVNsXVlm6rs947ngY",
+      "domain": "partner.bol.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "s_sq",
+      "value": "%5B%5BB%5D%5D",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "sbt_i",
+      "value": "TZkMWEyMmQyNGY1OTAzOGM5MDlhNjNmMmU7NTY3NjUwNTU1Nzs0OTk0YTVmOS0yNDZjLTQzM2MtYWM1My1lZjUyNzc2NTk0MzI7MAOWEzMTM5NTEtYjg5Ni00MzQ2LTk1ZjItM2RhZDlmNGM1Njk3OzMyZTg0MDJiYjc3ODA0ODAxNDcwZTY5NjZkY2YyYTExZDZkY2U3O==",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1814867054,
+      "httpOnly": false,
+      "secure": false,
+      "sameSite": "None"
+    },
+    {
+      "name": "SQsession",
+      "value": "1783331053683ex86a",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1783332853,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "XSC",
+      "value": "sDxqiAA7sFxFTDCAVCGGt3rwaaGCUZsr",
+      "domain": ".bol.com",
+      "path": "/",
+      "expires": 1817891050,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "XSRF-TOKEN-HOME",
+      "value": "86c22206-3358-43c3-ac32-fcfb7d447807",
+      "domain": "partner.bol.com",
+      "path": "/sdd/home",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "XSRF-TOKEN-SHELLY",
+      "value": "3ef458bf-62ea-45ca-a4f0-0b2356ed166d",
+      "domain": "partner.bol.com",
+      "path": "/",
+      "expires": -1,
+      "httpOnly": false,
+      "secure": true,
+      "sameSite": "None"
+    }
+  ],
+  "origins": []
+}
