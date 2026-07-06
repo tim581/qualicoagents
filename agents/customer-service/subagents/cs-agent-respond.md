@@ -30,7 +30,7 @@ Use bol.com API tools:
 Query Supabase (project_id: "zlteahycfmpiaxdbnlvr"):
 - Product specs: `SELECT * FROM "Puzzlup_Product_Info" WHERE status='Actief'`
 - Name mapping: `SELECT * FROM "Product_Name_Mapping" WHERE LOWER(customer_input) LIKE '%keyword%'`
-- Use `conn_xmaq9bngsgw6e19jxcjn__execute_sql` tool
+- Use `conn_3dtzjesam8gaqzdtwzhy__execute_sql` tool
 
 ### Step 5: If historical answer lookup needed
 Search past cases for similar questions:
