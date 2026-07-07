@@ -1,0 +1,180 @@
+{
+  "sidebar_name": "🏢 Qualico Brand",
+  "internal_name": "Qualico Brand Agent",
+  "chat_url": null,
+  "one_liner": "Manages Qualico brand knowledge, product data, VAT registrations, and company identity across Notion, Supabase, Google Drive, and Airtable.",
+  "category": "Marketing & Sales",
+  "status": "active",
+  "intelligence": {
+    "current_level": "advanced",
+    "recommended_min": "basic",
+    "recommended_max": "expert",
+    "notes": "Basic for simple lookups; advanced for most tasks; expert for PDF generation, complex data analysis, or multi-step syncs."
+  },
+  "capabilities": [
+    "Scrape qualico.be and build brand knowledge overview",
+    "Maintain Qualico brand identity in Notion and Supabase",
+    "Sync VAT registrations from Airtable to Supabase (13 countries)",
+    "Process and push pitchdeck data to Supabase shared_knowledge",
+    "Generate product overview PDFs (Puzzlup SKUs, pricing, margins)",
+    "Maintain interactive brand overview app in Tasklet",
+    "Upload deliverables to Google Drive Output folder",
+    "Push brand briefings to Notion AI Agent Briefings database",
+    "Check and respond to agent_requests from Tim",
+    "Enforce brand name accuracy (Bauwee, not BAUBAU)",
+    "Query and update Supabase shared brain",
+    "Run network listener to check directives and answered requests"
+  ],
+  "routing_keywords": ["brand", "qualico", "bauwee", "puzzlup", "vat", "company overview", "product overview", "brand identity", "pitchdeck", "KBO", "EORI", "NACE"],
+  "routing_matrix": [
+    {
+      "query_type": "Brand/company info lookups",
+      "example_queries": ["What is Qualico's VAT number?", "What is Bauwee?"],
+      "intelligence_needed": "basic",
+      "handles_subagent": null,
+      "avg_response_time": "fast",
+      "avg_tokens": "low (<1K)"
+    },
+    {
+      "query_type": "Data syncs and knowledge updates",
+      "example_queries": ["Sync VAT data from Airtable", "Update brand overview in Notion"],
+      "intelligence_needed": "advanced",
+      "handles_subagent": null,
+      "avg_response_time": "medium",
+      "avg_tokens": "medium (1-5K)"
+    },
+    {
+      "query_type": "PDF generation and multi-system publishing",
+      "example_queries": ["Generate Puzzlup product overview PDF", "Push pitchdeck data to shared brain"],
+      "intelligence_needed": "expert",
+      "handles_subagent": null,
+      "avg_response_time": "slow",
+      "avg_tokens": "high (5-20K)"
+    }
+  ],
+  "subagents": [
+    {
+      "filename": "network-listener.md",
+      "purpose": "Checks Supabase agent_requests for Tim's answers and Notion Active Broadcast Directives page. Was previously run 3x/day on a schedule trigger (deleted per Directive #28).",
+      "task_types": ["data_lookup", "api_call"],
+      "query_patterns": ["Check for answered requests", "Fetch broadcast directives"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase", "Notion"],
+        "tables": ["agent_requests", "shared_knowledge"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "data",
+      "response_speed": "fast"
+    },
+    {
+      "filename": "submit-audit-response.md",
+      "purpose": "Submits agent audit data directly to Supabase Agent_Audit_Status table. Created during April 2026 agent audit.",
+      "task_types": ["api_call"],
+      "query_patterns": ["Submit audit response", "Push audit data to Supabase"],
+      "intelligence_needed": "basic",
+      "dependencies": {
+        "connections": ["Supabase"],
+        "tables": ["Agent_Audit_Status"],
+        "other_subagents": [],
+        "external_agents": []
+      },
+      "output_type": "action",
+      "response_speed": "fast"
+    }
+  ],
+  "connections": [
+    {
+      "service": "Notion",
+      "connection_id": "conn_1ykn33de2j69hkpfvg5r",
+      "what_for": "Read/write brand knowledge pages, AI Agent Briefings, Company Overview",
+      "tools_activated": ["notion-search", "notion-fetch", "notion-create-pages", "notion-update-page"]
+    },
+    {
+      "service": "Supabase",
+      "connection_id": "conn_xmaq9bngsgw6e19jxcjn",
+      "what_for": "Shared brain — read/write shared_knowledge, vat_registrations, Puzzlup product tables, Agents_Overview",
+      "tools_activated": ["execute_sql", "list_tables"]
+    },
+    {
+      "service": "Google Drive",
+      "connection_id": "conn_zhj70cc89xscszt6ktwj",
+      "what_for": "Upload deliverables to Marketing & Sales / Qualico Brand Agent Output folder, download pitchdeck from Input folder",
+      "tools_activated": ["google_drive_search_documents", "google_drive_create_folder", "google_drive_upload_file", "google_drive_download_file", "google_drive_create_document"]
+    },
+    {
+      "service": "Airtable",
+      "connection_id": "conn_jr26b33r1azf9ys1nh4p",
+      "what_for": "Read VAT-Info table from Finance & Accounting base (13 countries)",
+      "tools_activated": ["remote_http_call"]
+    }
+  ],
+  "triggers": [],
+  "webhook": {
+    "has_webhook_trigger": false,
+    "webhook_url": null,
+    "notes": "Network Listener trigger deleted per Directive #28 (March 30, 2026) — overhead triggers removed fleet-wide."
+  },
+  "key_rules": [
+    "Brand name is ALWAYS Bauwee (not BAUBAU) — correct any reference that says BAUBAU",
+    "READ shared_knowledge before starting work, WRITE findings after",
+    "Everything tagged with domain=company in Supabase",
+    "Use agent_requests table when blocked — never silently abandon tasks",
+    "DARE accountability: every task ends in DONE or ESCALATED",
+    "Start at advanced intelligence, shift up only when stuck, shift back down immediately"
+  ],
+  "input_format": {
+    "accepts": "Brand questions, product data requests, VAT lookups, company identity queries, knowledge sync requests",
+    "example_queries": [
+      "What is Qualico's VAT number in France?",
+      "Update the Bauwee brand overview in Notion",
+      "Generate a product overview PDF for Puzzlup",
+      "Sync VAT registrations from Airtable to Supabase",
+      "Push pitchdeck findings to shared brain"
+    ]
+  },
+  "output_format": {
+    "returns": "Structured data, Notion page updates, PDF files, Supabase inserts, Google Drive uploads",
+    "response_time": "medium",
+    "typical_token_usage": "medium"
+  },
+  "cooperation_partners": [
+    {
+      "agent": "Multi Agent Manager",
+      "how": "Receives broadcast directives via Notion Active Broadcast Directives page",
+      "direction": "They call me"
+    },
+    {
+      "agent": "Finance Agent",
+      "how": "Shares VAT registration data via Supabase vat_registrations table",
+      "direction": "Bidirectional"
+    }
+  ],
+  "databases_tables": [
+    {"table": "shared_knowledge", "access": "read+write", "what_for": "Brand identity, strategy, financials, agent deliverables"},
+    {"table": "vat_registrations", "access": "read+write", "what_for": "VAT numbers for 13 countries synced from Airtable"},
+    {"table": "Puzzlup_Product_Info", "access": "read", "what_for": "Product catalog with SKUs and dimensions"},
+    {"table": "puzzlup_channels", "access": "read", "what_for": "Channel list per market"},
+    {"table": "puzzlup_margins", "access": "read", "what_for": "Pricing and margins per SKU/market"},
+    {"table": "agent_requests", "access": "read+write", "what_for": "Write when blocked, read Tim's answers"},
+    {"table": "Agents_Overview", "access": "write", "what_for": "Self-registration and DNA dump"},
+    {"table": "Agent_Audit_Status", "access": "write", "what_for": "Agent audit submissions"}
+  ],
+  "github_repos": [
+    {"repo": "tim581/qualicoagents", "what_for": "Agent briefings and DNA dumps"}
+  ],
+  "files_and_paths": [
+    {"path": "/agent/home/qualico-brand-knowledge.md", "what": "Local copy of brand knowledge overview"},
+    {"path": "/agent/home/puzzlup-product-overview.pdf", "what": "Generated 6-page Puzzlup product overview PDF"},
+    {"path": "/agent/home/qualico-pitchdeck-2024.pdf", "what": "Downloaded Qualico Pitchdeck 2024 from Google Drive Input"},
+    {"path": "/agent/home/apps/qualico-brand/", "what": "Interactive brand overview Tasklet app (5 sections)"},
+    {"path": "/agent/subagents/network-listener.md", "what": "Network listener subagent for directives + request checking"},
+    {"path": "/agent/subagents/submit-audit-response.md", "what": "Audit submission subagent"}
+  ],
+  "known_issues": [
+    "Denmark VAT number missing — status: Registering at Crowe Spark",
+    "Canada BN9 and USA VAT numbers not documented",
+    "Network Listener trigger deleted per Directive #28 — reactive mode only"
+  ]
+}
