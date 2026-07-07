@@ -1,0 +1,10 @@
+.vercel
+.env
+.browser-data/
+node_modules/
+
+# Local runtime / secrets — never commit
+*cookies*
+!scripts/import-*-cookies.js
+*storage-state*
+scripts/amazon-buyer-messages-seen.json
