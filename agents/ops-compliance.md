@@ -50,7 +50,12 @@ You are the **operations and regulatory compliance** agent.
 | Table | Purpose |
 |-------|---------|
 | `COGS_Landed` | Landed cost per SKU (ocean €0.43/unit vs rail €1.80/unit) |
-| `vat_registrations` | 13 countries, VAT numbers, filing status |
+| `vat_registrations` | 13 countries, VAT numbers, filing status (manual master) |
+| `staxxer_vat_sync_runs` | Staxxer scrape run metadata (one row per sync) |
+| `staxxer_vat_filings` | Staxxer filings: todo / upcoming / done, due dates, amounts |
+| `staxxer_vat_registrations` | Staxxer VAT numbers per country (portal snapshot) |
+| `staxxer_oss_snapshot` | OSS registration + linked VAT numbers |
+| `staxxer_vat_dashboard` | Staxxer dashboard country/period status |
 
 ### Tables You Read (but don't write)
 | Table | Purpose |
@@ -103,7 +108,7 @@ SELECT * FROM "Puzzlup_Product_Info" WHERE status = 'Selling'
 
 ### Backlog
 - Working capital model (cash conversion cycle, reorder optimization)
-- VAT filing calendar automation
+- ~~VAT filing calendar automation~~ → **Staxxer sync live** — see `agents/ops-compliance/subagents/staxxer-vat-sync.md`
 - Supplier payment terms tracking
 - Forecast revision for ES/IT/NL/BE (ads stopped in those markets)
 
@@ -119,6 +124,19 @@ SELECT * FROM "Puzzlup_Product_Info" WHERE status = 'Selling'
 Query current state:
 ```sql
 SELECT * FROM vat_registrations ORDER BY country;
+```
+
+### Staxxer VAT sync (live — Jul 2026)
+
+Portal snapshots are scraped monthly via browser automation into `staxxer_vat_*` tables.
+
+**Full briefing:** `agents/ops-compliance/subagents/staxxer-vat-sync.md`  
+**Or Supabase:** `SELECT content FROM agent_briefings WHERE category = 'vat' AND topic = 'staxxer_sync';`
+
+Queue monthly sync:
+```sql
+INSERT INTO "Browser_Tasks" (agent_name, task_type, url, actions, credentials_key, status)
+VALUES ('vat-agent', 'staxxer-vat-sync', 'https://cloud.staxxer.com/qualicobv', '[]'::jsonb, 'staxxer_login', 'pending');
 ```
 
 ---

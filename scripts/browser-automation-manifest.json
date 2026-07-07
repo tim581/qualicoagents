@@ -256,6 +256,16 @@
       "category": "customer-service",
       "duration": "1–3 min",
       "queue": { "url": "https://partner.bol.com", "credentials_key": "bol_seller", "actions": [], "priority": 6 }
+    },
+    {
+      "task_type": "staxxer-vat-sync",
+      "script_name": "staxxer-vat-scraper.js",
+      "title": "Staxxer — VAT Compliance Sync",
+      "summary": "Scrape VAT filings, registrations and OSS from Staxxer.",
+      "description": "Logs into cloud.staxxer.com/qualicobv, scrapes VAT filings (todo/upcoming/done), registrations, OSS snapshot and dashboard status into Supabase staxxer_vat_* tables.",
+      "category": "vat",
+      "duration": "2–4 min",
+      "queue": { "url": "https://cloud.staxxer.com/qualicobv", "credentials_key": "staxxer_login", "actions": [], "priority": 6 }
     }
   ],
   "helpers": [
@@ -299,6 +309,14 @@
       "title": "Sellerboard — Save Session Cookies",
       "summary": "Refresh Sellerboard browser session.",
       "description": "Manual Sellerboard login; saves storage state for P&L export.",
+      "category": "setup",
+      "runnable": false
+    },
+    {
+      "script_name": "import-staxxer-cookies.js",
+      "title": "Staxxer — Import Cookies",
+      "summary": "Merge Cookie-Editor export into staxxer-storage-state.json.",
+      "description": "CLI: node scripts/import-staxxer-cookies.js <export.json>",
       "category": "setup",
       "runnable": false
     },

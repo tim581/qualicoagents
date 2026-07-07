@@ -194,6 +194,7 @@ const SCRIPT_TASKS = {
   'bol-price-update':          'bol-price-update.js',
   'bol-price-sync-all':        'bol-price-sync-all.js',
   'bol-cases-scrape':          'bol-cases-scrape.js',
+  'staxxer-vat-sync':          'staxxer-vat-scraper.js',
   'amazon-buyer-messages':     'amazon-buyer-messages.js',
   'amz-price-update':          'amz-price-update.js',
   'amz-price-sync-all':        'amz-price-sync-all.js',
@@ -206,6 +207,7 @@ const TASK_OUTPUT_FILES = {
   'forceget-inventory-export': 'forceget-inventory-data.json',
   'sellerboard-pl-export':     'sellerboard-pl-data.json',
   'bol-cases-scrape':          'bol-cases-scrape-data.json',
+  'staxxer-vat-sync':          'staxxer-vat-scrape-data.json',
   'amazon-buyer-messages':     'amazon-buyer-messages-data.json',
 };
 
@@ -244,6 +246,8 @@ const STORAGE_STATE_MAP = {
   'glc_wms': 'glc-storage-state.json',
   'sellerboard_login': 'sellerboard-storage-state.json',
   'flieber_login': 'flieber-storage-state.json',
+  'bol_seller': 'bol-storage-state.json',
+  'staxxer_login': 'staxxer-storage-state.json',
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
