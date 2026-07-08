@@ -17,6 +17,7 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.s
 const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_KEY;
 const STORAGE_STATE = path.join(__dirname, 'sellerboard-storage-state.json');
 const RUN_ID = `sb-${Date.now()}`;
+const SELLERBOARD_LOGIN_KEY = 'sellerboard_login';
 
 // Verify key is loaded
 if (SUPABASE_KEY) {
@@ -80,6 +81,88 @@ async function freshNavigate(page, url, label) {
     await page.waitForTimeout(3000);
   }
   await debugLog(page, label, `Pagina geladen: ${currentUrl.substring(0, 80)}...`);
+}
+
+function isLoginUrl(url) {
+  const u = (url || '').toLowerCase();
+  return u.includes('/login') || u.includes('/auth/login') || u.includes('/signin');
+}
+
+async function getBrowserCredentials(key) {
+  if (!SUPABASE_KEY) return null;
+  try {
+    const resp = await fetch(
+      `${SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.${encodeURIComponent(key)}&select=username,password`,
+      {
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+        },
+      }
+    );
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return Array.isArray(data) && data[0] ? data[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function ensureSellerboardSession(page) {
+  await page.goto('https://app.sellerboard.com/en/dashboard/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(3000);
+  const url = page.url();
+  if (!isLoginUrl(url)) return true;
+
+  await debugLog(page, 'session-expired', `⚠️ Session expired, attempting login fallback from ${SELLERBOARD_LOGIN_KEY}`);
+  const creds = await getBrowserCredentials(SELLERBOARD_LOGIN_KEY);
+  if (!creds?.username || !creds?.password) {
+    await debugLog(page, 'login-creds-missing', '❌ Missing sellerboard_login credentials');
+    return false;
+  }
+
+  const userSelectors = ['input[type="email"]', 'input[name="email"]', 'input#email'];
+  const passSelectors = ['input[type="password"]', 'input[name="password"]', 'input#password'];
+  let userFilled = false;
+  for (const sel of userSelectors) {
+    const loc = page.locator(sel).first();
+    if (await loc.count()) {
+      await loc.fill(creds.username);
+      userFilled = true;
+      break;
+    }
+  }
+  let passFilled = false;
+  for (const sel of passSelectors) {
+    const loc = page.locator(sel).first();
+    if (await loc.count()) {
+      await loc.fill(creds.password);
+      passFilled = true;
+      break;
+    }
+  }
+  if (!userFilled || !passFilled) {
+    await debugLog(page, 'login-form-missing', '❌ Login form not detected on Sellerboard');
+    return false;
+  }
+
+  const submit = page.locator('button[type="submit"], button:has-text("Sign"), button:has-text("Log"), input[type="submit"]').first();
+  if (await submit.count()) {
+    await submit.click({ timeout: 5000 });
+  } else {
+    await page.keyboard.press('Enter');
+  }
+
+  await page.waitForTimeout(6000);
+  const after = page.url();
+  if (isLoginUrl(after)) {
+    await debugLog(page, 'login-failed', `❌ Sellerboard login fallback failed (url=${after})`);
+    return false;
+  }
+
+  await page.context().storageState({ path: STORAGE_STATE });
+  await debugLog(page, 'login-ok', '✅ Sellerboard login fallback succeeded; storage refreshed');
+  return true;
 }
 
 function monthIndexFromName(name) {
@@ -378,6 +461,17 @@ async function scrapeTable(page, viewType, market) {
   return await scrapeMainPlTable(page);
 }
 
+async function scrapeTableWithRecovery(page, viewType, market) {
+  const first = await scrapeTable(page, viewType, market);
+  if (first) return first;
+
+  await debugLog(page, `recover-${viewType}-${market}`, '♻️ Retrying market once after session refresh');
+  const ok = await ensureSellerboardSession(page);
+  if (!ok) return null;
+  await freshNavigate(page, buildUrl(market), `retry-${viewType}-${market}`);
+  return scrapeTable(page, viewType, market);
+}
+
 async function saveToSupabase(market, viewType, headers, rows) {
   if (!SUPABASE_KEY) {
     console.log(`      ⚠️ Skip Supabase save (geen key)`);
@@ -450,17 +544,25 @@ function saveCsv(market, viewType, headers, rows) {
 
 // --- MAIN ---
 async function main() {
+  const envScope = process.env.MARKET_SCOPE ? [process.env.MARKET_SCOPE] : [];
+  let actionScopes = [];
+  try {
+    actionScopes = JSON.parse(process.env.TASK_ACTIONS || '[]').filter(a => typeof a === 'string');
+  } catch {
+    actionScopes = [];
+  }
   const args = process.argv.slice(2);
+  const inputScopes = args.length ? args : (actionScopes.length ? actionScopes : envScope);
   let marketsToScrape = [];
   
-  if (args.length === 0 || args[0] === 'eu') {
+  if (inputScopes.length === 0 || inputScopes[0] === 'eu') {
     marketsToScrape = EU_MARKETS;
-  } else if (args[0] === 'us') {
+  } else if (inputScopes[0] === 'us') {
     marketsToScrape = US_MARKETS;
-  } else if (args[0] === 'all') {
+  } else if (inputScopes[0] === 'all') {
     marketsToScrape = ALL_MARKETS;
   } else {
-    const market = args[0];
+    const market = inputScopes[0];
     if (MARKET_CONFIG[market]) {
       marketsToScrape = [market];
     } else {
@@ -495,6 +597,11 @@ async function main() {
   let hardFailures = 0;
   
   try {
+    const sessionOk = await ensureSellerboardSession(page);
+    if (!sessionOk) {
+      throw new Error('Sellerboard authentication failed (cookies invalid and fallback login failed)');
+    }
+
     for (let i = 0; i < marketsToScrape.length; i++) {
       const market = marketsToScrape[i];
       const config = MARKET_CONFIG[market];
@@ -523,7 +630,7 @@ async function main() {
       const mainUrl = buildUrl(config.urlParam);
       await freshNavigate(page, mainUrl, `monthly-pl-${market}`);
 
-      const mainData = await scrapeTable(page, 'main_pl', market);
+      const mainData = await scrapeTableWithRecovery(page, 'main_pl', market);
       if (!mainData) {
         summary[market] = '❌ Geen data';
         details[market] = { ok: false, reason: 'no_table_data' };
