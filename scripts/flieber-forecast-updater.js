@@ -1,5 +1,5 @@
 /**
- * flieber-forecast-updater.js  v8.10 — no 24h cooldown, always run all stores
+ * flieber-forecast-updater.js  v8.11 — overlay dismissal + robust HT cell activation
  *
  * Automatically updates Flieber sales forecasts from Supabase.
  * Reads Puzzlup_sales_Forecast → logs in → fills 13 months × N products × 5 stores.
@@ -20,6 +20,10 @@
 require('dotenv').config();
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
+const {
+  flieberContextOptions,
+  ensureFlieberLoggedIn,
+} = require('./browser-cookie-sessions');
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
 
@@ -84,6 +88,31 @@ async function dbLog(step, status, message) {
       body: JSON.stringify({ run_id: RUN_ID, step, status, message: short }),
     });
   } catch (e) { /* never break the main flow */ }
+}
+
+async function completeBrowserTaskIfQueued({ success, data, error }) {
+  const taskId = process.env.BROWSER_TASK_ID;
+  if (!taskId || !process.env.SUPABASE_URL || !process.env.SUPABASE_KEY) return;
+
+  const payload = {
+    status: success ? 'done' : 'failed',
+    result: data ?? null,
+    error_message: error ? String(error).substring(0, 3000) : null,
+    completed_at: new Date().toISOString(),
+  };
+
+  try {
+    const { error: updateError } = await supabase
+      .from('Browser_Tasks')
+      .update(payload)
+      .eq('id', taskId)
+      .eq('status', 'running');
+
+    if (updateError) throw updateError;
+    console.log(`✅ Browser_Tasks ${taskId} → ${payload.status}`);
+  } catch (e) {
+    console.log(`⚠️ Browser_Tasks update failed for ${taskId}: ${e.message}`);
+  }
 }
 
 async function dbShot(page, step, label) {
@@ -166,25 +195,23 @@ async function loadForecastData() {
 
 // ── LOGIN ─────────────────────────────────────────────────────────────────────
 
-async function login(page) {
-  console.log('\n🔐 Logging in...');
-  await dbLog('login', 'info', 'Navigating to Flieber...');
+async function passwordLogin(page) {
   await page.goto('https://app.flieber.com', { waitUntil: 'domcontentloaded', timeout: 60000 });
-
   await page.waitForSelector('input[type="email"], input[name="email"], input[type="text"]', { timeout: 60000 });
   await dbLog('login', 'info', 'Login form visible');
-
   await page.fill('input[type="email"], input[name="email"], input[type="text"]', FLIEBER_EMAIL);
   await page.waitForTimeout(500);
   await page.fill('input[type="password"]', FLIEBER_PASSWORD);
   await page.waitForTimeout(500);
   await page.locator('button:has-text("Continue"), button[type="submit"]').filter({ visible: true }).first().click({ timeout: 30000 });
-
   await page.waitForURL('**app.flieber.com/app/**', { timeout: 60000 });
-  await dbLog('login', 'success', 'Logged in ✅');
+  await dbLog('login', 'success', 'Logged in via password ✅');
   console.log('✅ Logged in');
+}
 
-  await page.context().storageState({ path: 'flieber-auth.json' });
+async function login(page) {
+  console.log('\n🔐 Flieber auth (cookies first)...');
+  await ensureFlieberLoggedIn(page, { log: dbLog, fallbackLogin: passwordLogin });
 }
 
 // ── STORE FILTER ──────────────────────────────────────────────────────────────
@@ -310,12 +337,129 @@ async function applyStoreFilter(page, storeName) {
   console.log(`✅ Filter applied: ${storeName}`);
 }
 
+// ── UI BLOCKERS (Chakra popovers / stale portals) ─────────────────────────────
+
+async function dismissStalePopovers(page, { keepModal = false } = {}) {
+  if (!keepModal) {
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(250);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(250);
+  }
+
+  const removed = await page.evaluate((keepOpenModal) => {
+    let count = 0;
+    document.querySelectorAll('.chakra-portal').forEach((portal) => {
+      if (portal.querySelector('.handsontable, .ht_master, [role="menu"], [role="menuitem"], .chakra-menu__menu-list')) {
+        return;
+      }
+      if (keepOpenModal && portal.querySelector('.chakra-modal__content, .chakra-modal__content-container, [role="dialog"]')) {
+        return;
+      }
+      const blocksPointer = portal.querySelector('[role="menu"], [role="listbox"], [data-popper-placement], .chakra-menu__menu-list, .chakra-popover__content');
+      const isOverlayOnly = portal.children.length === 1
+        && portal.querySelector('div[class*="css-"]')
+        && !portal.querySelector('.handsontable, .chakra-modal__content, [role="dialog"]');
+      if (blocksPointer || isOverlayOnly) {
+        portal.remove();
+        count++;
+      }
+    });
+    if (!keepOpenModal) {
+      document.querySelectorAll('.handsontableInputHolder').forEach((el) => el.remove());
+    }
+    return count;
+  }, keepModal).catch(() => 0);
+
+  if (removed > 0) {
+    await dbLog('ui-blockers', 'info', `Removed ${removed} stale Chakra portal(s)`);
+  }
+  await page.waitForTimeout(200);
+}
+
+async function scrollHandsontableCellIntoView(page, cellSel) {
+  await page.evaluate((sel) => {
+    const td = document.querySelector(sel);
+    if (!td) return false;
+    const holder = td.closest('.wtHolder') || document.querySelector('.ht_master .wtHolder');
+    if (holder) {
+      const tdLeft = td.offsetLeft;
+      const tdWidth = td.offsetWidth;
+      const viewLeft = holder.scrollLeft;
+      const viewWidth = holder.clientWidth;
+      if (tdLeft < viewLeft + 40) holder.scrollLeft = Math.max(0, tdLeft - 60);
+      else if (tdLeft + tdWidth > viewLeft + viewWidth - 40) {
+        holder.scrollLeft = tdLeft + tdWidth - viewWidth + 60;
+      }
+    }
+    td.scrollIntoView({ block: 'center', inline: 'center' });
+    return true;
+  }, cellSel);
+  await page.waitForTimeout(450);
+}
+
+async function activateHandsontableCell(page, cellSel, productName, monthLabel) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await dismissStalePopovers(page, { keepModal: true });
+    await scrollHandsontableCellIntoView(page, cellSel);
+
+    const cell = page.locator(cellSel).first();
+    const isVis = await cell.isVisible({ timeout: 3000 }).catch(() => false);
+    if (!isVis) {
+      await dbLog('fill-months', 'warn', `${productName} ${monthLabel}: cell not visible (attempt ${attempt + 1})`);
+      await page.locator('.ht_master .wtHolder').first().evaluate((el) => { el.scrollLeft += 280; }).catch(() => {});
+      await page.waitForTimeout(500);
+      continue;
+    }
+
+    const editorSel = '.handsontableInputHolder textarea, .handsontableInputHolder input';
+
+    try {
+      await cell.click({ timeout: 5000, force: true });
+      await page.waitForTimeout(200);
+      await page.keyboard.press('F2');
+      await page.waitForTimeout(450);
+      if (await page.locator(editorSel).first().isVisible({ timeout: 1500 }).catch(() => false)) {
+        return cell;
+      }
+    } catch (e) {
+      await dbLog('fill-months', 'warn', `${productName} ${monthLabel}: click+F2 failed — ${e.message.substring(0, 120)}`);
+    }
+
+    try {
+      await cell.dblclick({ timeout: 12000, force: true });
+      await page.waitForTimeout(450);
+      if (await page.locator(editorSel).first().isVisible({ timeout: 1500 }).catch(() => false)) {
+        return cell;
+      }
+    } catch (e) {
+      await dbLog('fill-months', 'warn', `${productName} ${monthLabel}: dblclick failed — ${e.message.substring(0, 120)}`);
+    }
+
+    await page.evaluate((sel) => {
+      const td = document.querySelector(sel);
+      if (!td) return;
+      td.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      td.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      td.click();
+      td.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    }, cellSel).catch(() => {});
+    await page.waitForTimeout(450);
+    if (await page.locator(editorSel).first().isVisible({ timeout: 1500 }).catch(() => false)) {
+      return page.locator(cellSel).first();
+    }
+  }
+
+  throw new Error(`Could not activate cell ${cellSel} for ${monthLabel}`);
+}
+
 // ── OPEN PRODUCT EDITOR ───────────────────────────────────────────────────────
 
 async function openProductEditor(page, productName) {
   console.log(`\n  📦 ${productName}`);
   await dbLog('product-editor', 'info', `Opening editor for: ${productName}`);
 
+  await dismissStalePopovers(page);
   await dbShot(page, `product-${productName.replace(/ /g,'_')}-0-start`, 'Product list before search');
 
   // Step 1: Find the product text element and scroll it into view
@@ -371,14 +515,28 @@ async function openProductEditor(page, productName) {
     const altVisible = await altRow.isVisible({ timeout: 2000 }).catch(() => false);
     if (altVisible) {
       await dbLog('product-editor', 'info', `Using [role="row"] fallback for ${productName}`);
-      await altRow.hover();
+      await altRow.evaluate((el) => {
+        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
     } else {
       // Last resort: hover the text element itself to trigger menu
       await dbLog('product-editor', 'info', `Using direct text hover fallback for ${productName}`);
-      await productTextEl.hover();
+      await productTextEl.hover({ force: true, timeout: 10000 }).catch(async () => {
+        await productTextEl.evaluate((el) => {
+          el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+          el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        });
+      });
     }
   } else {
-    await row.hover();
+    await row.scrollIntoViewIfNeeded().catch(() => {});
+    await row.hover({ force: true, timeout: 15000 }).catch(async () => {
+      await row.evaluate((el) => {
+        el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      });
+    });
   }
   await page.waitForTimeout(300);
 
@@ -390,7 +548,7 @@ async function openProductEditor(page, productName) {
 
   const menuVisible = await menuBtn.isVisible({ timeout: 2000 }).catch(() => false);
   if (menuVisible) {
-    await menuBtn.click();
+    await menuBtn.click({ force: true, timeout: 8000 });
     await dbLog('product-editor', 'info', `Menu button clicked for ${productName}`);
   } else {
     // Fallback: right-click or click directly on the row
@@ -398,10 +556,28 @@ async function openProductEditor(page, productName) {
     await productTextEl.click();
     await page.waitForTimeout(300);
   }
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(400);
 
-  // Step 4: Click "Edit forecast" or "Edit forecast & past sales"
-  await page.click(':text("Edit forecast"), :text("Edit forecast & past sales")', { timeout: 5000 });
+  // Step 4: Click "Edit forecast" (retry — menu sometimes closes early)
+  let editorOpened = false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await page.locator('button, a, [role="menuitem"]').filter({ hasText: /edit forecast/i }).first()
+        .click({ timeout: 8000, force: true });
+      editorOpened = true;
+      break;
+    } catch {
+      if (attempt < 2) {
+        await dbLog('product-editor', 'warn', `Edit forecast click retry ${attempt + 1} for ${productName}`);
+        await menuBtn.click({ force: true, timeout: 5000 }).catch(() => {});
+        await page.waitForTimeout(600);
+      } else {
+        await page.click(':text("Edit forecast"), :text("Edit forecast & past sales")', { timeout: 10000, force: true });
+        editorOpened = true;
+      }
+    }
+  }
+  if (!editorOpened) throw new Error('Edit forecast menu item not clickable');
   await page.waitForTimeout(1500);
 
   await dbShot(page, `product-${productName.replace(/ /g,'_')}-1-editor-open`, 'Editor opened');
@@ -468,7 +644,12 @@ async function ensureAbsoluteMode(page) {
 async function fillMonths(page, productName, monthlyValues) {
   await dbLog('fill-months', 'info', `fillMonths start for ${productName}`);
 
-  await page.click(':text("Forecast adjustments")');
+  await page.waitForTimeout(800);
+  await page.locator('button, [role="tab"]').filter({ hasText: /forecast adjustments/i }).first()
+    .click({ timeout: 15000, force: true })
+    .catch(async () => {
+      await page.click(':text("Forecast adjustments")', { timeout: 15000, force: true });
+    });
   await page.waitForTimeout(600);
 
   await switchToMonthly(page);
@@ -576,25 +757,26 @@ async function fillMonths(page, productName, monthlyValues) {
     // Read current value before editing
     const curVal = await cell.innerText().catch(() => '?');
 
-    // Double-click to enter EDIT mode
-    await cell.dblclick({ timeout: 5000 });
-    await page.waitForTimeout(400);
+    await scrollHandsontableCellIntoView(page, cellSel);
+    cell = page.locator(cellSel).first();
 
-    // ── SAFE CELL EDIT (v8.9+) ──────────────────────────────────────────
-    // NEVER use Ctrl+A — in Handsontable it selects ALL grid cells.
-    // Instead: wait for the editor textarea, clear it via JS, then type.
     const editorSel = '.handsontableInputHolder textarea, .handsontableInputHolder input';
-    let editorOpen = await page.locator(editorSel).first()
-      .isVisible({ timeout: 1500 }).catch(() => false);
+    let editorOpen = false;
+
+    try {
+      await cell.dblclick({ timeout: 12000, force: true });
+      await page.waitForTimeout(400);
+      editorOpen = await page.locator(editorSel).first().isVisible({ timeout: 1500 }).catch(() => false);
+    } catch (e) {
+      await dbLog('fill-months', 'warn', `Month[${i}] ${mo}: dblclick failed — ${e.message.substring(0, 100)}`);
+    }
 
     if (!editorOpen) {
-      // Fallback: dblclick didn't open editor — try click + F2 (edit mode shortcut)
-      await cell.click({ timeout: 2000 });
-      await page.keyboard.press('F2');
-      await page.waitForTimeout(400);
-      editorOpen = await page.locator(editorSel).first()
-        .isVisible({ timeout: 1500 }).catch(() => false);
+      await activateHandsontableCell(page, cellSel, productName, mo);
+      editorOpen = await page.locator(editorSel).first().isVisible({ timeout: 1500 }).catch(() => false);
     }
+
+    // ── SAFE CELL EDIT (v8.9+) ──────────────────────────────────────────
 
     if (editorOpen) {
       // Clear editor value via JS (safe — no grid selection risk)
@@ -611,7 +793,9 @@ async function fillMonths(page, productName, monthlyValues) {
 
     // Commit edit with Tab (moves right — harmless since we click each cell)
     await page.keyboard.press('Tab');
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Escape').catch(() => {});
+    await page.waitForTimeout(250);
 
     // ── VERIFY after fill (v8.9) ──────────────────────────────────────
     // Re-read the cell to confirm the value actually took.
@@ -687,12 +871,16 @@ async function verifyLateMo(page, productName, monthlyValues) {
 // ── CLOSE MODAL ───────────────────────────────────────────────────────────────
 
 async function closeModal(page) {
+  await dismissStalePopovers(page, { keepModal: true });
+
   // Try Escape first
   await page.keyboard.press('Escape');
   await page.waitForTimeout(500);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(400);
 
   // Check if modal is still open
-  const modalStillOpen = await page.locator('.chakra-modal__content-container').isVisible({ timeout: 500 }).catch(() => false);
+  const modalStillOpen = await page.locator('.chakra-modal__content-container, .chakra-modal__content').isVisible({ timeout: 500 }).catch(() => false);
   
   if (modalStillOpen) {
     await dbLog('close-modal', 'warn', 'Modal still open after Escape — trying close button...');
@@ -714,7 +902,7 @@ async function closeModal(page) {
   }
 
   // Final check — if still open, click the overlay backdrop
-  const stillOpen = await page.locator('.chakra-modal__content-container').isVisible({ timeout: 300 }).catch(() => false);
+  const stillOpen = await page.locator('.chakra-modal__content-container, .chakra-modal__content').isVisible({ timeout: 300 }).catch(() => false);
   if (stillOpen) {
     await dbLog('close-modal', 'warn', 'Modal STILL open — clicking overlay...');
     await page.locator('.chakra-modal__overlay').click({ position: { x: 10, y: 10 }, force: true }).catch(() => {});
@@ -722,6 +910,7 @@ async function closeModal(page) {
   }
 
   await page.waitForTimeout(300);
+  await dismissStalePopovers(page);
 }
 
 // ── WAIT FOR PRODUCT LIST (v8.5) ─────────────────────────────────────────────
@@ -758,7 +947,7 @@ async function waitForProductList(page) {
 // ── MAIN ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log('🚀 Flieber Forecast Updater v8.9\n');
+  console.log('🚀 Flieber Forecast Updater v8.11\n');
   await dbLog('main', 'info', `Script started. TEST_MODE=${TEST_MODE}`);
 
   const completedStores = await getCompletedStores();
@@ -768,9 +957,9 @@ async function main() {
     headless: false,
     slowMo: 50,
   });
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 900 },
-  });
+  const context = await browser.newContext(
+    flieberContextOptions({ viewport: { width: 1440, height: 900 } }),
+  );
   const page = await context.newPage();
 
   const stats = { done: 0, skipped: 0, errors: [] };
@@ -860,10 +1049,23 @@ async function main() {
   console.log(`\n🔍 Run ID: ${RUN_ID}`);
   console.log(`   → Supabase: SELECT step, status, message FROM "Flieber_Debug_Log" WHERE run_id = '${RUN_ID}' ORDER BY created_at`);
   console.log('══════════════════════════════════');
+
+  await completeBrowserTaskIfQueued({
+    success: stats.errors.length === 0,
+    data: {
+      run_id: RUN_ID,
+      products_updated: stats.done,
+      products_skipped: stats.skipped,
+      error_count: stats.errors.length,
+      errors: stats.errors.slice(0, 10),
+    },
+    error: stats.errors.length ? stats.errors.map((e) => `${e.store}/${e.name}: ${e.error}`).join('; ') : null,
+  });
 }
 
 main().catch(async err => {
   console.error('Fatal error:', err);
   await dbLog('main', 'error', `Fatal: ${err.message}`).catch(() => {});
+  await completeBrowserTaskIfQueued({ success: false, error: err.message });
   process.exit(1);
 });
