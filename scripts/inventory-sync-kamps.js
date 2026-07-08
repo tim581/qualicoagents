@@ -20,8 +20,8 @@ const fs = require('fs');
 const path = require('path');
 
 const SITE_URL      = 'https://kampspijnacker.coraxwms.nl';
-const SITE_EMAIL    = 'qualico@coraxwms.nl';
-const SITE_PASSWORD = 'GXE.NYeUJX6.f!J';
+const DEFAULT_SITE_EMAIL    = 'qualico@coraxwms.nl';
+const DEFAULT_SITE_PASSWORD = 'GXE.NYeUJX6.f!J';
 const WAREHOUSE_NAME = 'Kamps/Vanthiel';
 const STORAGE_STATE_PATH = path.join(__dirname, 'corax-wms-storage-state.json');
 
@@ -85,7 +85,7 @@ async function dbShot(page, step, label) {
   } catch (e) { /* never break the main flow */ }
 }
 
-async function updateTaskResult(resultData) {
+async function updateTaskResult({ resultData, success = true, errorMessage = null }) {
   const taskId = process.env.BROWSER_TASK_ID;
   if (!taskId) { console.log('⚠️ No BROWSER_TASK_ID — skipping result update'); return; }
   try {
@@ -97,10 +97,38 @@ async function updateTaskResult(resultData) {
         'Content-Type': 'application/json',
         'Prefer': 'return=minimal',
       },
-      body: JSON.stringify({ result: JSON.stringify(resultData) }),
+      body: JSON.stringify({
+        result: JSON.stringify(resultData),
+        status: success ? 'done' : 'failed',
+        error_message: success ? null : String(errorMessage || 'Kamps inventory sync failed').slice(0, 1000),
+        completed_at: new Date().toISOString(),
+      }),
     });
     console.log(`✅ Result written to Browser_Tasks id=${taskId}`);
   } catch (e) { console.log(`⚠️ Failed to update task result: ${e.message}`); }
+}
+
+async function loadCoraxCredentials() {
+  try {
+    const res = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.vanthiel_corax_wms&select=username,password`,
+      {
+        headers: {
+          apikey: process.env.SUPABASE_KEY,
+          Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+        },
+      }
+    );
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    if (Array.isArray(data) && data[0]?.username && data[0]?.password) {
+      await dbLog('credentials', 'info', `Loaded Corax credentials for ${data[0].username}`);
+      return { username: data[0].username, password: data[0].password };
+    }
+  } catch (e) {
+    await dbLog('credentials', 'warn', `Could not load Browser_Credentials.vanthiel_corax_wms: ${e.message}`);
+  }
+  return { username: DEFAULT_SITE_EMAIL, password: DEFAULT_SITE_PASSWORD };
 }
 
 async function writeInventoryLevels(products) {
@@ -118,6 +146,9 @@ async function writeInventoryLevels(products) {
           },
         }
       );
+      if (!res.ok) {
+        throw new Error(`Lookup failed ${res.status}: ${await res.text()}`);
+      }
       const existing = await res.json();
       const payload = {
         product_name: p.product_name,
@@ -130,7 +161,7 @@ async function writeInventoryLevels(products) {
         source: 'playwright_kamps',
       };
       if (Array.isArray(existing) && existing.length > 0) {
-        await fetch(
+        const updateRes = await fetch(
           `${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(p.product_name)}&channel=eq.${encodeURIComponent('3PL EU')}`,
           {
             method: 'PATCH',
@@ -143,8 +174,11 @@ async function writeInventoryLevels(products) {
             body: JSON.stringify(payload),
           }
         );
+        if (!updateRes.ok) {
+          throw new Error(`Update failed ${updateRes.status}: ${await updateRes.text()}`);
+        }
       } else {
-        await fetch(`${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels`, {
+        const insertRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels`, {
           method: 'POST',
           headers: {
             'apikey': process.env.SUPABASE_KEY,
@@ -154,6 +188,9 @@ async function writeInventoryLevels(products) {
           },
           body: JSON.stringify(payload),
         });
+        if (!insertRes.ok) {
+          throw new Error(`Insert failed ${insertRes.status}: ${await insertRes.text()}`);
+        }
       }
       written++;
     } catch (e) {
@@ -162,7 +199,7 @@ async function writeInventoryLevels(products) {
   }
   await dbLog('inventory-write', 'success', `Wrote ${written}/${products.length} EU rows`);
   if (written > 0) {
-    await fetch(`${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels?channel=eq.3PL%20EU&source=eq.playwright_kamps`, {
+    const touchRes = await fetch(`${process.env.SUPABASE_URL}/rest/v1/Inventory_Levels?channel=eq.3PL%20EU&source=eq.playwright_kamps`, {
       method: 'PATCH',
       headers: {
         'apikey': process.env.SUPABASE_KEY,
@@ -172,6 +209,9 @@ async function writeInventoryLevels(products) {
       },
       body: JSON.stringify({ last_synced_at: now }),
     });
+    if (!touchRes.ok) {
+      throw new Error(`Touch sync stamp failed ${touchRes.status}: ${await touchRes.text()}`);
+    }
   }
   return written;
 }
@@ -186,7 +226,7 @@ async function writeInventoryLevels(products) {
 // 5. Possibly MFA prompt → script stops
 // 6. Redirect back to Kamps portal
 
-async function login(page) {
+async function login(page, creds) {
   console.log('\n🔐 Logging in via Microsoft SSO...');
   await dbLog('login', 'info', 'Navigating to Kamps portal...');
   
@@ -209,6 +249,33 @@ async function login(page) {
   
   await dbShot(page, 'login-page', 'Initial page / SSO redirect');
   await dbLog('login', 'info', `Current URL: ${page.url()}`);
+
+  // Microsoft account picker can block the classic email/password form.
+  const pickerContinue = page.locator(
+    'button:has-text("Use another account"), button:has-text("Een ander account gebruiken"), div[role="button"]:has-text("Use another account"), div[role="button"]:has-text("Een ander account gebruiken")',
+  ).first();
+  if (await pickerContinue.isVisible({ timeout: 2000 }).catch(() => false)) {
+    await pickerContinue.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(2000);
+    await dbLog('login', 'info', 'Clicked "Use another account" on Microsoft picker');
+  }
+
+  // If Microsoft shows account tiles, selecting the known account can continue login without fields.
+  const accountTile = page.locator(
+    `div[role="button"]:has-text("${creds.username}"), div:has-text("${creds.username}"), div[data-test-id*="account"]:has-text("${creds.username}")`,
+  ).first();
+  if (await accountTile.isVisible({ timeout: 2000 }).catch(() => false)) {
+    await accountTile.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(2500);
+    await dbLog('login', 'info', `Clicked Microsoft account tile: ${creds.username}`);
+  }
+
+  const continueBtn = await page.$('#idSIButton9, input[type="submit"], button[type="submit"]');
+  if (continueBtn) {
+    await continueBtn.click().catch(() => {});
+    await page.waitForTimeout(2000);
+    await dbLog('login', 'info', 'Clicked Microsoft continue/submit button');
+  }
   
   // Check if already logged in
   if (!page.url().includes('login') && !page.url().includes('microsoftonline')) {
@@ -218,13 +285,13 @@ async function login(page) {
   
   // ── Step 1: Enter email ──
   try {
-    const emailSel = 'input[type="email"], input[name="loginfmt"], input[name="login"]';
+    const emailSel = 'input[type="email"], input[name="loginfmt"], input[name="login"], input#i0116';
     await page.waitForSelector(emailSel, { timeout: 15000 });
-    await page.fill(emailSel, SITE_EMAIL);
+    await page.fill(emailSel, creds.username);
     await dbLog('login', 'info', 'Email filled on Microsoft page');
     
     // Click Next
-    const nextBtn = await page.$('input[type="submit"][value="Next"], input[type="submit"], #idSIButton9');
+    const nextBtn = await page.$('input[type="submit"][value="Next"], input[type="submit"], #idSIButton9, button:has-text("Next"), button:has-text("Volgende")');
     if (nextBtn) {
       await nextBtn.click();
       await dbLog('login', 'info', 'Clicked Next');
@@ -241,12 +308,12 @@ async function login(page) {
   
   // ── Step 2: Enter password ──
   try {
-    const pwSel = 'input[type="password"], input[name="passwd"]';
+    const pwSel = 'input[type="password"], input[name="passwd"], input#i0118';
     await page.waitForSelector(pwSel, { timeout: 15000 });
     
     // page.fill() first
     try {
-      await page.fill(pwSel, SITE_PASSWORD);
+      await page.fill(pwSel, creds.password);
       await dbLog('login', 'info', 'Password filled via page.fill');
     } catch {
       // Fallback: evaluate
@@ -258,7 +325,7 @@ async function login(page) {
           el.dispatchEvent(new Event('input', { bubbles: true }));
           el.dispatchEvent(new Event('change', { bubbles: true }));
         }
-      }, {sel: pwSel, pw: SITE_PASSWORD});
+      }, {sel: pwSel, pw: creds.password});
       await dbLog('login', 'info', 'Password filled via evaluate');
     }
     
@@ -521,11 +588,18 @@ async function scrapeInventory(page) {
     await dbLog('start', 'info', 'Script v1.0 starting');
     browser = await chromium.launch({ headless: false });
     const page = await browser.newPage();
+    const creds = await loadCoraxCredentials();
 
-    await login(page);
+    await login(page, creds);
     const products = await scrapeInventory(page);
 
+    if (!products.length) {
+      throw new Error('Kamps scrape returned zero mapped products');
+    }
     const written = await writeInventoryLevels(products);
+    if (written !== products.length) {
+      throw new Error(`Kamps write mismatch: wrote ${written}/${products.length} products`);
+    }
     const result = {
       warehouse: 'kamps',
       run_id: RUN_ID,
@@ -537,7 +611,7 @@ async function scrapeInventory(page) {
       note: 'Kamps may report colli (cartons) not units — verify and multiply by units_per_master if needed',
     };
 
-    await updateTaskResult(result);
+    await updateTaskResult({ resultData: result, success: true });
     console.log(`\n✅ Found ${products.length} products, ${result.total_units} total`);
     for (const p of products) console.log(`   ${p.product_name}: ${p.units_on_hand}`);
     await dbLog('complete', 'success', `Finished: ${products.length} products, ${result.total_units} total`);
@@ -545,7 +619,12 @@ async function scrapeInventory(page) {
   } catch (err) {
     console.error('❌ Fatal:', err.message);
     await dbLog('fatal', 'error', `${err.message}\n${err.stack}`);
-    await updateTaskResult({ warehouse: 'kamps', run_id: RUN_ID, error: err.message, products: [], total_units: 0 });
+    await updateTaskResult({
+      resultData: { warehouse: 'kamps', run_id: RUN_ID, error: err.message, products: [], total_units: 0 },
+      success: false,
+      errorMessage: err.message,
+    });
+    process.exitCode = 1;
   } finally {
     if (browser) await browser.close();
     await new Promise(r => setTimeout(r, 2000));

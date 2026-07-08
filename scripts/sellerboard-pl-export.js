@@ -411,7 +411,7 @@ async function saveToSupabase(market, viewType, headers, rows) {
       const updated = await patchResp.json();
       if (Array.isArray(updated) && updated.length > 0) {
         console.log(`      ✅ Supabase updated: ${market} / ${viewType} (${rows.length} rijen)`);
-        return true;
+        return { ok: true, mode: 'update', row_count: rows.length };
       }
     }
 
@@ -423,15 +423,15 @@ async function saveToSupabase(market, viewType, headers, rows) {
 
     if (insertResp.ok) {
       console.log(`      ✅ Supabase inserted: ${market} / ${viewType} (${rows.length} rijen)`);
-      return true;
+      return { ok: true, mode: 'insert', row_count: rows.length };
     }
 
     const body = await insertResp.text();
     console.log(`      ❌ Supabase error: ${insertResp.status} ${body.substring(0, 200)}`);
-    return false;
+    return { ok: false, error: `Supabase ${insertResp.status}: ${body.substring(0, 200)}` };
   } catch (e) {
     console.log(`      ❌ Supabase fetch error: ${e.message}`);
-    return false;
+    return { ok: false, error: e.message };
   }
 }
 
@@ -490,6 +490,9 @@ async function main() {
   
   let currentAccount = 'eu'; // Default after cookie load
   const summary = {};
+  const details = {};
+  let totalRowsExported = 0;
+  let hardFailures = 0;
   
   try {
     for (let i = 0; i < marketsToScrape.length; i++) {
@@ -523,15 +526,42 @@ async function main() {
       const mainData = await scrapeTable(page, 'main_pl', market);
       if (!mainData) {
         summary[market] = '❌ Geen data';
+        details[market] = { ok: false, reason: 'no_table_data' };
+        hardFailures++;
         continue;
       }
 
       const monthly = extractMonthly2026(mainData.headers, mainData.rows);
+      if (!monthly.rows.length || !monthly.months.length) {
+        console.log(`      ❌ Lege export gedetecteerd (${monthly.rows.length} rijen, ${monthly.months.length} maanden)`);
+        summary[market] = '❌ Lege export';
+        details[market] = {
+          ok: false,
+          reason: 'empty_export',
+          row_count: monthly.rows.length,
+          month_count: monthly.months.length
+        };
+        hardFailures++;
+        continue;
+      }
       console.log(`      📅 Maanden: ${monthly.months.join(', ')}`);
 
-      await saveToSupabase(market, 'monthly_pl', monthly.headers, monthly.rows);
+      const saveResult = await saveToSupabase(market, 'monthly_pl', monthly.headers, monthly.rows);
+      if (!saveResult?.ok) {
+        summary[market] = '❌ Supabase save';
+        details[market] = { ok: false, reason: 'supabase_save_failed', error: saveResult?.error || 'unknown' };
+        hardFailures++;
+        continue;
+      }
       saveCsv(market, 'monthly_pl', monthly.headers, monthly.rows);
       summary[market] = `${monthly.rows.length} metrics × ${monthly.months.length} months ✅`;
+      details[market] = {
+        ok: true,
+        row_count: monthly.rows.length,
+        month_count: monthly.months.length,
+        save_mode: saveResult.mode
+      };
+      totalRowsExported += monthly.rows.length;
     }
     
   } finally {
@@ -553,8 +583,19 @@ async function main() {
   const jsonFile = path.join(__dirname, 'sellerboard-pl-data.json');
   fs.writeFileSync(jsonFile, JSON.stringify(summary, null, 2));
   console.log(`   JSON:     ${jsonFile} (${(fs.statSync(jsonFile).size / 1024).toFixed(1)}KB — summary only)`);
-  
-  console.log('\n✅ Klaar!');
+
+  // Hard-fail when script "succeeds" without writing real rows.
+  if (totalRowsExported === 0 || hardFailures > 0) {
+    const reason = totalRowsExported === 0
+      ? `Geen rijen geëxporteerd (${hardFailures} failures)`
+      : `${hardFailures} market failure(s)`;
+    const error = new Error(`Sellerboard export failed: ${reason}`);
+    error.summary = { summary, details, totalRowsExported, hardFailures };
+    throw error;
+  }
+
+  console.log(`\n✅ Klaar! (${totalRowsExported} total rows)`);
+  return { summary, details, totalRowsExported, hardFailures };
 }
 
 module.exports = async function (browser, context, page, task) {
@@ -562,8 +603,8 @@ module.exports = async function (browser, context, page, task) {
   if (args.length > 0) {
     process.argv = ['node', 'sellerboard-pl-export.js', ...args];
   }
-  await main();
-  return { success: true, run_id: RUN_ID };
+  const result = await main();
+  return { success: true, run_id: RUN_ID, ...result };
 };
 
 if (require.main === module) {

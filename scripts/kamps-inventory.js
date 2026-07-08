@@ -19,8 +19,8 @@ const { writeInventoryToSupabase } = require('./inventory-supabase');
 
 const PORTAL_TIMEOUT = 60000;
 const SITE_URL = 'https://kampspijnacker.coraxwms.nl';
-const EMAIL = 'qualico@coraxwms.nl';
-const PASSWORD = 'GXE.NYeUJX6.f!J';
+const DEFAULT_EMAIL = 'qualico@coraxwms.nl';
+const DEFAULT_PASSWORD = 'GXE.NYeUJX6.f!J';
 
 const KNOWN_EU_PRODUCTS = [
   'PUZZLUP 1500 GIFT',
@@ -33,6 +33,24 @@ const KNOWN_EU_PRODUCTS = [
 ];
 
 async function loginMicrosoft(page) {
+  let email = DEFAULT_EMAIL;
+  let password = DEFAULT_PASSWORD;
+  try {
+    const credsRes = await fetch(
+      `${process.env.SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.vanthiel_corax_wms&select=username,password`,
+      { headers: { apikey: process.env.SUPABASE_KEY, Authorization: `Bearer ${process.env.SUPABASE_KEY}` } }
+    );
+    if (credsRes.ok) {
+      const credsData = await credsRes.json();
+      if (Array.isArray(credsData) && credsData[0]?.username && credsData[0]?.password) {
+        email = credsData[0].username;
+        password = credsData[0].password;
+      }
+    }
+  } catch {
+    // fallback to defaults
+  }
+
   await page.goto(SITE_URL, { waitUntil: 'domcontentloaded', timeout: PORTAL_TIMEOUT });
   await page.waitForTimeout(4000);
 
@@ -42,16 +60,16 @@ async function loginMicrosoft(page) {
 
   const emailField = page.getByRole('textbox', { name: 'someone@coraxwms.nl' });
   await emailField.waitFor({ state: 'visible', timeout: PORTAL_TIMEOUT });
-  await emailField.fill(EMAIL);
+  await emailField.fill(email);
   await page.getByRole('button', { name: 'Volgende' }).click();
   await page.waitForTimeout(2000);
 
   try {
     const pwField = page.getByRole('textbox', { name: 'Voer het wachtwoord voor' });
     await pwField.waitFor({ state: 'visible', timeout: 5000 });
-    await pwField.fill(PASSWORD);
+    await pwField.fill(password);
   } catch {
-    await page.locator('#i0118').fill(PASSWORD);
+    await page.locator('#i0118').fill(password);
   }
 
   await page.getByRole('button', { name: 'Aanmelden' }).click();
