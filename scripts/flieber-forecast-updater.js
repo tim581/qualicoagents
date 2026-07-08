@@ -42,9 +42,11 @@ const STORES = [
 
 // ── TEST MODE ─────────────────────────────────────────────────────────────────
 // Set to true to run ONLY Bol × 1 product — safe for first-time testing
-const TEST_MODE = false;
+const TEST_MODE = process.env.FORECAST_TEST_MODE === '1' || process.env.TEST_MODE === '1';
 // Set to a channelId to run only that store (all products), or null for all stores
-const ONLY_STORE = null; // null = ALL stores (Amazon EU/USA/UK/CA + Bol)
+const ONLY_STORE = Number.isFinite(Number(process.env.ONLY_STORE))
+  ? Number(process.env.ONLY_STORE)
+  : null; // null = ALL stores (Amazon EU/USA/UK/CA + Bol)
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Products to SKIP entirely
@@ -132,6 +134,36 @@ async function dbShot(page, step, label) {
     });
     console.log(`  📸 Screenshot logged → ${step} (${label})`);
   } catch (e) { /* never break the main flow */ }
+}
+
+const UI_RETRY_ATTEMPTS = 3;
+const UI_RETRY_DELAY_MS = 450;
+
+async function retryStep(step, attempts, fn) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn(i + 1);
+    } catch (err) {
+      lastErr = err;
+      await dbLog(step, 'warn', `Attempt ${i + 1}/${attempts} failed: ${String(err.message || err).substring(0, 140)}`);
+      if (i < attempts - 1) await new Promise((r) => setTimeout(r, UI_RETRY_DELAY_MS));
+    }
+  }
+  throw lastErr;
+}
+
+async function waitVisibleStable(locator, attempts = UI_RETRY_ATTEMPTS) {
+  for (let i = 0; i < attempts; i++) {
+    const visible = await locator.isVisible({ timeout: 2000 }).catch(() => false);
+    if (visible) {
+      await new Promise((r) => setTimeout(r, 180));
+      const stillVisible = await locator.isVisible({ timeout: 1500 }).catch(() => false);
+      if (stillVisible) return true;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
 }
 
 // ── DATA FETCH ────────────────────────────────────────────────────────────────
@@ -227,14 +259,20 @@ async function applyStoreFilter(page, storeName) {
   // Step 1: Open the channel/store filter dropdown
   console.log('🔍 Opening filter dropdown...');
   const channelFilterBtn = page.getByText(/regions.*channels|all regions/i).first();
-  await channelFilterBtn.click({ timeout: 15000, force: true });
+  await retryStep('store-filter', UI_RETRY_ATTEMPTS, async () => {
+    if (!(await waitVisibleStable(channelFilterBtn))) throw new Error('Channel filter button not stable/visible');
+    await channelFilterBtn.click({ timeout: 10000, force: true });
+  });
   await page.waitForTimeout(1000);
   await dbShot(page, 'store-filter-1-dropdown-open', 'After clicking filter button');
 
   // Step 2: Click "Stores >" submenu
   console.log('🔍 Clicking Stores submenu...');
   const storesMenu = page.getByText(/^stores$/i).first();
-  await storesMenu.click({ timeout: 10000 });
+  await retryStep('store-filter', UI_RETRY_ATTEMPTS, async () => {
+    if (!(await waitVisibleStable(storesMenu))) throw new Error('"Stores" submenu not stable/visible');
+    await storesMenu.click({ timeout: 6000 });
+  });
   await page.waitForTimeout(800);
   await dbShot(page, 'store-filter-2-stores-submenu', 'After clicking Stores submenu');
 
@@ -326,9 +364,13 @@ async function applyStoreFilter(page, storeName) {
     // Fallback: maybe "Apply" is inside a popover — try any visible button with Apply text
     await dbLog('store-filter', 'warn', 'No enabled Apply button found — trying force click on last Apply');
     const anyApply = page.locator('button').filter({ hasText: /^apply$/i }).last();
-    await anyApply.click({ force: true, timeout: 10000 });
+    await retryStep('store-filter', 2, async () => {
+      await anyApply.click({ force: true, timeout: 7000 });
+    });
   } else {
-    await enabledApply.click({ timeout: 10000 });
+    await retryStep('store-filter', UI_RETRY_ATTEMPTS, async () => {
+      await enabledApply.click({ timeout: 7000 });
+    });
   }
 
   await page.waitForTimeout(2500);
@@ -375,6 +417,46 @@ async function dismissStalePopovers(page, { keepModal = false } = {}) {
     await dbLog('ui-blockers', 'info', `Removed ${removed} stale Chakra portal(s)`);
   }
   await page.waitForTimeout(200);
+}
+
+async function clearPointerInterceptors(page) {
+  const removed = await page.evaluate(() => {
+    const allow = (el) => {
+      if (!el) return false;
+      if (el.closest('.chakra-modal__content, .chakra-modal__content-container, [role="dialog"]')) return true;
+      if (el.closest('.handsontable, .ht_master, .handsontableInputHolder')) return true;
+      if (el.matches?.('input, textarea, button, select, [contenteditable="true"]')) return true;
+      return false;
+    };
+
+    let count = 0;
+    const nodes = Array.from(document.querySelectorAll('body *'));
+    for (const el of nodes) {
+      const style = window.getComputedStyle(el);
+      if (!style) continue;
+      if (style.pointerEvents === 'none' || style.visibility === 'hidden' || style.display === 'none') continue;
+      if (!(style.position === 'fixed' || style.position === 'absolute' || style.position === 'sticky')) continue;
+      if (allow(el)) continue;
+
+      const rect = el.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      if (area < 5000) continue;
+
+      const centerX = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+      const centerY = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+      const top = document.elementFromPoint(centerX, centerY);
+      if (!top) continue;
+      if (top === el || el.contains(top)) {
+        el.remove();
+        count++;
+      }
+    }
+    return count;
+  }).catch(() => 0);
+
+  if (removed > 0) {
+    await dbLog('ui-blockers', 'warn', `Removed ${removed} pointer interceptor layer(s)`);
+  }
 }
 
 async function scrollHandsontableCellIntoView(page, cellSel) {
@@ -460,11 +542,12 @@ async function openProductEditor(page, productName) {
   await dbLog('product-editor', 'info', `Opening editor for: ${productName}`);
 
   await dismissStalePopovers(page);
+  await clearPointerInterceptors(page);
   await dbShot(page, `product-${productName.replace(/ /g,'_')}-0-start`, 'Product list before search');
 
   // Step 1: Find the product text element and scroll it into view
   const productTextEl = page.locator(`p.chakra-text:text-is("${productName}")`).first();
-  let found = await productTextEl.isVisible({ timeout: 2000 }).catch(() => false);
+  let found = await waitVisibleStable(productTextEl, 2);
 
   if (!found) {
     // Try scrolling the product list to find it
@@ -491,7 +574,7 @@ async function openProductEditor(page, productName) {
       return false;
     }, productName);
     await page.waitForTimeout(500);
-    found = await productTextEl.isVisible({ timeout: 2000 }).catch(() => false);
+    found = await waitVisibleStable(productTextEl, 2);
   }
 
   if (!found) {
@@ -507,12 +590,12 @@ async function openProductEditor(page, productName) {
 
   // Step 2: Navigate from the text element up to its table row (tr)
   const row = page.locator(`tr:has(p.chakra-text:text-is("${productName}"))`).first();
-  const rowVisible = await row.isVisible({ timeout: 2000 }).catch(() => false);
+  const rowVisible = await waitVisibleStable(row, 2);
 
   if (!rowVisible) {
     // Fallback: try role="row" or click the text element's parent
     const altRow = page.locator(`[role="row"]:has(:text-is("${productName}"))`).first();
-    const altVisible = await altRow.isVisible({ timeout: 2000 }).catch(() => false);
+    const altVisible = await waitVisibleStable(altRow, 2);
     if (altVisible) {
       await dbLog('product-editor', 'info', `Using [role="row"] fallback for ${productName}`);
       await altRow.evaluate((el) => {
@@ -531,7 +614,8 @@ async function openProductEditor(page, productName) {
     }
   } else {
     await row.scrollIntoViewIfNeeded().catch(() => {});
-    await row.hover({ force: true, timeout: 15000 }).catch(async () => {
+    await clearPointerInterceptors(page);
+    await row.hover({ force: true, timeout: 10000 }).catch(async () => {
       await row.evaluate((el) => {
         el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
         el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -546,8 +630,9 @@ async function openProductEditor(page, productName) {
     'button[aria-label*="more" i], button[aria-haspopup], button:has-text("⋮"), button:has-text("...")'
   ).first();
 
-  const menuVisible = await menuBtn.isVisible({ timeout: 2000 }).catch(() => false);
+  const menuVisible = await waitVisibleStable(menuBtn, 2);
   if (menuVisible) {
+    await clearPointerInterceptors(page);
     await menuBtn.click({ force: true, timeout: 8000 });
     await dbLog('product-editor', 'info', `Menu button clicked for ${productName}`);
   } else {
@@ -562,13 +647,16 @@ async function openProductEditor(page, productName) {
   let editorOpened = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      await page.locator('button, a, [role="menuitem"]').filter({ hasText: /edit forecast/i }).first()
-        .click({ timeout: 8000, force: true });
+      await retryStep('product-editor', 2, async () => {
+        await page.locator('button, a, [role="menuitem"]').filter({ hasText: /edit forecast/i }).first()
+          .click({ timeout: 5000, force: true });
+      });
       editorOpened = true;
       break;
     } catch {
       if (attempt < 2) {
         await dbLog('product-editor', 'warn', `Edit forecast click retry ${attempt + 1} for ${productName}`);
+        await clearPointerInterceptors(page);
         await menuBtn.click({ force: true, timeout: 5000 }).catch(() => {});
         await page.waitForTimeout(600);
       } else {
@@ -645,6 +733,7 @@ async function fillMonths(page, productName, monthlyValues) {
   await dbLog('fill-months', 'info', `fillMonths start for ${productName}`);
 
   await page.waitForTimeout(800);
+  await clearPointerInterceptors(page);
   await page.locator('button, [role="tab"]').filter({ hasText: /forecast adjustments/i }).first()
     .click({ timeout: 15000, force: true })
     .catch(async () => {
@@ -664,7 +753,7 @@ async function fillMonths(page, productName, monthlyValues) {
     hasText: /units/i
   }).first();
 
-  let rowVisible = await adjRow.isVisible({ timeout: 3000 }).catch(() => false);
+  let rowVisible = await waitVisibleStable(adjRow, 2);
 
   // If not visible, try scrolling it into view within the Handsontable container
   if (!rowVisible) {
@@ -672,7 +761,7 @@ async function fillMonths(page, productName, monthlyValues) {
     // Scroll the row into view inside the HT container
     await adjRow.evaluate(el => el.scrollIntoView({ block: 'center', behavior: 'instant' })).catch(() => {});
     await page.waitForTimeout(500);
-    rowVisible = await adjRow.isVisible({ timeout: 3000 }).catch(() => false);
+    rowVisible = await waitVisibleStable(adjRow, 2);
   }
 
   // Second attempt: scroll the entire Handsontable wrapper down
@@ -681,7 +770,7 @@ async function fillMonths(page, productName, monthlyValues) {
     const htWrapper = page.locator('.ht_master .wtHolder').first();
     await htWrapper.evaluate(el => { el.scrollTop = el.scrollHeight; }).catch(() => {});
     await page.waitForTimeout(500);
-    rowVisible = await adjRow.isVisible({ timeout: 3000 }).catch(() => false);
+    rowVisible = await waitVisibleStable(adjRow, 2);
   }
 
   await dbLog('fill-months', rowVisible ? 'info' : 'error', `Adjusted forecast row visible: ${rowVisible}`);
@@ -797,11 +886,22 @@ async function fillMonths(page, productName, monthlyValues) {
     await page.keyboard.press('Escape').catch(() => {});
     await page.waitForTimeout(250);
 
-    // ── VERIFY after fill (v8.9) ──────────────────────────────────────
-    // Re-read the cell to confirm the value actually took.
-    const verifyCell = page.locator(cellSel).first();
-    const newVal = await verifyCell.innerText().catch(() => '?');
-    const ok = String(newVal).trim() === String(val);
+    // ── VERIFY after fill (v8.12) ─────────────────────────────────────
+    // One deterministic retry if typed value did not stick on first commit.
+    let verifyCell = page.locator(cellSel).first();
+    let newVal = await verifyCell.innerText().catch(() => '?');
+    let ok = String(newVal).trim() === String(val);
+    if (!ok) {
+      await dbLog('fill-months', 'warn', `Month[${i}] ${mo}: first verify mismatch (${newVal}) — retrying once`);
+      const retryCell = await activateHandsontableCell(page, cellSel, productName, mo);
+      await retryCell.press('Control+A').catch(() => {});
+      await page.keyboard.type(String(val), { delay: 20 });
+      await page.keyboard.press('Tab');
+      await page.waitForTimeout(250);
+      verifyCell = page.locator(cellSel).first();
+      newVal = await verifyCell.innerText().catch(() => '?');
+      ok = String(newVal).trim() === String(val);
+    }
 
     // Log EVERY month — no more gaps in debug output
     await dbLog('fill-months', ok ? 'info' : 'warn',
