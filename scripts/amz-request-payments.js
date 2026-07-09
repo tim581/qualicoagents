@@ -107,7 +107,7 @@ async function openPayments(page, market, activePortalBase) {
     await page.waitForTimeout(2200);
   }
 
-  const paymentsUrl = `${portalBase}/payments/reports-and-deposits?mons_sel_mkid=${encodeURIComponent(market.marketplaceId)}`;
+  const paymentsUrl = `${portalBase}/payments/dashboard/index.html?mons_sel_mkid=${encodeURIComponent(market.marketplaceId)}`;
   await page.goto(paymentsUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(2500);
 
@@ -185,7 +185,12 @@ async function requestDisbursement(page) {
   ], 15000);
 
   if (!clickedRequest) {
-    throw new Error('Request payment/disbursement button not found');
+    return {
+      status: 'not_available',
+      reason: 'request_controls_not_visible',
+      clickedRequest: null,
+      clickedConfirm: null,
+    };
   }
 
   await page.waitForTimeout(1200);
@@ -236,10 +241,6 @@ module.exports = async function runAmazonRequestPayments({ page, task, log }) {
       'a:has-text("Request disbursement")',
     ]);
 
-    if (!requestVisible) {
-      throw new Error(`Dry-run failed: no Request payment/disbursement control visible for ${market.label}`);
-    }
-
     await logger('dry-run', `Dry-run complete; request button visible=${requestVisible}`);
     return {
       success: true,
@@ -249,6 +250,7 @@ module.exports = async function runAmazonRequestPayments({ page, task, log }) {
       marketplace: market.label,
       url: page.url(),
       request_button_visible: requestVisible,
+      status: requestVisible ? 'ready' : 'not_available',
       checked_at: new Date().toISOString(),
     };
   }
