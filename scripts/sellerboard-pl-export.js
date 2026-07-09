@@ -110,9 +110,10 @@ async function getBrowserCredentials(key) {
 
 async function ensureSellerboardSession(page) {
   await page.goto('https://app.sellerboard.com/en/dashboard/', { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(3000);
-  const url = page.url();
-  if (!isLoginUrl(url)) return true;
+  await page.waitForTimeout(4000);
+  let url = page.url();
+  const onLoginPage = isLoginUrl(url) || await page.locator('input#username, input[name="login"]').count() > 0;
+  if (!onLoginPage) return true;
 
   await debugLog(page, 'session-expired', `⚠️ Session expired, attempting login fallback from ${SELLERBOARD_LOGIN_KEY}`);
   const creds = await getBrowserCredentials(SELLERBOARD_LOGIN_KEY);
@@ -121,24 +122,36 @@ async function ensureSellerboardSession(page) {
     return false;
   }
 
-  const userSelectors = ['input[type="email"]', 'input[name="email"]', 'input#email'];
-  const passSelectors = ['input[type="password"]', 'input[name="password"]', 'input#password'];
+  // Sellerboard login is /en/auth/login/ with text username + password (not type=email)
+  if (!page.url().includes('/auth/login')) {
+    await page.goto('https://app.sellerboard.com/en/auth/login/', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(3000);
+  }
+
+  const userSelectors = ['input#username', 'input[name="login"]', 'input[type="email"]', 'input[name="email"]', 'input#email'];
+  const passSelectors = ['input#password', 'input[name="password"]', 'input[type="password"]'];
   let userFilled = false;
   for (const sel of userSelectors) {
     const loc = page.locator(sel).first();
-    if (await loc.count()) {
+    try {
+      await loc.waitFor({ state: 'visible', timeout: 5000 });
       await loc.fill(creds.username);
       userFilled = true;
       break;
+    } catch {
+      /* try next selector */
     }
   }
   let passFilled = false;
   for (const sel of passSelectors) {
     const loc = page.locator(sel).first();
-    if (await loc.count()) {
+    try {
+      await loc.waitFor({ state: 'visible', timeout: 5000 });
       await loc.fill(creds.password);
       passFilled = true;
       break;
+    } catch {
+      /* try next selector */
     }
   }
   if (!userFilled || !passFilled) {
@@ -146,17 +159,19 @@ async function ensureSellerboardSession(page) {
     return false;
   }
 
-  const submit = page.locator('button[type="submit"], button:has-text("Sign"), button:has-text("Log"), input[type="submit"]').first();
+  const submit = page.locator(
+    'button[type="submit"], button:has-text("Continue"), button:has-text("Sign"), button:has-text("Log"), input[type="submit"]'
+  ).first();
   if (await submit.count()) {
     await submit.click({ timeout: 5000 });
   } else {
     await page.keyboard.press('Enter');
   }
 
-  await page.waitForTimeout(6000);
-  const after = page.url();
-  if (isLoginUrl(after)) {
-    await debugLog(page, 'login-failed', `❌ Sellerboard login fallback failed (url=${after})`);
+  await page.waitForTimeout(8000);
+  url = page.url();
+  if (isLoginUrl(url)) {
+    await debugLog(page, 'login-failed', `❌ Sellerboard login fallback failed (url=${url})`);
     return false;
   }
 
