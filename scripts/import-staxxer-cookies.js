@@ -1,39 +1,48 @@
 'use strict';
 
-/** Merge Cookie-Editor export into scripts/staxxer-storage-state.json */
-const fs = require('fs');
-const path = require('path');
+
+
+/** @deprecated Use integrate-staxxer-cookies.js */
+
+const { integrateStaxxerCookies } = require('./integrate-staxxer-cookies');
+
+const { readCookieInput, printStorageStateSummary, runSyncStorageStateCopies } = require('./cookie-integrate-shared');
+
+
 
 const exportPath = process.argv[2];
-const authPath = path.join(__dirname, 'staxxer-storage-state.json');
 
 if (!exportPath) {
+
   console.error('Usage: node import-staxxer-cookies.js <cookies-export.json>');
+
+  console.error('Prefer: node scripts/integrate-staxxer-cookies.js < cookies.json');
+
   process.exit(1);
+
 }
 
-const exported = JSON.parse(fs.readFileSync(exportPath, 'utf8'));
-const auth = fs.existsSync(authPath)
-  ? JSON.parse(fs.readFileSync(authPath, 'utf8'))
-  : { cookies: [], origins: [] };
 
-const byKey = new Map((auth.cookies || []).map((c) => [`${c.domain}|${c.name}|${c.path}`, c]));
 
-for (const c of exported) {
-  const key = `${c.domain}|${c.name}|${c.path || '/'}`;
-  byKey.set(key, {
-    name: c.name,
-    value: c.value,
-    domain: c.domain,
-    path: c.path || '/',
-    expires: c.session ? -1 : c.expirationDate ? Math.floor(c.expirationDate) : -1,
-    httpOnly: !!c.httpOnly,
-    secure: !!c.secure,
-    sameSite:
-      c.sameSite === 'no_restriction' ? 'None' : c.sameSite === 'strict' ? 'Strict' : 'Lax',
-  });
+console.warn('DEPRECATED: import-staxxer-cookies.js — use integrate-staxxer-cookies.js\n');
+
+
+
+try {
+
+  const cookies = readCookieInput([exportPath]);
+
+  const result = integrateStaxxerCookies(cookies);
+
+  printStorageStateSummary(result);
+
+  runSyncStorageStateCopies();
+
+} catch (err) {
+
+  console.error(err.message || err);
+
+  process.exit(1);
+
 }
 
-auth.cookies = [...byKey.values()];
-fs.writeFileSync(authPath, JSON.stringify(auth, null, 2));
-console.log(`Updated ${authPath} with ${auth.cookies.length} cookies`);

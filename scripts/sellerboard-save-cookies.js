@@ -3,6 +3,7 @@
 
 const path = require('path');
 const { chromium } = require('playwright');
+const { execSync } = require('child_process');
 
 const OUTPUT = path.join(__dirname, 'sellerboard-storage-state.json');
 
@@ -49,6 +50,10 @@ const OUTPUT = path.join(__dirname, 'sellerboard-storage-state.json');
 
   await context.storageState({ path: OUTPUT });
   console.log(`✅ Cookies opgeslagen: ${OUTPUT}`);
+  execSync('node sync-storage-state-copies.js', {
+    cwd: __dirname,
+    stdio: 'inherit',
+  });
 
   await browser.close();
 })();

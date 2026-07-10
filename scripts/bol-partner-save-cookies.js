@@ -17,8 +17,9 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
-
-const STORAGE_STATE_FILE = path.join(__dirname, '..', 'bol-storage-state.json');
+const { execSync } = require('child_process');
+const { integrateBolCookies, printSummary } = require('./integrate-bol-cookies');
+const { detectAuthBlocker, AUTH_BLOCKERS } = require('./browser-cookie-sessions');
 
 (async () => {
   console.log('');
@@ -35,7 +36,7 @@ const STORAGE_STATE_FILE = path.join(__dirname, '..', 'bol-storage-state.json');
   console.log('🚀 Chrome openen...');
   
   // Launch real Chrome with remote debugging — but do NOT navigate anywhere
-  const { execSync, spawn } = require('child_process');
+  const { spawn } = require('child_process');
   
   // Find Chrome
   const chromePaths = [
@@ -105,6 +106,8 @@ const STORAGE_STATE_FILE = path.join(__dirname, '..', 'bol-storage-state.json');
     }
 
     const context = contexts[0];
+    const pages = context.pages();
+    const activeUrl = pages.length ? pages[pages.length - 1].url() : '';
     const storage = await context.storageState();
     const cookies = storage.cookies || [];
 
@@ -113,18 +116,47 @@ const STORAGE_STATE_FILE = path.join(__dirname, '..', 'bol-storage-state.json');
       c.domain.includes('bol.com') || c.domain.includes('partner.bol.com')
     );
 
-    fs.writeFileSync(STORAGE_STATE_FILE, JSON.stringify(storage, null, 2));
+    // Convert Playwright cookies to Cookie-Editor format for raw merge
+    const toCookieEditor = (c) => ({
+      domain: c.domain,
+      expirationDate: c.expires > 0 ? c.expires : undefined,
+      hostOnly: !String(c.domain).startsWith('.'),
+      httpOnly: c.httpOnly,
+      name: c.name,
+      path: c.path,
+      sameSite: c.sameSite === 'None' ? 'no_restriction' : c.sameSite?.toLowerCase() || null,
+      secure: c.secure,
+      session: c.expires < 0,
+      storeId: null,
+      value: c.value,
+    });
+
+    console.log('\nIntegrating into bol-cookies-raw.json + all bol-storage-state.json copies...');
+    const result = integrateBolCookies(bolCookies.map(toCookieEditor));
+    printSummary(result);
+    execSync('node sync-storage-state-copies.js', { cwd: __dirname, stdio: 'inherit' });
+
+    const blocker = detectAuthBlocker(activeUrl, {
+      loginHints: ['login.bol.com', 'signin', 'login'],
+      manualHints: ['mfa', '2fa', 'verify', 'challenge', 'captcha'],
+    });
+
+    if (blocker === AUTH_BLOCKERS.MFA_REQUIRED || blocker === AUTH_BLOCKERS.PASSWORD_EXPIRED) {
+      throw new Error(`Bol partner sessie onvolledig: ${blocker}. Rond MFA/wachtwoord stap af en run opnieuw.`);
+    }
+    if (blocker && !activeUrl.includes('partner.bol.com')) {
+      throw new Error(`Bol partner sessie nog op auth-stap: ${activeUrl.split('?')[0] || 'unknown url'}`);
+    }
+    if (bolCookies.length < 3) {
+      throw new Error('Te weinig bol.com cookies gevonden; login of handmatige auth-stap is niet volledig afgerond.');
+    }
 
     console.log(`✅ ${cookies.length} totale cookies opgeslagen`);
     console.log(`   (${bolCookies.length} bol.com cookies)`);
-    console.log(`✅ Bestand: ${STORAGE_STATE_FILE}`);
+    console.log(`✅ bol-cookies-raw.json + bol-storage-state.json (scripts/ + root)`);
     console.log('');
 
-    if (bolCookies.length < 3) {
-      console.log('⚠️  Weinig bol.com cookies — was je echt ingelogd op partner.bol.com?');
-    } else {
-      console.log('🎉 Klaar! Het bol-cases-scrape script kan nu draaien.');
-    }
+    console.log('🎉 Klaar! Het bol-cases-scrape script kan nu draaien.');
 
     // Disconnect (don't close — user might still need the browser)
     browser.close();

@@ -1,0 +1,32 @@
+{
+  "name": "playwright-render-service",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "cookies": "node scripts/integrate-cookies.js",
+    "cookies:amazon": "node scripts/integrate-amazon-cookies.js",
+    "cookies:amazon:merge": "node scripts/convert-amazon-cookies.js",
+    "cookies:bol": "node scripts/integrate-bol-cookies.js",
+    "cookies:sellerboard": "node scripts/integrate-sellerboard-cookies.js",
+    "cookies:flieber": "node scripts/integrate-flieber-cookies.js",
+    "cookies:staxxer": "node scripts/integrate-staxxer-cookies.js",
+    "cookies:mintsoft": "node scripts/integrate-mintsoft-cookies.js",
+    "cookies:forceget": "node scripts/integrate-forceget-cookies.js",
+    "cookies:corax": "node scripts/integrate-corax-cookies.js",
+    "cookies:test-routing": "node scripts/test-cookie-routing.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.103.3",
+    "dotenv": "^17.4.2",
+    "playwright": "^1.59.1",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "xlsx": "^0.18.5"
+  }
+}

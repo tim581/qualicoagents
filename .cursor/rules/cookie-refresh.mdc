@@ -1,0 +1,95 @@
+---
+description: When Tim pastes cookies for any platform, always merge into shared storage state for all scripts
+alwaysApply: true
+---
+
+# Cookie refresh DNA (all platforms)
+
+When Tim provides new cookies for **any supported platform** (paste, file, or Cookie-Editor export), **always** follow this workflow. Never update cookies for only one script in isolation.
+
+## Single command (preferred)
+
+```bash
+node scripts/integrate-cookies.js < cookies.json
+# or: npm run cookies -- cookies.json
+```
+
+Auto-detects platform(s) from domains and runs the correct integrator(s). One paste can update Amazon + Bol + Sellerboard if domains span multiple services.
+
+## Platform inventory
+
+| Platform | Integrator | Raw file(s) | Storage state | Scripts sharing auth |
+|----------|-----------|-------------|---------------|---------------------|
+| **Amazon** (US, UK, DE, CA, EU, Ads, APAC) | `integrate-amazon-cookies.js` | `amazon-cookies-raw.json` (UK/EU), `amazon-cookies-de-raw.json`, `amazon-cookies-na-raw.json`, `amazon-cookies-ca-raw.json`, `amazon-cookies-ads-raw.json` | `scripts/amazon-storage-state.json` | amz-price-update, amz-payments-reports-download, amz-ads-invoice-download, amz-sku-scrape, amz-sku-verify-batch, amazon-buyer-messages, amz-downloads-backfill, etc. |
+| **Bol.com** | `integrate-bol-cookies.js` | `bol-cookies-raw.json` | `scripts/bol-storage-state.json` + `bol-storage-state.json` | bol-cases-scrape, bol-price-update, bol-seller-template |
+| **Sellerboard** | `integrate-sellerboard-cookies.js` | `scripts/sellerboard-cookies-raw.json` | `scripts/sellerboard-storage-state.json` + root copy | sellerboard-pl-export, playwright-task-executor |
+| **Flieber** | `integrate-flieber-cookies.js` | `scripts/flieber-auth.json` | `scripts/flieber-storage-state.json` | All Flieber inventory/forecast scripts via task executor |
+| **Staxxer** | `integrate-staxxer-cookies.js` | `scripts/staxxer-cookies-raw.json` | `scripts/staxxer-storage-state.json` | staxxer-vat-scraper, task executor |
+| **Mintsoft** | `integrate-mintsoft-cookies.js` | `mintsoft-cookies-raw.json` | `scripts/mintsoft-storage-state.json` + root copy | inventory sync scripts, task executor |
+| **Forceget** | `integrate-forceget-cookies.js` | `forceget-cookies-raw.json` | `scripts/forceget-storage-state.json` + root copy | forceget-inventory-export, run-inventory-sync-all, task executor |
+| **Corax WMS** | `integrate-corax-cookies.js` | `corax-wms-cookies.json` | `scripts/corax-wms-storage-state.json` + root copy | inventory-sync-kamps, task executor |
+
+**Not cookie-based** (use Supabase `credentials_key` login, not storage-state): GLC WMS (`glc_wms`).
+
+## Amazon
+
+1. **Route by domain** — `node scripts/integrate-amazon-cookies.js` or universal `integrate-cookies.js`.
+2. Auto-detects marketplace: `amazon.com` / `sellercentral.amazon.com` → NA; `amazon.co.uk` / FR / IT / ES / NL / BE / PL / SE / IE / TR / EU portal → UK/EU bucket; `amazon.de` → DE; `amazon.ca` → CA; `advertising.amazon.*` → Ads; APAC (JP, AU, IN, SG, AE, SA) → UK/EU bucket.
+3. **Always merge** — incoming cookies merge into existing raw files, then `convert-amazon-cookies.js` rebuilds `scripts/amazon-storage-state.json`.
+4. Legacy `amazon-cookies-uk-raw.json` is read into the UK/EU bucket on merge; new UK pastes go to `amazon-cookies-raw.json`.
+
+```bash
+node scripts/integrate-amazon-cookies.js < cookies.json
+# Manual merge only: node scripts/convert-amazon-cookies.js
+```
+
+## Bol
+
+1. **Route bol.com cookies** — `node scripts/integrate-bol-cookies.js` or universal `integrate-cookies.js`.
+2. Updates `bol-cookies-raw.json` and both `scripts/bol-storage-state.json` + `bol-storage-state.json`.
+
+```bash
+node scripts/integrate-bol-cookies.js < cookies.json
+```
+
+## Other platforms
+
+```bash
+node scripts/integrate-sellerboard-cookies.js < cookies.json
+node scripts/integrate-flieber-cookies.js < cookies.json
+node scripts/integrate-staxxer-cookies.js < cookies.json
+node scripts/integrate-mintsoft-cookies.js < cookies.json
+node scripts/integrate-forceget-cookies.js < cookies.json
+node scripts/integrate-corax-cookies.js < cookies.json
+```
+
+## Interactive browser login
+
+After manual login, these scripts **auto-merge** into shared state:
+
+- `amazon-save-cookies.js` — saves raw + runs `convert-amazon-cookies.js` merge
+- `bol-partner-save-cookies.js` — calls `integrate-bol-cookies.js` flow (raw + both storage copies)
+
+Other `*-save-cookies.js` scripts write storage state directly; run `node scripts/sync-storage-state-copies.js` after (most already do).
+
+## Rules
+
+- **Always** use `integrate-cookies.js` (or platform-specific integrator) when Tim pastes cookies.
+- **Never** write cookies directly into a single script file or a one-off storage path.
+- **Never** commit cookie files, `*-storage-state.json`, `*-cookies-raw.json`, or `.env`.
+- **Do** print the integration summary (which raw files updated, total cookies, marketplaces covered).
+- **Do** mention which scripts pick up the shared state if Tim asks what was refreshed.
+- Multi-marketplace Amazon pastes may update multiple raw files — that is correct.
+
+## Legacy (deprecated — delegate to integrate)
+
+| Legacy | Use instead |
+|--------|-------------|
+| `convert-cookies.js` / `cookies-raw.json` | `integrate-bol-cookies.js` |
+| `import-bol-cookies.js` | `integrate-bol-cookies.js` |
+| `convert-sellerboard-cookies.js` | `integrate-sellerboard-cookies.js` |
+| `import-flieber-cookies.js` | `integrate-flieber-cookies.js` |
+| `import-staxxer-cookies.js` | `integrate-staxxer-cookies.js` |
+| `bol-save-cookies.js` (root) | `bol-partner-save-cookies.js` |
+| `bol-cookies.json`, `bol-partner-storage-state.json` | `bol-cookies-raw.json` + integrate flow |
+| `scripts/amazon-storage-state-de-only.json` | debug only; not production |
