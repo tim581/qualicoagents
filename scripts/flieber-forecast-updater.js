@@ -384,29 +384,27 @@ async function applyStoreFilter(page, storeName) {
 async function dismissStalePopovers(page, { keepModal = false } = {}) {
   if (!keepModal) {
     await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(100);
     await page.keyboard.press('Escape').catch(() => {});
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(100);
   }
 
   const removed = await page.evaluate((keepOpenModal) => {
     let count = 0;
     document.querySelectorAll('.chakra-portal').forEach((portal) => {
-      if (portal.querySelector('.handsontable, .ht_master, [role="menu"], [role="menuitem"], .chakra-menu__menu-list')) {
-        return;
-      }
+      // ALWAYS keep active dialog/modal if keepOpenModal is true
       if (keepOpenModal && portal.querySelector('.chakra-modal__content, .chakra-modal__content-container, [role="dialog"]')) {
         return;
       }
-      const blocksPointer = portal.querySelector('[role="menu"], [role="listbox"], [data-popper-placement], .chakra-menu__menu-list, .chakra-popover__content');
-      const isOverlayOnly = portal.children.length === 1
-        && portal.querySelector('div[class*="css-"]')
-        && !portal.querySelector('.handsontable, .chakra-modal__content, [role="dialog"]');
-      if (blocksPointer || isOverlayOnly) {
-        portal.remove();
-        count++;
+      // Keep handsontable elements just in case
+      if (portal.querySelector('.handsontable, .ht_master, .handsontableInputHolder')) {
+        return;
       }
+      // Remove everything else (stale tooltips, popovers, stale menu backdrops, etc.)
+      portal.remove();
+      count++;
     });
+    // Remove stale handsontable input holders if we are not editing
     if (!keepOpenModal) {
       document.querySelectorAll('.handsontableInputHolder').forEach((el) => el.remove());
     }
@@ -416,7 +414,7 @@ async function dismissStalePopovers(page, { keepModal = false } = {}) {
   if (removed > 0) {
     await dbLog('ui-blockers', 'info', `Removed ${removed} stale Chakra portal(s)`);
   }
-  await page.waitForTimeout(200);
+  await page.waitForTimeout(100);
 }
 
 async function clearPointerInterceptors(page) {
