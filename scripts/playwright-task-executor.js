@@ -170,35 +170,33 @@ async function executeAction(page, action, creds = {}) {
 const { execSync } = require('child_process');
 const path = require('path');
 
-const SCRIPT_TASKS = {
-  'forecast-sync':             'flieber-forecast-updater.js',
-  'forecast-verify':           'flieber-forecast-verifier.js',
-  'po-simulation':             'flieber-replenishment-simulator.js',
-  'to-simulation':             'flieber-replenishment-simulator.js',
-  'inventory-forecast-sync':   'flieber-inventory-forecast-sync.js',
-  'corax-stock-export':        'corax-wms-stock-export.js',
-  'mintsoft-product-export':   'mintsoft-product-export.js',
-  'forceget-inventory-export': 'forceget-inventory-export.js',
-  'sellerboard-pl-export':     'sellerboard-pl-export.js',
-  'inventory-sync-forceget':   'inventory-sync-forceget.js',
-  'inventory-sync-kamps':      'inventory-sync-kamps.js',
-  'inventory-sync-mintsoft':   'inventory-sync-mintsoft.js',
-  'forceget-inventory':        'forceget-inventory.js',
-  'glc-inventory':             'glc-inventory.js',
-  'glc_inventory':             'glc-inventory.js',
-  'kamps-inventory':           'kamps-inventory.js',
-  'mintsoft-inventory':        'mintsoft-inventory.js',
-  'sync-inventory':            'sync-inventory.js',
-  'price-scrape':              'price-monitor-scraper.js',
-  'competitor-mat-scrape':     'competitor-mat-scraper.js',
-  'bol-price-update':          'bol-price-update.js',
-  'bol-price-sync-all':        'bol-price-sync-all.js',
-  'bol-cases-scrape':          'bol-cases-scrape.js',
-  'staxxer-vat-sync':          'staxxer-vat-scraper.js',
-  'amazon-buyer-messages':     'amazon-buyer-messages.js',
-  'amz-price-update':          'amz-price-update.js',
-  'amz-price-sync-all':        'amz-price-sync-all.js',
+const MANIFEST_PATH = path.join(__dirname, 'browser-automation-manifest.json');
+const SCRIPT_TASK_ALIASES = {
+  // Legacy queue aliases kept for backward compatibility.
+  'forceget-inventory': 'inventory-sync-forceget.js',
+  'glc_inventory': 'glc-inventory.js',
 };
+
+function buildScriptTaskMap() {
+  const map = {};
+  try {
+    const manifest = JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+    const addEntries = (entries = []) => {
+      for (const entry of entries) {
+        if (!entry?.task_type || !entry?.script_name) continue;
+        if (entry.runnable === false || entry.available === false) continue;
+        map[entry.task_type] = entry.script_name;
+      }
+    };
+    addEntries(manifest.automations);
+    addEntries(manifest.helpers);
+  } catch (e) {
+    console.log(`⚠️ Could not load manifest routing map: ${e.message}`);
+  }
+  return { ...map, ...SCRIPT_TASK_ALIASES };
+}
+
+const SCRIPT_TASKS = buildScriptTaskMap();
 
 // Standalone scripts write JSON here; executor must match by task_type (not first-recent-file)
 const TASK_OUTPUT_FILES = {
@@ -241,13 +239,16 @@ function readRecentJsonFile(filePath, maxAgeMs = 600000) {
 // ── COOKIE/STORAGE STATE MAPPING ──────────────────────────────────────────────
 const STORAGE_STATE_MAP = {
   'vanthiel_corax_wms': 'corax-wms-storage-state.json',
+  'mintsoft': 'mintsoft-storage-state.json',
   'mintsoft_login': 'mintsoft-storage-state.json',
+  'forceget': 'forceget-storage-state.json',
   'forceget_login': 'forceget-storage-state.json',
   'glc_wms': 'glc-storage-state.json',
   'sellerboard_login': 'sellerboard-storage-state.json',
   'flieber_login': 'flieber-storage-state.json',
   'bol_seller': 'bol-storage-state.json',
   'staxxer_login': 'staxxer-storage-state.json',
+  'amazon_seller': 'amazon-storage-state.json',
 };
 
 const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/scripts/';
@@ -419,6 +420,14 @@ async function executeScriptTask(task, scriptName) {
         try { await dbShot(page, step, message); } catch (_) {}
       };
 
+      if (task.task_type === 'sellerboard-pl-export') {
+        const scopeAction = Array.isArray(task.actions)
+          ? task.actions.find((a) => typeof a === 'string' && a.trim())
+          : null;
+        process.env.MARKET_SCOPE = scopeAction || 'all';
+        console.log(`   🌍 MARKET_SCOPE = ${process.env.MARKET_SCOPE}`);
+      }
+
       // ✅ v3.2: Pass full task object so scripts can read task.actions, task.task_type etc.
       const result = await scriptFn({ page, context, supabase, dbShot, task, credentials, log });
       console.log(`✅ Script returned:`, JSON.stringify(result || {}).substring(0, 500));
@@ -451,15 +460,13 @@ async function executeScriptTask(task, scriptName) {
     if (task.task_type === 'po-simulation') env.RUN_MODE = 'po';
     if (task.task_type === 'to-simulation') env.RUN_MODE = 'to';
     
-    // Sellerboard: pass market scope
+    // Sellerboard: pass market scope (also used when script falls back to env)
     if (task.task_type === 'sellerboard-pl-export') {
-      if (Array.isArray(task.actions) && task.actions.length > 0 && typeof task.actions[0] === 'string') {
-        env.MARKET_SCOPE = task.actions[0];
-        console.log(`   🌍 MARKET_SCOPE = ${env.MARKET_SCOPE}`);
-      } else {
-        env.MARKET_SCOPE = 'eu';
-        console.log(`   🌍 MARKET_SCOPE = eu (default)`);
-      }
+      const scopeAction = Array.isArray(task.actions)
+        ? task.actions.find((a) => typeof a === 'string' && a.trim())
+        : null;
+      env.MARKET_SCOPE = scopeAction || 'all';
+      console.log(`   🌍 MARKET_SCOPE = ${env.MARKET_SCOPE}`);
     }
     
     // Pass all string actions as TASK_ACTIONS env var (generic mechanism)
@@ -650,14 +657,19 @@ async function pollTasks() {
     for (const task of tasks) {
       currentTaskId = task.id;
 
-      const { error: runError } = await supabase
+      const { data: claimedRows, error: runError } = await supabase
         .from('Browser_Tasks')
         .update({ status: 'running' })
         .eq('id', task.id)
-        .eq('status', 'pending');
+        .eq('status', 'pending')
+        .select('id');
 
       if (runError) {
         console.error(`❌ Could not mark task ${task.id} running: ${runError.message}`);
+        continue;
+      }
+      if (!claimedRows?.length) {
+        console.log(`ℹ️ Skipping task ${task.id}: no longer pending at claim time`);
         continue;
       }
 

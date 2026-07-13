@@ -47,6 +47,39 @@
       "queue": { "url": "https://sellercentral.amazon.co.uk", "credentials_key": null, "actions": [], "priority": 5 }
     },
     {
+      "task_type": "amz-request-payments",
+      "script_name": "amz-request-payments.js",
+      "title": "Amazon — Request Payments (Disbursement)",
+      "runnable": true,
+      "summary": "Request weekly disbursement for one Amazon marketplace.",
+      "description": "Logs into Amazon Seller Central, opens Payments, and triggers Request payment / Request disbursement. Queue one task per market weekly with actions like [\"US\"], [\"DE\"], [\"UK\"], [\"FR\"], [\"IT\"], [\"ES\"], [\"NL\"], [\"BE\"], [\"CA\"].",
+      "category": "payments",
+      "duration": "1–3 min",
+      "queue": { "url": "https://sellercentral.amazon.com/home", "credentials_key": "amazon_seller", "actions": ["US"], "priority": 6 }
+    },
+    {
+      "task_type": "amz-payments-reports-download",
+      "script_name": "amz-payments-reports-download.js",
+      "title": "Amazon — Payments Summary Reports (2025/2026)",
+      "runnable": true,
+      "summary": "Download Amazon Payments Report Repository Summary reports by marketplace and month.",
+      "description": "Uses Seller Central storage-state session, switches marketplace via account-switcher, hamburger → Payments → Reports Repository, requests Summary reports by month, clicks Download PDF only (never CSV), validates %PDF magic bytes, saves to Payments-Summary-Reports/{year}/{market}/{MARKET}_Payments_Summary_{YYYY-MM}.pdf on Google Drive and writes amz-payments-reports-download-summary.json.",
+      "category": "payments",
+      "duration": "60–180 min",
+      "queue": { "url": "https://sellercentral.amazon.com/home", "credentials_key": "amazon_seller", "actions": [{ "years": [2025, 2026], "months": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], "marketplaces": ["US", "CA", "UK", "DE", "FR", "IT", "ES", "NL", "BE"], "report_types": ["summary"] }], "priority": 7 }
+    },
+    {
+      "task_type": "amz-ads-invoice-download",
+      "script_name": "amz-ads-invoice-download.js",
+      "title": "Amazon Ads — Paid Invoice Download (2025/2026)",
+      "runnable": true,
+      "summary": "Download all paid Amazon Ads billing invoices for 2025 and 2026.",
+      "description": "Opens advertising.amazon.com billing history Paid tab (entity ENTITY3OZKYXF1S6KJ4), sets 200 results per page, clicks Download per paid invoice row, saves verified PDFs only as INVOICE-{id}_{date}_{market}_{currency}.pdf to Advertising-Invoices/{year}/{country}/ on Google Drive (validates %PDF magic bytes) and writes amz-ads-invoice-download-summary.json. Uses amazon-storage-state.json (shared Amazon SSO).",
+      "category": "payments",
+      "duration": "15–45 min",
+      "queue": { "url": "https://advertising.amazon.com/ads-bg/billing/history", "credentials_key": "amazon_seller", "actions": [{ "years": [2025, 2026] }], "priority": 7 }
+    },
+    {
       "task_type": "price-scrape",
       "script_name": "price-monitor-scraper.js",
       "title": "Listing Monitor — Price & Buy Box Scrape",
@@ -212,10 +245,10 @@
       "script_name": "sellerboard-pl-export.js",
       "title": "Sellerboard — P&L Export",
       "summary": "Export P&L and per-ASIN reports from Sellerboard.",
-      "description": "Downloads main P&L and per-ASIN CSV/JSON for EU and NA Amazon marketplaces from Sellerboard.",
+      "description": "Downloads monthly P&L for EU (DE, UK, FR, IT, ES, NL, BE) and NA (US, CA) from Sellerboard. Queue with actions [\"all\"], [\"eu\"], [\"na\"], or explicit markets like [\"Amazon.com\"].",
       "category": "exports",
-      "duration": "5–15 min",
-      "queue": { "url": "https://app.sellerboard.com", "credentials_key": "sellerboard_login", "actions": ["eu"], "priority": 5 }
+      "duration": "8–20 min",
+      "queue": { "url": "https://app.sellerboard.com", "credentials_key": "sellerboard_login", "actions": ["all"], "priority": 5 }
     },
     {
       "task_type": "mintsoft-product-export",

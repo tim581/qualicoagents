@@ -34,13 +34,63 @@ const MARKET_CONFIG = {
   'Amazon.it':     { account: 'eu', urlParam: 'Amazon.it', currency: 'EUR', symbol: '€' },
   'Amazon.es':     { account: 'eu', urlParam: 'Amazon.es', currency: 'EUR', symbol: '€' },
   'Amazon.nl':     { account: 'eu', urlParam: 'Amazon.nl', currency: 'EUR', symbol: '€' },
+  'Amazon.com.be': { account: 'eu', urlParam: 'Amazon.com.be', currency: 'EUR', symbol: '€' },
   'Amazon.com':    { account: 'us', urlParam: 'Amazon.com', currency: 'USD', symbol: '$' },
   'Amazon.ca':     { account: 'us', urlParam: 'Amazon.ca', currency: 'CAD', symbol: '$' }
 };
 
 const EU_MARKETS = ['Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
 const US_MARKETS = ['Amazon.com', 'Amazon.ca'];
-const ALL_MARKETS = [...EU_MARKETS, ...US_MARKETS];
+const ALL_MARKETS = [...EU_MARKETS, 'Amazon.com.be', ...US_MARKETS];
+
+const SCOPE_ALIASES = {
+  eu: 'eu',
+  na: 'us',
+  us: 'us',
+  usa: 'us',
+  all: 'all',
+};
+
+function collectScopeTokens(raw) {
+  const tokens = [];
+  if (raw == null) return tokens;
+  if (Array.isArray(raw)) {
+    for (const item of raw) tokens.push(...collectScopeTokens(item));
+    return tokens;
+  }
+  if (typeof raw === 'object') {
+    if (Array.isArray(raw.markets)) tokens.push(...raw.markets);
+    if (raw.scope) tokens.push(raw.scope);
+    if (raw.region) tokens.push(raw.region);
+    if (raw.market_scope) tokens.push(raw.market_scope);
+    return tokens;
+  }
+  if (typeof raw === 'string' && raw.trim()) tokens.push(raw.trim());
+  return tokens;
+}
+
+function resolveMarketsToScrape(inputScopes) {
+  const scopes = collectScopeTokens(inputScopes).map((s) => String(s).trim()).filter(Boolean);
+  if (scopes.length === 0) return ALL_MARKETS;
+
+  const explicitMarkets = scopes.filter((s) => MARKET_CONFIG[s]);
+  if (explicitMarkets.length === scopes.length) return explicitMarkets;
+
+  const selected = new Set();
+  for (const raw of scopes) {
+    const normalized = SCOPE_ALIASES[String(raw).toLowerCase()] || raw;
+    if (normalized === 'eu') EU_MARKETS.forEach((m) => selected.add(m));
+    else if (normalized === 'us') US_MARKETS.forEach((m) => selected.add(m));
+    else if (normalized === 'all') ALL_MARKETS.forEach((m) => selected.add(m));
+    else if (MARKET_CONFIG[normalized]) selected.add(normalized);
+    else {
+      console.log(`⚠️ Onbekende scope/markt overgeslagen: ${raw}`);
+    }
+  }
+
+  if (selected.size === 0) return ALL_MARKETS;
+  return ALL_MARKETS.filter((m) => selected.has(m));
+}
 
 const EXPORT_YEAR = 2026;
 const MONTH_NAMES = [
@@ -634,23 +684,12 @@ async function main() {
   }
   const args = process.argv.slice(2);
   const inputScopes = args.length ? args : (actionScopes.length ? actionScopes : envScope);
-  let marketsToScrape = [];
-  
-  if (inputScopes.length === 0 || inputScopes[0] === 'eu') {
-    marketsToScrape = EU_MARKETS;
-  } else if (inputScopes[0] === 'us') {
-    marketsToScrape = US_MARKETS;
-  } else if (inputScopes[0] === 'all') {
-    marketsToScrape = ALL_MARKETS;
-  } else {
-    const market = inputScopes[0];
-    if (MARKET_CONFIG[market]) {
-      marketsToScrape = [market];
-    } else {
-      console.log(`❌ Onbekende markt: ${market}`);
-      console.log(`Beschikbaar: ${ALL_MARKETS.join(', ')}`);
-      process.exit(1);
-    }
+  const marketsToScrape = resolveMarketsToScrape(inputScopes);
+
+  if (marketsToScrape.length === 0) {
+    console.log(`❌ Geen markten om te exporteren (input: ${JSON.stringify(inputScopes)})`);
+    console.log(`Beschikbaar: ${ALL_MARKETS.join(', ')}`);
+    process.exit(1);
   }
   
   console.log(`📊 Sellerboard P&L Export v10 — ${EXPORT_YEAR} monthly`);
@@ -834,10 +873,12 @@ async function main() {
   return { summary, details, totalRowsExported, hardFailures };
 }
 
-module.exports = async function (browser, context, page, task) {
-  const args = task?.actions || [];
-  if (args.length > 0) {
-    process.argv = ['node', 'sellerboard-pl-export.js', ...args];
+module.exports = async function runSellerboardPlExport({ task } = {}) {
+  const actionTokens = collectScopeTokens(task?.actions);
+  if (actionTokens.length > 0) {
+    process.argv = ['node', 'sellerboard-pl-export.js', ...actionTokens];
+  } else if (process.env.MARKET_SCOPE) {
+    process.argv = ['node', 'sellerboard-pl-export.js', process.env.MARKET_SCOPE];
   }
   const result = await main();
   return { success: true, run_id: RUN_ID, ...result };
