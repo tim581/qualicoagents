@@ -35,7 +35,7 @@ const MARKET_CONFIG = {
   'Amazon.it':     { account: 'eu', urlParam: 'Amazon.it', currency: 'EUR', symbol: '€' },
   'Amazon.es':     { account: 'eu', urlParam: 'Amazon.es', currency: 'EUR', symbol: '€' },
   'Amazon.nl':     { account: 'eu', urlParam: 'Amazon.nl', currency: 'EUR', symbol: '€' },
-  'Amazon.com.be': {
+  'Amazon.be': {
     account: 'eu',
     urlParam: 'Amazon.com.be',
     currency: 'EUR',
@@ -49,7 +49,7 @@ const MARKET_CONFIG = {
 
 const EU_MARKETS = ['Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
 const US_MARKETS = ['Amazon.com', 'Amazon.ca'];
-const ALL_MARKETS = [...EU_MARKETS, 'Amazon.com.be', ...US_MARKETS];
+const ALL_MARKETS = [...EU_MARKETS, 'Amazon.be', ...US_MARKETS];
 
 const SCOPE_ALIASES = {
   eu: 'eu',
@@ -57,10 +57,19 @@ const SCOPE_ALIASES = {
   us: 'us',
   usa: 'us',
   all: 'all',
-  be: 'Amazon.com.be',
-  bae: 'Amazon.com.be',
-  'amazon.be': 'Amazon.com.be',
+  be: 'Amazon.be',
+  bae: 'Amazon.be',
+  'amazon.be': 'Amazon.be',
+  'amazon.com.be': 'Amazon.be',
 };
+
+const MARKET_ALIASES = {
+  'Amazon.com.be': 'Amazon.be',
+};
+
+function normalizeMarketKey(market) {
+  return MARKET_ALIASES[market] || market;
+}
 
 function collectScopeTokens(raw) {
   const tokens = [];
@@ -84,12 +93,14 @@ function resolveMarketsToScrape(inputScopes) {
   const scopes = collectScopeTokens(inputScopes).map((s) => String(s).trim()).filter(Boolean);
   if (scopes.length === 0) return ALL_MARKETS;
 
-  const explicitMarkets = scopes.filter((s) => MARKET_CONFIG[s]);
+  const explicitMarkets = scopes
+    .map((s) => normalizeMarketKey(s))
+    .filter((s) => MARKET_CONFIG[s]);
   if (explicitMarkets.length === scopes.length) return explicitMarkets;
 
   const selected = new Set();
   for (const raw of scopes) {
-    const normalized = SCOPE_ALIASES[String(raw).toLowerCase()] || raw;
+    const normalized = normalizeMarketKey(SCOPE_ALIASES[String(raw).toLowerCase()] || raw);
     if (normalized === 'eu') EU_MARKETS.forEach((m) => selected.add(m));
     else if (normalized === 'us') US_MARKETS.forEach((m) => selected.add(m));
     else if (normalized === 'all') ALL_MARKETS.forEach((m) => selected.add(m));
@@ -756,7 +767,13 @@ async function scrapeTableWithRecovery(page, viewType, market) {
   await debugLog(page, `recover-${viewType}-${market}`, '♻️ Retrying market once after session refresh');
   const ok = await ensureSellerboardSession(page);
   if (!ok) return null;
-  const navigated = await freshNavigate(page, buildUrl(market), `retry-${viewType}-${market}`, MARKET_CONFIG[market]);
+  const config = MARKET_CONFIG[market];
+  const navigated = await freshNavigate(
+    page,
+    buildUrl(config?.urlParam || market),
+    `retry-${viewType}-${market}`,
+    config,
+  );
   if (!navigated) return null;
   return scrapeTable(page, viewType, market);
 }
