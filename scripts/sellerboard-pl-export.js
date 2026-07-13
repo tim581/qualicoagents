@@ -1,5 +1,6 @@
-// Sellerboard P&L Export v10 — 2026 monthly P&L per market
+// Sellerboard P&L Export v11 — 2026 monthly P&L per market
 // Scrapes main P&L table → filters 2026 month columns → upserts monthly_pl to Supabase
+// v11: account verify per market, UI market select (BE), zero-export guard
 // Skips per-ASIN. June (and current month) may be partial.
 
 const fs = require('fs');
@@ -34,7 +35,14 @@ const MARKET_CONFIG = {
   'Amazon.it':     { account: 'eu', urlParam: 'Amazon.it', currency: 'EUR', symbol: '€' },
   'Amazon.es':     { account: 'eu', urlParam: 'Amazon.es', currency: 'EUR', symbol: '€' },
   'Amazon.nl':     { account: 'eu', urlParam: 'Amazon.nl', currency: 'EUR', symbol: '€' },
-  'Amazon.com.be': { account: 'eu', urlParam: 'Amazon.com.be', currency: 'EUR', symbol: '€' },
+  'Amazon.com.be': {
+    account: 'eu',
+    urlParam: 'Amazon.com.be',
+    currency: 'EUR',
+    symbol: '€',
+    uiLabels: ['Amazon.com.be', 'Belgium', 'BE'],
+    needsUiMarketSelect: true,
+  },
   'Amazon.com':    { account: 'us', urlParam: 'Amazon.com', currency: 'USD', symbol: '$' },
   'Amazon.ca':     { account: 'us', urlParam: 'Amazon.ca', currency: 'CAD', symbol: '$' }
 };
@@ -49,6 +57,9 @@ const SCOPE_ALIASES = {
   us: 'us',
   usa: 'us',
   all: 'all',
+  be: 'Amazon.com.be',
+  bae: 'Amazon.com.be',
+  'amazon.be': 'Amazon.com.be',
 };
 
 function collectScopeTokens(raw) {
@@ -125,7 +136,7 @@ async function isOnLoginPage(page) {
   return (await page.locator('input#username, input[name="login"]').count()) > 0;
 }
 
-async function freshNavigate(page, url, label) {
+async function freshNavigate(page, url, label, config = null) {
   console.log(`      🌐 Navigate: ${url.substring(0, 90)}...`);
   await page.goto('about:blank');
   await page.waitForTimeout(500);
@@ -149,6 +160,13 @@ async function freshNavigate(page, url, label) {
     await page.waitForTimeout(3000);
     currentUrl = page.url();
   }
+
+  if (config?.needsUiMarketSelect || config?.uiLabels?.length) {
+    await selectMarketInUi(page, config);
+    await ensurePlView(page);
+    await waitForMarketTable(page, config).catch(() => null);
+  }
+
   await debugLog(page, label, `Pagina geladen: ${currentUrl.substring(0, 80)}...`);
   return !await isOnLoginPage(page);
 }
@@ -357,6 +375,146 @@ function normalizeRowsCurrency(rows, expectedSymbol) {
     row[0] ?? '',
     ...row.slice(1).map(cell => normalizeMonetaryCell(cell, expectedSymbol)),
   ]);
+}
+
+function parseNumericCell(cell) {
+  const raw = String(cell ?? '').replace(/[€$£,\s]/g, '').replace(/%$/, '');
+  const n = parseFloat(raw);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function isZeroExport(monthlyRows) {
+  if (!Array.isArray(monthlyRows) || monthlyRows.length === 0) return true;
+  const sales = monthlyRows.find(r => (r?.[0] || '').trim() === 'Sales');
+  const units = monthlyRows.find(r => (r?.[0] || '').trim() === 'Units');
+  if (!sales && !units) return false;
+  const salesVals = sales ? sales.slice(1) : [];
+  const unitVals = units ? units.slice(1) : [];
+  const salesSum = salesVals.reduce((sum, cell) => sum + Math.abs(parseNumericCell(cell)), 0);
+  const unitSum = unitVals.reduce((sum, cell) => sum + Math.abs(parseNumericCell(cell)), 0);
+  return salesSum === 0 && unitSum === 0;
+}
+
+async function detectAccountOnPage(page) {
+  try {
+    const topText = await page.evaluate(() => {
+      const bits = [];
+      for (const el of document.querySelectorAll('header *, nav *, [class*="header"] *, [class*="account"] *')) {
+        const t = (el.innerText || '').trim();
+        if (t && t.length < 40) bits.push(t);
+      }
+      return bits.join('\n');
+    });
+    if (/AMZ USA/i.test(topText)) return 'us';
+    if (/tim@qualico\.be/i.test(topText)) return 'eu';
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+async function ensureCorrectAccount(page, targetAccount, currentAccount) {
+  const detected = await detectAccountOnPage(page);
+  const effective = detected || currentAccount;
+  if (effective === targetAccount) return { ok: true, account: targetAccount };
+  console.log(`   🔄 Account mismatch (detected=${detected || 'unknown'}, need=${targetAccount}) — switching...`);
+  const switched = await switchAccount(page, targetAccount);
+  return { ok: switched, account: switched ? targetAccount : effective };
+}
+
+async function selectMarketInUi(page, config) {
+  const labels = [config.urlParam, ...(config.uiLabels || [])];
+  await debugLog(page, `market-ui-start-${config.urlParam}`, `🎯 UI market select: ${labels.join(', ')}`, false);
+
+  // Open markets filter if collapsed.
+  for (const opener of [/markets?/i, /marketplace/i, /filter/i]) {
+    try {
+      const btn = page.locator('button, a, [role="button"], label').filter({ hasText: opener }).first();
+      if (await btn.count()) {
+        await btn.click({ timeout: 2000 });
+        await page.waitForTimeout(1500);
+        break;
+      }
+    } catch {
+      /* try next opener */
+    }
+  }
+
+  const clicked = await page.evaluate((targets) => {
+    const norm = (s) => (s || '').trim().toLowerCase();
+    const wanted = targets.map(norm);
+    const isMarketChip = (text) => wanted.some((t) => text === t || text === `amazon.${t.replace('amazon.', '')}`);
+
+    // Prefer exact market chips in the marketplace filter row.
+    const chipCandidates = Array.from(document.querySelectorAll('a, button, label, span, div, li'));
+    for (const el of chipCandidates) {
+      const text = norm(el.innerText || '');
+      if (!text || text.length > 40) continue;
+      if (!isMarketChip(text)) continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width < 5 || rect.height < 5) continue;
+      el.click();
+      return { ok: true, label: text };
+    }
+
+    const nodes = document.querySelectorAll('label, li, span, div, a, button, input[type="checkbox"]');
+    for (const el of nodes) {
+      const text = norm(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+      const value = norm(el.getAttribute('value') || '');
+      for (const target of wanted) {
+        if ((text && text === target) || (value && value.includes(target))) {
+          el.click();
+          return { ok: true, label: text || value || target };
+        }
+      }
+    }
+    return { ok: false };
+  }, labels);
+
+  if (clicked?.ok) {
+    console.log(`      ✅ UI market geklikt: ${clicked.label}`);
+    await page.waitForTimeout(5000);
+    await debugLog(page, `market-ui-done-${config.urlParam}`, `✅ UI market geselecteerd: ${clicked.label}`, true);
+    return true;
+  }
+
+  await debugLog(page, `market-ui-miss-${config.urlParam}`, '⚠️ UI market selector niet gevonden — vertrouw op URL param', false);
+  return false;
+}
+
+async function waitForMarketTable(page, config, timeoutMs = 25000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const probe = await page.evaluate((symbol) => {
+      const tables = document.querySelectorAll('table');
+      for (const table of tables) {
+        const rows = Array.from(table.querySelectorAll('tr'));
+        if (rows.length < 5) continue;
+        for (const row of rows) {
+          const cells = Array.from(row.querySelectorAll('th, td')).map(c => (c.innerText || '').trim());
+          if (cells[0] !== 'Sales') continue;
+          const values = cells.slice(1);
+          const hasMoney = values.some(v => /[€$£]\s*-?\d/.test(v));
+          const hasNonZero = values.some(v => {
+            const n = parseFloat(v.replace(/[€$£,\s]/g, ''));
+            return Number.isFinite(n) && Math.abs(n) > 0;
+          });
+          const hasExpectedSymbol = symbol === '$'
+            ? values.some(v => v.includes('$'))
+            : values.some(v => v.includes(symbol));
+          return { hasMoney, hasNonZero, hasExpectedSymbol, preview: values.slice(0, 3) };
+        }
+      }
+      return null;
+    }, config.symbol);
+
+    if (probe?.hasExpectedSymbol && probe.hasNonZero) return probe;
+    if (probe?.hasMoney && config.needsUiMarketSelect) {
+      // BE can be slow — keep polling a bit longer even if still zero.
+    }
+    await page.waitForTimeout(2000);
+  }
+  return null;
 }
 
 // Debug: screenshot to local + Supabase
@@ -598,7 +756,7 @@ async function scrapeTableWithRecovery(page, viewType, market) {
   await debugLog(page, `recover-${viewType}-${market}`, '♻️ Retrying market once after session refresh');
   const ok = await ensureSellerboardSession(page);
   if (!ok) return null;
-  const navigated = await freshNavigate(page, buildUrl(market), `retry-${viewType}-${market}`);
+  const navigated = await freshNavigate(page, buildUrl(market), `retry-${viewType}-${market}`, MARKET_CONFIG[market]);
   if (!navigated) return null;
   return scrapeTable(page, viewType, market);
 }
@@ -692,7 +850,7 @@ async function main() {
     process.exit(1);
   }
   
-  console.log(`📊 Sellerboard P&L Export v10 — ${EXPORT_YEAR} monthly`);
+  console.log(`📊 Sellerboard P&L Export v11 — ${EXPORT_YEAR} monthly`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   View: monthly_pl (per-ASIN overgeslagen)`);
   console.log(`   Run ID: ${RUN_ID}`);
@@ -731,28 +889,20 @@ async function main() {
       console.log(`\n📍 [${i + 1}/${marketsToScrape.length}] ${market}`);
       console.log('============================================================');
       
-      // Step 1: Switch account if needed
-      if (config.account !== currentAccount) {
-        console.log(`   🌐 Laden Sellerboard voor account switch...`);
-        await page.goto('https://app.sellerboard.com/en/dashboard/', { waitUntil: 'domcontentloaded' });
-        await page.waitForTimeout(5000);
-        await debugLog(page, `pre-switch-${market}`, `📋 Pre-switch pagina geladen`);
-        
-        const switched = await switchAccount(page, config.account);
-        if (switched) {
-          currentAccount = config.account;
-        } else {
-          console.log(`   ⚠️ Account switch gefaald — skip ${market}`);
-          summary[market] = '❌ Account switch';
-          details[market] = { ok: false, reason: 'account_switch_failed' };
-          hardFailures++;
-          continue;
-        }
+      // Step 1: Ensure correct Sellerboard account (detect from UI, not just tracker)
+      const accountResult = await ensureCorrectAccount(page, config.account, currentAccount);
+      if (!accountResult.ok) {
+        console.log(`   ⚠️ Account switch gefaald — skip ${market}`);
+        summary[market] = '❌ Account switch';
+        details[market] = { ok: false, reason: 'account_switch_failed' };
+        hardFailures++;
+        continue;
       }
+      currentAccount = accountResult.account;
 
       console.log(`\n   📋 ${EXPORT_YEAR} Monthly P&L...`);
       const mainUrl = buildUrl(config.urlParam);
-      const navigated = await freshNavigate(page, mainUrl, `monthly-pl-${market}`);
+      const navigated = await freshNavigate(page, mainUrl, `monthly-pl-${market}`, config);
       if (!navigated) {
         summary[market] = '❌ Login redirect';
         details[market] = { ok: false, reason: 'login_redirect_unresolved' };
@@ -784,10 +934,36 @@ async function main() {
       const beforeSymbols = detectCurrencySymbols(monthly.rows);
       monthly.rows = normalizeRowsCurrency(monthly.rows, config.symbol);
       const afterSymbols = detectCurrencySymbols(monthly.rows);
+
+      if (isZeroExport(monthly.rows)) {
+        console.log(`      ❌ Zero-export gedetecteerd — geen echte omzet/units voor ${market}`);
+        await debugLog(page, `zero-export-${market}`, `❌ Zero export voor ${market} (symbols ${beforeSymbols.join(',') || 'none'})`, true);
+        await selectMarketInUi(page, config);
+        await page.waitForTimeout(5000);
+        const retryZeroData = await scrapeTableWithRecovery(page, 'main_pl', market);
+        if (retryZeroData) {
+          const retryZeroMonthly = extractMonthly2026(retryZeroData.headers, retryZeroData.rows);
+          retryZeroMonthly.rows = normalizeRowsCurrency(retryZeroMonthly.rows, config.symbol);
+          if (!isZeroExport(retryZeroMonthly.rows)) {
+            monthly.headers = retryZeroMonthly.headers;
+            monthly.rows = retryZeroMonthly.rows;
+            console.log(`      ♻️ Zero-export retry succeeded for ${market}`);
+          }
+        }
+      }
+
+      if (isZeroExport(monthly.rows)) {
+        summary[market] = '❌ Zero export';
+        details[market] = { ok: false, reason: 'zero_export_detected', symbols: beforeSymbols };
+        hardFailures++;
+        continue;
+      }
+
       const fingerprint = tableFingerprint(monthly.rows);
       if (previousMarket && previousFingerprint && previousFingerprint === fingerprint) {
-        await debugLog(page, `dup-suspect-${market}`, `⚠️ Mogelijk hergebruikte tabelsnapshot (${previousMarket} -> ${market}), retrying once`);
-        const dupNavigated = await freshNavigate(page, mainUrl, `duplicate-retry-${market}`);
+        await debugLog(page, `dup-suspect-${market}`, `⚠️ Mogelijk hergebruikte tabelsnapshot (${previousMarket} -> ${market}), UI retry`);
+        await selectMarketInUi(page, config);
+        const dupNavigated = await freshNavigate(page, mainUrl, `duplicate-retry-${market}`, config);
         if (!dupNavigated) {
           summary[market] = '❌ Duplicate retry login';
           details[market] = { ok: false, reason: 'duplicate_retry_login' };
@@ -804,10 +980,15 @@ async function main() {
         const retryMonthly = extractMonthly2026(retryData.headers, retryData.rows);
         retryMonthly.rows = normalizeRowsCurrency(retryMonthly.rows, config.symbol);
         const retryFingerprint = tableFingerprint(retryMonthly.rows);
-        if (retryFingerprint === previousFingerprint) {
-          console.log(`      ❌ Duplicate snapshot bevestigd na retry (${previousMarket} -> ${market})`);
+        if (retryFingerprint === previousFingerprint || isZeroExport(retryMonthly.rows)) {
+          console.log(`      ⚠️ Duplicate/zero snapshot na retry (${previousMarket} -> ${market}) — markeren als failure`);
           summary[market] = '❌ Duplicate snapshot';
-          details[market] = { ok: false, reason: 'duplicate_snapshot_detected', previous_market: previousMarket };
+          details[market] = {
+            ok: false,
+            reason: 'duplicate_snapshot_detected',
+            previous_market: previousMarket,
+            zero_after_retry: isZeroExport(retryMonthly.rows),
+          };
           hardFailures++;
           continue;
         }
