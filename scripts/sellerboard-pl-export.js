@@ -28,14 +28,14 @@ if (SUPABASE_KEY) {
 
 // Market config
 const MARKET_CONFIG = {
-  'Amazon.de':     { account: 'eu', urlParam: 'Amazon.de' },
-  'Amazon.co.uk':  { account: 'eu', urlParam: 'Amazon.co.uk' },
-  'Amazon.fr':     { account: 'eu', urlParam: 'Amazon.fr' },
-  'Amazon.it':     { account: 'eu', urlParam: 'Amazon.it' },
-  'Amazon.es':     { account: 'eu', urlParam: 'Amazon.es' },
-  'Amazon.nl':     { account: 'eu', urlParam: 'Amazon.nl' },
-  'Amazon.com':    { account: 'us', urlParam: 'Amazon.com' },
-  'Amazon.ca':     { account: 'us', urlParam: 'Amazon.ca' }
+  'Amazon.de':     { account: 'eu', urlParam: 'Amazon.de', currency: 'EUR', symbol: '€' },
+  'Amazon.co.uk':  { account: 'eu', urlParam: 'Amazon.co.uk', currency: 'GBP', symbol: '£' },
+  'Amazon.fr':     { account: 'eu', urlParam: 'Amazon.fr', currency: 'EUR', symbol: '€' },
+  'Amazon.it':     { account: 'eu', urlParam: 'Amazon.it', currency: 'EUR', symbol: '€' },
+  'Amazon.es':     { account: 'eu', urlParam: 'Amazon.es', currency: 'EUR', symbol: '€' },
+  'Amazon.nl':     { account: 'eu', urlParam: 'Amazon.nl', currency: 'EUR', symbol: '€' },
+  'Amazon.com':    { account: 'us', urlParam: 'Amazon.com', currency: 'USD', symbol: '$' },
+  'Amazon.ca':     { account: 'us', urlParam: 'Amazon.ca', currency: 'CAD', symbol: '$' }
 };
 
 const EU_MARKETS = ['Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
@@ -69,18 +69,38 @@ function buildUrl(market) {
   return `https://app.sellerboard.com/en/dashboard/?${params.toString()}`;
 }
 
+async function isOnLoginPage(page) {
+  const url = page.url();
+  if (isLoginUrl(url)) return true;
+  return (await page.locator('input#username, input[name="login"]').count()) > 0;
+}
+
 async function freshNavigate(page, url, label) {
   console.log(`      🌐 Navigate: ${url.substring(0, 90)}...`);
   await page.goto('about:blank');
   await page.waitForTimeout(500);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(8000);
-  const currentUrl = page.url();
-  if (!currentUrl.includes('market')) {
+
+  if (await isOnLoginPage(page)) {
+    await debugLog(page, `login-redirect-${label}`, '⚠️ Login redirect — recovering session before scrape');
+    const ok = await ensureSellerboardSession(page);
+    if (!ok) {
+      await debugLog(page, label, `Pagina geladen: ${page.url().substring(0, 80)}...`);
+      return false;
+    }
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(8000);
+  }
+
+  let currentUrl = page.url();
+  if (!currentUrl.includes('market') && !await isOnLoginPage(page)) {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(3000);
+    currentUrl = page.url();
   }
   await debugLog(page, label, `Pagina geladen: ${currentUrl.substring(0, 80)}...`);
+  return !await isOnLoginPage(page);
 }
 
 function isLoginUrl(url) {
@@ -125,8 +145,8 @@ async function ensureSellerboardSession(page) {
   // Sellerboard login is /en/auth/login/ with text username + password (not type=email)
   if (!page.url().includes('/auth/login')) {
     await page.goto('https://app.sellerboard.com/en/auth/login/', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
   }
+  await page.waitForTimeout(4000);
 
   const userSelectors = ['input#username', 'input[name="login"]', 'input[type="email"]', 'input[name="email"]', 'input#email'];
   const passSelectors = ['input#password', 'input[name="password"]', 'input[type="password"]'];
@@ -134,7 +154,7 @@ async function ensureSellerboardSession(page) {
   for (const sel of userSelectors) {
     const loc = page.locator(sel).first();
     try {
-      await loc.waitFor({ state: 'visible', timeout: 5000 });
+      await loc.waitFor({ state: 'visible', timeout: 12000 });
       await loc.fill(creds.username);
       userFilled = true;
       break;
@@ -146,7 +166,7 @@ async function ensureSellerboardSession(page) {
   for (const sel of passSelectors) {
     const loc = page.locator(sel).first();
     try {
-      await loc.waitFor({ state: 'visible', timeout: 5000 });
+      await loc.waitFor({ state: 'visible', timeout: 12000 });
       await loc.fill(creds.password);
       passFilled = true;
       break;
@@ -246,6 +266,47 @@ function extractMonthly2026(headers, rows) {
   ]);
 
   return { headers: newHeaders, rows: newRows, months: dataCols.map(c => c.key) };
+}
+
+function tableFingerprint(monthlyRows) {
+  if (!Array.isArray(monthlyRows) || monthlyRows.length === 0) return '';
+  const interesting = ['Sales', 'Net profit', 'Gross profit', 'Estimated payout', 'Units'];
+  const picked = monthlyRows
+    .filter(r => interesting.includes((r?.[0] || '').trim()))
+    .map(r => r.join('|'))
+    .join('||');
+  return picked || monthlyRows.slice(0, 5).map(r => r.join('|')).join('||');
+}
+
+function detectCurrencySymbols(rows) {
+  const symbols = new Set();
+  for (const row of rows || []) {
+    for (let i = 1; i < row.length; i++) {
+      const cell = String(row[i] || '');
+      if (cell.includes('€')) symbols.add('€');
+      if (cell.includes('$')) symbols.add('$');
+      if (cell.includes('£')) symbols.add('£');
+    }
+  }
+  return Array.from(symbols);
+}
+
+function normalizeMonetaryCell(cell, expectedSymbol) {
+  const raw = String(cell ?? '');
+  if (!raw) return raw;
+  if (/%$/.test(raw) || raw === '—') return raw;
+  if (!/\d/.test(raw)) return raw;
+  // Normalize a visible currency sign without changing the numeric amount.
+  return raw
+    .replace(/^-\s*[€$£]\s*/, `-${expectedSymbol} `)
+    .replace(/^[€$£]\s*/, `${expectedSymbol} `);
+}
+
+function normalizeRowsCurrency(rows, expectedSymbol) {
+  return (rows || []).map(row => [
+    row[0] ?? '',
+    ...row.slice(1).map(cell => normalizeMonetaryCell(cell, expectedSymbol)),
+  ]);
 }
 
 // Debug: screenshot to local + Supabase
@@ -440,6 +501,10 @@ async function scrapeTable(page, viewType, market) {
 
   // Enhanced retry with debug logging (attached tables — Sellerboard hides many <table> nodes)
   for (let attempt = 1; attempt <= 6; attempt++) {
+    if (await isOnLoginPage(page)) {
+      console.log(`      ⚠️ Login pagina gedetecteerd (poging ${attempt}/6)`);
+      return null;
+    }
     console.log(`      ⏳ Wacht op data (poging ${attempt}/6)...`);
     try {
       await page.waitForFunction(
@@ -483,14 +548,15 @@ async function scrapeTableWithRecovery(page, viewType, market) {
   await debugLog(page, `recover-${viewType}-${market}`, '♻️ Retrying market once after session refresh');
   const ok = await ensureSellerboardSession(page);
   if (!ok) return null;
-  await freshNavigate(page, buildUrl(market), `retry-${viewType}-${market}`);
+  const navigated = await freshNavigate(page, buildUrl(market), `retry-${viewType}-${market}`);
+  if (!navigated) return null;
   return scrapeTable(page, viewType, market);
 }
 
 async function saveToSupabase(market, viewType, headers, rows) {
   if (!SUPABASE_KEY) {
     console.log(`      ⚠️ Skip Supabase save (geen key)`);
-    return false;
+    return { ok: true, mode: 'skip', row_count: rows.length };
   }
 
   const authHeaders = {
@@ -610,6 +676,8 @@ async function main() {
   const details = {};
   let totalRowsExported = 0;
   let hardFailures = 0;
+  let previousMarket = null;
+  let previousFingerprint = '';
   
   try {
     const sessionOk = await ensureSellerboardSession(page);
@@ -637,13 +705,21 @@ async function main() {
         } else {
           console.log(`   ⚠️ Account switch gefaald — skip ${market}`);
           summary[market] = '❌ Account switch';
+          details[market] = { ok: false, reason: 'account_switch_failed' };
+          hardFailures++;
           continue;
         }
       }
 
       console.log(`\n   📋 ${EXPORT_YEAR} Monthly P&L...`);
       const mainUrl = buildUrl(config.urlParam);
-      await freshNavigate(page, mainUrl, `monthly-pl-${market}`);
+      const navigated = await freshNavigate(page, mainUrl, `monthly-pl-${market}`);
+      if (!navigated) {
+        summary[market] = '❌ Login redirect';
+        details[market] = { ok: false, reason: 'login_redirect_unresolved' };
+        hardFailures++;
+        continue;
+      }
 
       const mainData = await scrapeTableWithRecovery(page, 'main_pl', market);
       if (!mainData) {
@@ -666,8 +742,43 @@ async function main() {
         hardFailures++;
         continue;
       }
+      const beforeSymbols = detectCurrencySymbols(monthly.rows);
+      monthly.rows = normalizeRowsCurrency(monthly.rows, config.symbol);
+      const afterSymbols = detectCurrencySymbols(monthly.rows);
+      const fingerprint = tableFingerprint(monthly.rows);
+      if (previousMarket && previousFingerprint && previousFingerprint === fingerprint) {
+        await debugLog(page, `dup-suspect-${market}`, `⚠️ Mogelijk hergebruikte tabelsnapshot (${previousMarket} -> ${market}), retrying once`);
+        const dupNavigated = await freshNavigate(page, mainUrl, `duplicate-retry-${market}`);
+        if (!dupNavigated) {
+          summary[market] = '❌ Duplicate retry login';
+          details[market] = { ok: false, reason: 'duplicate_retry_login' };
+          hardFailures++;
+          continue;
+        }
+        const retryData = await scrapeTableWithRecovery(page, 'main_pl', market);
+        if (!retryData) {
+          summary[market] = '❌ Duplicate retry failed';
+          details[market] = { ok: false, reason: 'duplicate_retry_failed' };
+          hardFailures++;
+          continue;
+        }
+        const retryMonthly = extractMonthly2026(retryData.headers, retryData.rows);
+        retryMonthly.rows = normalizeRowsCurrency(retryMonthly.rows, config.symbol);
+        const retryFingerprint = tableFingerprint(retryMonthly.rows);
+        if (retryFingerprint === previousFingerprint) {
+          console.log(`      ❌ Duplicate snapshot bevestigd na retry (${previousMarket} -> ${market})`);
+          summary[market] = '❌ Duplicate snapshot';
+          details[market] = { ok: false, reason: 'duplicate_snapshot_detected', previous_market: previousMarket };
+          hardFailures++;
+          continue;
+        }
+        monthly.headers = retryMonthly.headers;
+        monthly.rows = retryMonthly.rows;
+      }
       console.log(`      📅 Maanden: ${monthly.months.join(', ')}`);
+      console.log(`      💱 Currency ${config.currency}: symbols ${beforeSymbols.join(',') || 'none'} -> ${afterSymbols.join(',') || 'none'}`);
 
+      saveCsv(market, 'monthly_pl', monthly.headers, monthly.rows);
       const saveResult = await saveToSupabase(market, 'monthly_pl', monthly.headers, monthly.rows);
       if (!saveResult?.ok) {
         summary[market] = '❌ Supabase save';
@@ -675,15 +786,18 @@ async function main() {
         hardFailures++;
         continue;
       }
-      saveCsv(market, 'monthly_pl', monthly.headers, monthly.rows);
       summary[market] = `${monthly.rows.length} metrics × ${monthly.months.length} months ✅`;
       details[market] = {
         ok: true,
         row_count: monthly.rows.length,
         month_count: monthly.months.length,
-        save_mode: saveResult.mode
+        save_mode: saveResult.mode,
+        market: market,
+        currency: config.currency
       };
       totalRowsExported += monthly.rows.length;
+      previousMarket = market;
+      previousFingerprint = tableFingerprint(monthly.rows);
     }
     
   } finally {
