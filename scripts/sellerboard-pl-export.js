@@ -904,19 +904,26 @@ async function detectAccountMarketplaceProfile(page) {
 
 async function detectAccountOnPage(page) {
   try {
-    // Only trust top-right account badge (avoid false AMZ USA hits in hidden menus).
     const badge = await page.evaluate(() => {
+      const selected = document.querySelector(
+        '.current-account-name, a.accountFilter-selected, .sellerboard-account-accountName-title',
+      );
+      const t = (selected?.innerText || selected?.textContent || '').trim();
+      if (/^AMZ USA$/i.test(t) || /AMZ USA/i.test(t)) return 'us';
+      if (/tim@qualico\.be/i.test(t)) return 'eu';
+
+      // Fallback: top-right account badge only
       const nodes = Array.from(document.querySelectorAll(
-        'header *, nav *, [class*="header"] *, [class*="account"] *, [class*="user"] *, [class*="avatar"] *',
+        '.sellerboard-topbar *, header *, nav *',
       ));
       for (const el of nodes) {
-        const t = (el.innerText || '').trim();
-        if (!t || t.length > 40) continue;
+        const text = (el.innerText || '').trim();
+        if (!text || text.length > 40) continue;
         const r = el.getBoundingClientRect();
         if (r.top > 90 || r.height < 4 || r.width < 4) continue;
         if (r.left < window.innerWidth * 0.55) continue;
-        if (/^AMZ USA$/i.test(t) || /^AMZ\s+USA$/i.test(t)) return 'us';
-        if (/tim@qualico\.be/i.test(t)) return 'eu';
+        if (/^AMZ USA$/i.test(text)) return 'us';
+        if (/tim@qualico\.be/i.test(text)) return 'eu';
       }
       return null;
     });
@@ -1200,21 +1207,23 @@ async function debugLog(page, step, message, takeScreenshot = true) {
 
 async function switchAccount(page, targetAccount) {
   const targetName = targetAccount === 'us' ? 'AMZ USA' : 'Tim@qualico.be';
-  const otherName = targetAccount === 'us' ? 'Tim@qualico.be' : 'AMZ USA';
   await debugLog(page, 'account-switch-start', `🔄 Switchen naar ${targetAccount} (${targetName})...`);
 
   try {
     for (let attempt = 1; attempt <= 3; attempt++) {
-      // Open account menu via current badge (prefer OTHER account's opposite label in header).
+      // Open the real account filter (not export / column settings).
+      const openers = [
+        page.locator('a.accountFilter-selected').first(),
+        page.locator('li.sellerboard-account-accountName.accountFilter').first(),
+        page.locator('.current-account-name').first(),
+      ];
       let opened = false;
-      for (const text of [otherName, targetName, 'Tim@qualico.be', 'AMZ USA']) {
+      for (const opener of openers) {
         try {
-          const el = page.locator(`text="${text}"`).first();
-          const box = await el.boundingBox({ timeout: 1500 });
-          if (box && box.y < 90 && box.x > 400) {
-            await el.click({ timeout: 3000, force: true });
+          if (await opener.count() && await opener.isVisible().catch(() => false)) {
+            await opener.click({ timeout: 3000, force: true });
             opened = true;
-            console.log(`      ✅ Klikte op badge: ${text}`);
+            console.log('      ✅ Account filter geopend');
             break;
           }
         } catch {
@@ -1222,88 +1231,81 @@ async function switchAccount(page, targetAccount) {
         }
       }
       if (!opened) {
-        const vp = page.viewportSize() || { width: 1280, height: 720 };
-        await page.mouse.click(vp.width - 60, 35);
-        console.log('      ✅ Klikte op avatar positie');
+        // Last resort: click known badge text in the top bar only.
+        const badge = page.locator('.sellerboard-topbar').locator('text=/AMZ USA|Tim@qualico\\.be/i').first();
+        if (await badge.count()) {
+          await badge.click({ timeout: 3000, force: true }).catch(() => null);
+          opened = true;
+        }
       }
 
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1200);
       await debugLog(page, 'account-dropdown-open', `📋 Account dropdown geopend (try ${attempt})`, attempt === 1);
 
-      // Click the TARGET account entry inside the open menu — skip tiny header badge.
-      const clicked = await page.evaluate((name) => {
-        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
-        const items = Array.from(document.querySelectorAll(
-          'li, div[role="menuitem"], a, button, .dropdown-menu *, [class*="account"] *, [class*="user"] *',
-        ));
-        // Prefer larger / lower menu rows (not the top badge).
-        const scored = [];
-        for (const item of items) {
-          const text = norm(item.innerText || item.textContent || '');
-          if (!text || text.length > 80) continue;
-          if (!text.includes(name) && !text.toLowerCase().includes(name.toLowerCase())) continue;
-          const r = item.getBoundingClientRect();
-          if (r.width < 8 || r.height < 8) continue;
-          // Header badge is usually y < 70; menu items are below.
-          const score = (r.top >= 60 ? 1000 : 0) + r.width * r.height;
-          scored.push({ el: item, score, top: r.top, text });
+      // Click target inside accountFilter-dropdown-list (force visible even if 0-size until open).
+      let switched = false;
+      try {
+        const link = page.locator('ul.accountFilter-dropdown-list a.accountFilter-dropdown-list-item-link')
+          .filter({ hasText: new RegExp(`^\\s*${targetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') })
+          .first();
+        if (await link.count()) {
+          await link.click({ timeout: 4000, force: true });
+          switched = true;
+          console.log(`      ✅ Geswitcht via accountFilter link: ${targetName}`);
         }
-        scored.sort((a, b) => b.score - a.score);
-        if (!scored.length) return { ok: false };
-        scored[0].el.click();
-        return { ok: true, text: scored[0].text, top: scored[0].top };
-      }, targetName);
-
-      if (!clicked?.ok) {
-        // Playwright fallback
-        try {
-          const menuItem = page.locator('.dropdown-menu, [role="menu"], [class*="dropdown"]')
-            .locator(`text=${targetName}`).first();
-          if (await menuItem.count()) {
-            await menuItem.click({ timeout: 3000, force: true });
-            console.log(`      ✅ Geswitcht via menu locator: ${targetName}`);
-          } else {
-            await page.locator(`text="${targetName}"`).nth(1).click({ timeout: 3000, force: true }).catch(() => null);
-            console.log(`      ℹ️ Fallback click nth(1) ${targetName}`);
-          }
-        } catch {
-          console.log(`      ⚠️ Target account item not clicked (try ${attempt})`);
-        }
-      } else {
-        console.log(`      ✅ Geswitcht via evaluate: ${clicked.text} (y=${Math.round(clicked.top || 0)})`);
+      } catch {
+        /* evaluate fallback */
       }
 
-      // Wait for reload / account change
-      await page.waitForTimeout(5000);
+      if (!switched) {
+        const found = await page.evaluate((name) => {
+          const links = Array.from(document.querySelectorAll(
+            'ul.accountFilter-dropdown-list a.accountFilter-dropdown-list-item-link, a.accountFilter-dropdown-list-item-link',
+          ));
+          for (const a of links) {
+            const text = (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim();
+            if (text.toLowerCase() === name.toLowerCase() || text.includes(name)) {
+              a.click();
+              return { ok: true, text };
+            }
+          }
+          return { ok: false };
+        }, targetName);
+        if (found?.ok) {
+          switched = true;
+          console.log(`      ✅ Geswitcht via evaluate accountFilter: ${found.text}`);
+        }
+      }
+
+      if (!switched) {
+        console.log(`      ⚠️ Target account item not clicked (try ${attempt})`);
+        await page.keyboard.press('Escape').catch(() => null);
+        continue;
+      }
+
+      await page.waitForTimeout(6000);
       try {
-        await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
+        await page.waitForLoadState('domcontentloaded', { timeout: 15000 });
       } catch { /* ignore */ }
       await page.waitForTimeout(3000);
 
       const profile = await detectAccountMarketplaceProfile(page);
       const name = await detectAccountOnPage(page);
-      const url = page.url();
-      console.log(`      ℹ️ Post-switch check: profile=${profile || 'null'} name=${name || 'null'} url=${url.substring(0, 90)}`);
+      const badgeText = await page.locator('.current-account-name, .accountFilter-selected').first()
+        .innerText().catch(() => '');
+      console.log(
+        `      ℹ️ Post-switch check: profile=${profile || 'null'} name=${name || 'null'} badge=${(badgeText || '').trim()}`,
+      );
 
-      if (profile === targetAccount || name === targetAccount) {
-        await debugLog(page, 'account-switch-done', `✅ Account switch compleet. URL: ${url}`);
+      const badgeOk = targetAccount === 'us'
+        ? /AMZ USA/i.test(badgeText)
+        : /tim@qualico\.be/i.test(badgeText);
+      if (badgeOk || name === targetAccount || profile === targetAccount) {
+        await debugLog(page, 'account-switch-done', `✅ Account switch compleet. URL: ${page.url()}`);
         return true;
       }
 
-      // Navigate to a market URL that belongs to the target account to force session settle.
-      const settleUrl = targetAccount === 'us'
-        ? 'https://app.sellerboard.com/en/dashboard/?viewType=table&market%5B%5D=Amazon.com'
-        : 'https://app.sellerboard.com/en/dashboard/?viewType=table&market%5B%5D=Amazon.de';
-      await page.goto(settleUrl, { waitUntil: 'domcontentloaded' }).catch(() => null);
-      await page.waitForTimeout(4000);
-      const profile2 = await detectAccountMarketplaceProfile(page);
-      const name2 = await detectAccountOnPage(page);
-      if (profile2 === targetAccount || name2 === targetAccount) {
-        await debugLog(page, 'account-switch-done', `✅ Account switch compleet after settle. URL: ${page.url()}`);
-        return true;
-      }
-
-      console.log(`      ⚠️ Switch try ${attempt}/3 still not on ${targetAccount} (profile=${profile2}, name=${name2})`);
+      console.log(`      ⚠️ Switch try ${attempt}/3 not confirmed for ${targetAccount}`);
       await page.keyboard.press('Escape').catch(() => null);
     }
 
