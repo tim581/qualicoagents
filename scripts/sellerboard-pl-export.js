@@ -1390,57 +1390,73 @@ async function pageHasAmazonFeeChild(page, childName = 'Referral fee') {
 async function expandAmazonFeeRows(page) {
   await dismissSellerboardOverlays(page);
 
-  for (let attempt = 1; attempt <= 4; attempt++) {
+  for (let attempt = 1; attempt <= 5; attempt++) {
     if (await pageHasAmazonFeeChild(page, 'Referral fee')) {
       if (attempt > 1) console.log(`      ✅ Amazon fees expanded (attempt ${attempt})`);
       return true;
     }
 
-    try {
-      // Sellerboard P&L: button.dashboard-table-table-fieldRow-arrow toggles isOpened.
-      // IMPORTANT: if already .opened, do NOT click again (that collapses children).
-      const clicked = await page.evaluate(() => {
-        const rows = document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr');
-        for (const row of rows) {
-          const th = row.querySelector('th');
-          if (!th) continue;
-          const label = (
-            th.querySelector('span.ng-binding, span')?.innerText || th.innerText || ''
-          ).split('\n')[0].trim();
-          if (!/^Amazon fees$/i.test(label)) continue;
-
-          const arrow = row.querySelector('button.dashboard-table-table-fieldRow-arrow');
-          if (arrow?.classList?.contains('opened')) {
-            // Opened class but children missing — force re-open via th toggle twice.
-            th.click();
-            return { ok: true, via: 'reopen-toggle', opened: true };
-          }
-          if (arrow) {
-            arrow.click();
-            return { ok: true, via: 'arrow', opened: false };
-          }
-          th.click();
-          return { ok: true, via: 'th', opened: false };
-        }
-        return { ok: false };
-      });
-      if (clicked?.ok) {
-        console.log(`      ℹ️ Amazon fees expand: ${clicked.via}${clicked.opened ? ' (already open)' : ''}`);
+    const state = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr'));
+      for (const row of rows) {
+        const th = row.querySelector('th');
+        if (!th) continue;
+        const label = (
+          th.querySelector('span.ng-binding, span')?.innerText || th.innerText || ''
+        ).split('\n')[0].trim();
+        if (!/^Amazon fees$/i.test(label)) continue;
+        const arrow = row.querySelector('button.dashboard-table-table-fieldRow-arrow');
+        return {
+          found: true,
+          opened: !!arrow?.classList?.contains('opened'),
+          hasArrow: !!arrow,
+        };
       }
-    } catch {
-      /* ignore */
+      return { found: false };
+    }).catch(() => ({ found: false }));
+
+    if (!state.found) {
+      console.log('      ⚠️ Amazon fees row not found in DOM');
+      await page.waitForTimeout(1000);
+      continue;
     }
 
-    await page.waitForTimeout(1200 + attempt * 500);
+    if (state.opened) {
+      // Collapse first
+      await page.evaluate(() => {
+        for (const row of document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr')) {
+          const th = row.querySelector('th');
+          const label = (th?.querySelector('span')?.innerText || th?.innerText || '').split('\n')[0].trim();
+          if (/^Amazon fees$/i.test(label)) {
+            th.click();
+            return;
+          }
+        }
+      });
+      await page.waitForTimeout(600);
+    }
 
-    // Angular sometimes needs a second tick before .child rows render.
+    // Expand
+    await page.evaluate(() => {
+      for (const row of document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr')) {
+        const th = row.querySelector('th');
+        const label = (th?.querySelector('span')?.innerText || th?.innerText || '').split('\n')[0].trim();
+        if (!/^Amazon fees$/i.test(label)) continue;
+        const arrow = row.querySelector('button.dashboard-table-table-fieldRow-arrow');
+        if (arrow && !arrow.classList.contains('opened')) arrow.click();
+        else th?.click();
+        return;
+      }
+    });
+    console.log(`      ℹ️ Amazon fees expand attempt ${attempt} (wasOpen=${!!state.opened})`);
+    await page.waitForTimeout(1500);
+
     if (await pageHasAmazonFeeChild(page, 'Referral fee')) {
       console.log(`      ✅ Amazon fees expanded (attempt ${attempt})`);
       return true;
     }
   }
 
-  // Debug: dump nearby labels if still missing
   const nearby = await page.evaluate(() => {
     const rows = Array.from(document.querySelectorAll('tr.dashboard-table-table-fieldRow'));
     const idx = rows.findIndex((r) => {
