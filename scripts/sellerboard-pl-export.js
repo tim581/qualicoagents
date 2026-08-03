@@ -1398,6 +1398,7 @@ async function expandAmazonFeeRows(page) {
 
     try {
       // Sellerboard P&L: button.dashboard-table-table-fieldRow-arrow toggles isOpened.
+      // IMPORTANT: if already .opened, do NOT click again (that collapses children).
       const clicked = await page.evaluate(() => {
         const rows = document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr');
         for (const row of rows) {
@@ -1409,45 +1410,54 @@ async function expandAmazonFeeRows(page) {
           if (!/^Amazon fees$/i.test(label)) continue;
 
           const arrow = row.querySelector('button.dashboard-table-table-fieldRow-arrow');
+          if (arrow?.classList?.contains('opened')) {
+            // Opened class but children missing — force re-open via th toggle twice.
+            th.click();
+            return { ok: true, via: 'reopen-toggle', opened: true };
+          }
           if (arrow) {
-            // Already open → leave it; otherwise click to expand.
-            if (!arrow.classList.contains('opened')) arrow.click();
-            else th.click(); // toggle if class stale
-            return { ok: true, via: 'arrow', opened: arrow.classList.contains('opened') };
+            arrow.click();
+            return { ok: true, via: 'arrow', opened: false };
           }
           th.click();
-          return { ok: true, via: 'th' };
+          return { ok: true, via: 'th', opened: false };
         }
         return { ok: false };
       });
       if (clicked?.ok) {
-        console.log(`      ℹ️ Amazon fees expand click via ${clicked.via}`);
+        console.log(`      ℹ️ Amazon fees expand: ${clicked.via}${clicked.opened ? ' (already open)' : ''}`);
       }
     } catch {
       /* ignore */
     }
 
-    // Playwright locator fallback
-    try {
-      const feeRow = page.locator('tr.dashboard-table-table-fieldRow, tr').filter({
-        has: page.locator('th span, th').filter({ hasText: /^Amazon fees$/i }),
-      }).first();
-      if (await feeRow.count()) {
-        const arrow = feeRow.locator('button.dashboard-table-table-fieldRow-arrow').first();
-        if (await arrow.count()) {
-          await arrow.click({ timeout: 2000, force: true }).catch(() => null);
-        } else {
-          await feeRow.locator('th').first().click({ timeout: 2000, force: true }).catch(() => null);
-        }
-      }
-    } catch {
-      /* ignore */
-    }
+    await page.waitForTimeout(1200 + attempt * 500);
 
-    await page.waitForTimeout(800 + attempt * 400);
+    // Angular sometimes needs a second tick before .child rows render.
+    if (await pageHasAmazonFeeChild(page, 'Referral fee')) {
+      console.log(`      ✅ Amazon fees expanded (attempt ${attempt})`);
+      return true;
+    }
   }
 
-  console.log('      ⚠️ Amazon fees DOM expand did not reveal Referral fee');
+  // Debug: dump nearby labels if still missing
+  const nearby = await page.evaluate(() => {
+    const rows = Array.from(document.querySelectorAll('tr.dashboard-table-table-fieldRow'));
+    const idx = rows.findIndex((r) => {
+      const t = (r.querySelector('th span, th')?.innerText || '').split('\n')[0].trim();
+      return /^Amazon fees$/i.test(t);
+    });
+    if (idx < 0) return { found: false };
+    return {
+      found: true,
+      arrowClass: rows[idx].querySelector('button.dashboard-table-table-fieldRow-arrow')?.className || null,
+      around: rows.slice(idx, idx + 8).map((r) => ({
+        cls: r.className,
+        label: (r.querySelector('th span, th')?.innerText || '').split('\n')[0].trim(),
+      })),
+    };
+  }).catch(() => null);
+  console.log(`      ⚠️ Amazon fees DOM expand did not reveal Referral fee ${nearby ? JSON.stringify(nearby) : ''}`);
   return false;
 }
 
