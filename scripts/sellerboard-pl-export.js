@@ -1322,9 +1322,12 @@ async function findTableData(page) {
 async function pageHasAmazonFeeChild(page, childName = 'Referral fee') {
   return page.evaluate((wanted) => {
     const want = String(wanted || '').toLowerCase();
-    for (const row of document.querySelectorAll('tr')) {
-      const first = (row.querySelector('th, td')?.innerText || '').split('\n')[0].trim().toLowerCase();
-      if (first === want || first.endsWith(want)) return true;
+    const rows = document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr');
+    for (const row of rows) {
+      const first = (
+        row.querySelector('th span.ng-binding, th span, th, td')?.innerText || ''
+      ).split('\n')[0].trim().toLowerCase();
+      if (first === want) return true;
     }
     return false;
   }, childName).catch(() => false);
@@ -1340,65 +1343,54 @@ async function expandAmazonFeeRows(page) {
     }
 
     try {
-      // Playwright locator path: click the expand control next to "Amazon fees".
-      const feeRow = page.locator('tr').filter({
-        has: page.locator('th, td').filter({ hasText: /^Amazon fees$/i }),
-      }).first();
-      if (await feeRow.count()) {
-        const toggles = feeRow.locator(
-          'button, a, [role="button"], [aria-expanded], [class*="expand"], [class*="collapse"], [class*="toggle"], [class*="tree"], [class*="chevron"], [class*="arrow"], i, svg',
-        );
-        const n = await toggles.count();
-        for (let i = 0; i < Math.min(n, 6); i += 1) {
-          await toggles.nth(i).click({ timeout: 1500, force: true }).catch(() => null);
-        }
-        await feeRow.locator('th, td').first().dblclick({ timeout: 1500, force: true }).catch(() => null);
-        await feeRow.locator('th, td').first().click({ timeout: 1500, force: true }).catch(() => null);
-      }
-    } catch {
-      /* fall through to evaluate */
-    }
-
-    try {
-      await page.evaluate(() => {
-        const rows = Array.from(document.querySelectorAll('tr'));
+      // Sellerboard P&L: button.dashboard-table-table-fieldRow-arrow toggles isOpened.
+      const clicked = await page.evaluate(() => {
+        const rows = document.querySelectorAll('tr.dashboard-table-table-fieldRow, tr');
         for (const row of rows) {
-          const firstCell = row.querySelector('th, td');
-          const first = (firstCell?.innerText || '').split('\n')[0].trim();
-          if (!/^Amazon fees$/i.test(first)) continue;
+          const th = row.querySelector('th');
+          if (!th) continue;
+          const label = (
+            th.querySelector('span.ng-binding, span')?.innerText || th.innerText || ''
+          ).split('\n')[0].trim();
+          if (!/^Amazon fees$/i.test(label)) continue;
 
-          const clickables = [
-            ...row.querySelectorAll(
-              'button, a, [role="button"], [aria-expanded], [class*="expand"], [class*="collapse"], [class*="toggle"], [class*="tree"], [class*="chevron"], [class*="arrow"], svg, i',
-            ),
-          ];
-          for (const el of clickables) {
-            try {
-              const aria = el.getAttribute('aria-expanded');
-              if (aria === 'true') continue;
-              el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-            } catch { /* ignore */ }
+          const arrow = row.querySelector('button.dashboard-table-table-fieldRow-arrow');
+          if (arrow) {
+            // Already open → leave it; otherwise click to expand.
+            if (!arrow.classList.contains('opened')) arrow.click();
+            else th.click(); // toggle if class stale
+            return { ok: true, via: 'arrow', opened: arrow.classList.contains('opened') };
           }
-
-          try {
-            firstCell?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
-          } catch { /* ignore */ }
-          try {
-            firstCell?.click();
-          } catch { /* ignore */ }
-
-          try {
-            firstCell?.focus?.();
-            firstCell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
-            firstCell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-          } catch { /* ignore */ }
+          th.click();
+          return { ok: true, via: 'th' };
         }
+        return { ok: false };
       });
+      if (clicked?.ok) {
+        console.log(`      ℹ️ Amazon fees expand click via ${clicked.via}`);
+      }
     } catch {
       /* ignore */
     }
 
-    await page.waitForTimeout(900 + attempt * 400);
+    // Playwright locator fallback
+    try {
+      const feeRow = page.locator('tr.dashboard-table-table-fieldRow, tr').filter({
+        has: page.locator('th span, th').filter({ hasText: /^Amazon fees$/i }),
+      }).first();
+      if (await feeRow.count()) {
+        const arrow = feeRow.locator('button.dashboard-table-table-fieldRow-arrow').first();
+        if (await arrow.count()) {
+          await arrow.click({ timeout: 2000, force: true }).catch(() => null);
+        } else {
+          await feeRow.locator('th').first().click({ timeout: 2000, force: true }).catch(() => null);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    await page.waitForTimeout(800 + attempt * 400);
   }
 
   console.log('      ⚠️ Amazon fees DOM expand did not reveal Referral fee');
@@ -1817,7 +1809,7 @@ async function main() {
     process.exit(1);
   }
   
-  console.log(`📊 Sellerboard P&L Export v14.1 — ${EXPORT_YEAR} monthly`);
+  console.log(`📊 Sellerboard P&L Export v14.2 — ${EXPORT_YEAR} monthly`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   View: monthly_pl (per-ASIN overgeslagen)`);
   console.log(`   Run ID: ${RUN_ID}`);
