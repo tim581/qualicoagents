@@ -1,5 +1,8 @@
-// Sellerboard P&L Export v13 — 2026 monthly P&L per market
+// Sellerboard P&L Export v14 — 2026 monthly P&L per market
 // Scrapes main P&L table → filters 2026 month columns → upserts monthly_pl to Supabase
+// v14: fix Estimated payout drop (pad-as-child false positive); soft payout label match;
+//      Long term storage warn-only; robust Amazon fees expand; marketplace-chip account detect;
+//      force US switch before NA; refuse € on US/CA markets
 // v13: Amazon fees sub-lines (`Amazon fees > …`) via native CSV or expanded DOM;
 //      CA Select2 harden (search + header confirm); refuse USA→CA duplicate/$ mixups
 // v12: deterministic post-switch wait, Sales-row duplicate + all-zero Sales guard (3× retry),
@@ -144,23 +147,67 @@ const MONTH_NAMES = [
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 const MAX_MARKET_SWITCH_RETRIES = 3;
-const ESTIMATED_PAYOUT_LABELS = ['Estimated payout', 'Estimated Payout'];
+const ESTIMATED_PAYOUT_LABELS = [
+  'Estimated payout',
+  'Estimated Payout',
+  'Est. payout',
+  'Est. Payout',
+  'Estimated Payout:',
+  'Payout (est.)',
+  'Payout (estimated)',
+];
+const ESTIMATED_PAYOUT_RE = /^(?:amazon fees\s*>\s*)?(?:estimated\s+payout|est\.?\s*payout|payout\s*\((?:est\.?|estimated)\))\s*:?$/i;
 const PL_NETWORK_URL_RE = /sellerboard\.com.*(?:\/api\/|table|dashboard|profit|pl|market|period)/i;
 
-/** Minimum Amazon fees children required for ingest fee split (rest → residual). */
+/** Core Amazon fees children required for ingest fee split (rest → residual). */
 const REQUIRED_AMAZON_FEE_SUBLINES = [
   'Referral fee',
   'FBA per unit fulfilment fee',
   'FBA storage fee',
   'FBA disposal fee',
+];
+/** Present on some markets/months only — never hard-fail the market. */
+const OPTIONAL_AMAZON_FEE_SUBLINES = [
   'Long term storage fee',
 ];
 const AMAZON_FEES_PARENT = 'Amazon fees';
 
+/** Known top-level P&L rows — never treat as Amazon fees children / never drop. */
+const TOP_LEVEL_PL_LABELS = new Set([
+  'sales', 'units', 'ads', 'advertising', 'advertising cost', 'promo', 'promotions',
+  'refunds', 'amazon fees', 'cost of goods', 'cogs', 'vat', 'gross profit',
+  'indirect expenses', 'net profit', 'estimated payout', 'real acos', '% refunds',
+  'sellable returns', 'margin', 'roi', 'sessions', 'browser sessions', 'mobile app sessions',
+  'ppc cost', 'ppc', 'other', 'other income', 'other expenses',
+].map((s) => s.toLowerCase()));
+
 // --- HELPERS ---
+function barePlLabel(label) {
+  return String(label || '')
+    .trim()
+    .replace(/^Amazon fees\s*>\s*/i, '')
+    .replace(/:$/, '')
+    .trim();
+}
+
+function isEstimatedPayoutLabel(label) {
+  const bare = barePlLabel(label);
+  if (!bare) return false;
+  if (ESTIMATED_PAYOUT_LABELS.some((l) => l.toLowerCase() === bare.toLowerCase())) return true;
+  return ESTIMATED_PAYOUT_RE.test(String(label || '').trim()) || ESTIMATED_PAYOUT_RE.test(bare);
+}
+
+function isTopLevelPlLabel(label) {
+  const bare = barePlLabel(label).toLowerCase();
+  if (!bare) return false;
+  if (TOP_LEVEL_PL_LABELS.has(bare)) return true;
+  if (isEstimatedPayoutLabel(bare)) return true;
+  return false;
+}
+
 function normalizeRowLabel(label) {
   const trimmed = (label || '').trim();
-  if (ESTIMATED_PAYOUT_LABELS.includes(trimmed)) return 'Estimated payout';
+  if (isEstimatedPayoutLabel(trimmed)) return 'Estimated payout';
   return trimmed;
 }
 
@@ -169,9 +216,10 @@ function normalizeExportedRows(rows) {
 }
 
 /**
- * Sellerboard CSV / expanded DOM uses leading spaces (or deep padding) for children.
+ * Sellerboard CSV / expanded DOM uses leading spaces for children.
  * Keep Amazon fees children as `Amazon fees > Referral fee`; drop other children
  * (Sales > Organic, etc.) so Sellerboard_Exports stays ingest-friendly.
+ * Known top-level metrics are never dropped even if DOM padding looked "indented".
  */
 function attachAmazonFeeSublinePrefixes(rows) {
   const out = [];
@@ -183,6 +231,14 @@ function attachAmazonFeeSublinePrefixes(rows) {
 
     // Already prefixed from a prior pass
     if (/^amazon fees\s*>/i.test(raw.trim())) {
+      const bare = barePlLabel(raw);
+      // Accidental "Amazon fees > Estimated payout" from pad false-positive → promote
+      if (isEstimatedPayoutLabel(bare) || isTopLevelPlLabel(bare)) {
+        const promoted = isEstimatedPayoutLabel(bare) ? 'Estimated payout' : bare;
+        out.push([promoted, ...row.slice(1)]);
+        currentParent = promoted;
+        continue;
+      }
       out.push([raw.trim().replace(/\s*>\s*/g, ' > ').replace(/^amazon fees/i, AMAZON_FEES_PARENT), ...row.slice(1)]);
       currentParent = AMAZON_FEES_PARENT;
       continue;
@@ -191,9 +247,10 @@ function attachAmazonFeeSublinePrefixes(rows) {
     const indented = /^\s+/.test(raw);
     const label = raw.trim();
 
-    if (!indented) {
+    // Top-level metrics always kept (DOM sometimes pads them like children).
+    if (!indented || isTopLevelPlLabel(label)) {
       currentParent = label;
-      out.push([label, ...row.slice(1)]);
+      out.push([isEstimatedPayoutLabel(label) ? 'Estimated payout' : label, ...row.slice(1)]);
       continue;
     }
 
@@ -216,13 +273,23 @@ function amazonFeeSublineNames(rows) {
   return names;
 }
 
-function missingRequiredAmazonFeeSublines(rows) {
+function feeSublineSet(rows) {
   const have = new Set(amazonFeeSublineNames(rows).map((n) => n.toLowerCase()));
   // US spelling variant of fulfilment
   if (have.has('fba per unit fulfillment fee')) {
     have.add('fba per unit fulfilment fee');
   }
+  return have;
+}
+
+function missingRequiredAmazonFeeSublines(rows) {
+  const have = feeSublineSet(rows);
   return REQUIRED_AMAZON_FEE_SUBLINES.filter((n) => !have.has(n.toLowerCase()));
+}
+
+function missingOptionalAmazonFeeSublines(rows) {
+  const have = feeSublineSet(rows);
+  return OPTIONAL_AMAZON_FEE_SUBLINES.filter((n) => !have.has(n.toLowerCase()));
 }
 
 /** Minimal CSV parser that preserves leading spaces in field 1. */
@@ -270,7 +337,7 @@ function getSalesRow(rows) {
 }
 
 function findEstimatedPayoutRow(rows) {
-  return (rows || []).find((r) => ESTIMATED_PAYOUT_LABELS.includes((r?.[0] || '').trim())) || null;
+  return (rows || []).find((r) => isEstimatedPayoutLabel(r?.[0])) || null;
 }
 
 function salesRowsIdentical(rowA, rowB) {
@@ -806,6 +873,13 @@ async function detectAccountMarketplaceProfile(page) {
         || /\bamazon\.com\.be\b/.test(body);
       if (hasUsChips && !hasEuChips) return 'us';
       if (hasEuChips && !hasUsChips) return 'eu';
+      // Select2 rendered marketplace value is a strong signal.
+      const rendered = document.querySelector(
+        '.filter-item.marketplaces .select2-selection__rendered, .select-marketplaces-wrapper .select2-selection__rendered',
+      );
+      const renderedText = (rendered?.textContent || rendered?.title || '').trim().toLowerCase();
+      if (/amazon\.ca|amazon\.com$/.test(renderedText) && !/amazon\.com\.be/.test(renderedText)) return 'us';
+      if (/amazon\.(de|fr|it|es|nl|co\.uk|com\.be)/.test(renderedText)) return 'eu';
       return null;
     });
   } catch {
@@ -815,29 +889,84 @@ async function detectAccountMarketplaceProfile(page) {
 
 async function detectAccountOnPage(page) {
   try {
-    const topText = await page.evaluate(() => {
-      const bits = [];
-      for (const el of document.querySelectorAll('header *, nav *, [class*="header"] *, [class*="account"] *')) {
+    // Only trust top-right account badge (avoid false AMZ USA hits in hidden menus).
+    const badge = await page.evaluate(() => {
+      const nodes = Array.from(document.querySelectorAll(
+        'header *, nav *, [class*="header"] *, [class*="account"] *, [class*="user"] *, [class*="avatar"] *',
+      ));
+      for (const el of nodes) {
         const t = (el.innerText || '').trim();
-        if (t && t.length < 40) bits.push(t);
+        if (!t || t.length > 40) continue;
+        const r = el.getBoundingClientRect();
+        if (r.top > 90 || r.height < 4 || r.width < 4) continue;
+        if (r.left < window.innerWidth * 0.55) continue;
+        if (/^AMZ USA$/i.test(t) || /^AMZ\s+USA$/i.test(t)) return 'us';
+        if (/tim@qualico\.be/i.test(t)) return 'eu';
       }
-      return bits.join('\n');
+      return null;
     });
-    if (/AMZ USA/i.test(topText)) return 'us';
-    if (/tim@qualico\.be/i.test(topText)) return 'eu';
+    if (badge) return badge;
   } catch {
     /* ignore */
   }
   return null;
 }
 
+async function salesPreviewHasEuro(page) {
+  try {
+    const sales = await readSalesRowFromPage(page);
+    return !!(sales && sales.slice(1).some((c) => String(c || '').includes('€')));
+  } catch {
+    return false;
+  }
+}
+
 async function ensureCorrectAccount(page, targetAccount, currentAccount) {
-  const detected = await detectAccountOnPage(page);
-  const effective = detected || currentAccount;
+  const nameDetected = await detectAccountOnPage(page);
+  const profileDetected = await detectAccountMarketplaceProfile(page);
+  let effective = profileDetected || nameDetected || currentAccount;
+
+  if (profileDetected && nameDetected && profileDetected !== nameDetected) {
+    console.log(`   ⚠️ Account name=${nameDetected} vs markets=${profileDetected} — trusting marketplace chips`);
+    effective = profileDetected;
+  }
+
+  // US markets must never scrape while Sales still shows € (EU bleed).
+  if (targetAccount === 'us' && effective === 'us') {
+    const euroBleed = await salesPreviewHasEuro(page);
+    if (euroBleed || profileDetected === 'eu') {
+      console.log(`   ⚠️ Claimed US account but ${euroBleed ? '€ Sales' : 'EU markets'} visible — forcing switch`);
+      effective = 'eu';
+    }
+  }
+
   if (effective === targetAccount) return { ok: true, account: targetAccount };
-  console.log(`   🔄 Account mismatch (detected=${detected || 'unknown'}, need=${targetAccount}) — switching...`);
+
+  console.log(
+    `   🔄 Account mismatch (detected=${nameDetected || 'unknown'}`
+    + `/markets=${profileDetected || 'unknown'}, need=${targetAccount}) — switching...`,
+  );
   const switched = await switchAccount(page, targetAccount);
-  return { ok: switched, account: switched ? targetAccount : effective };
+  if (!switched) return { ok: false, account: effective };
+
+  await page.waitForTimeout(2000);
+  const afterProfile = await detectAccountMarketplaceProfile(page);
+  const afterName = await detectAccountOnPage(page);
+  const after = afterProfile || afterName || targetAccount;
+
+  if (targetAccount === 'us') {
+    const euroBleed = await salesPreviewHasEuro(page);
+    if (after === 'eu' || euroBleed) {
+      console.log(`   ❌ Still on EU after US switch (markets=${afterProfile}, €=${euroBleed})`);
+      return { ok: false, account: afterProfile || 'eu' };
+    }
+  }
+  if (targetAccount === 'eu' && afterProfile === 'us') {
+    console.log(`   ❌ Still on US markets after EU switch`);
+    return { ok: false, account: 'us' };
+  }
+
+  return { ok: true, account: targetAccount };
 }
 
 async function selectMarketInUi(page, config, options = {}) {
@@ -1127,25 +1256,30 @@ async function switchAccount(page, targetAccount) {
 // Enhanced table detection: supports both <table> and div-based grids.
 // Preserves leading spaces / indent so Amazon fees children survive into exports.
 async function findTableData(page) {
-  return await page.evaluate(() => {
+  return await page.evaluate((topLevelLabels) => {
+    const topSet = new Set((topLevelLabels || []).map((s) => String(s).toLowerCase()));
+    const isTop = (label) => {
+      const t = (label || '').trim().toLowerCase().replace(/:$/, '');
+      if (!t) return false;
+      if (topSet.has(t)) return true;
+      if (/^estimated\s+payout|^est\.?\s*payout/i.test(t)) return true;
+      return false;
+    };
+
     const labelFromCell = (cell, row) => {
       const raw = (cell?.innerText || cell?.textContent || '').split('\n')[0] || '';
       const trimmed = raw.trim();
       if (!trimmed) return '';
+      // Never demote known top-level metrics — Sellerboard pads many parent rows.
+      if (isTop(trimmed)) return trimmed;
+
       const leading = (raw.match(/^(\s*)/) || ['', ''])[1].length;
-      let pad = 0;
-      try {
-        pad = parseFloat(window.getComputedStyle(cell).paddingLeft || '0') || 0;
-      } catch {
-        pad = 0;
-      }
       const depth = Number(row.getAttribute('data-level') || row.getAttribute('aria-level') || 0);
       const cls = `${row.className || ''} ${cell.className || ''}`;
+      // Prefer explicit hierarchy signals. Do NOT use paddingLeft alone (false positives).
       const isChild = leading >= 2
-        || pad >= 24
         || depth > 0
-        || /child|sub-?row|nested|indent|level-?[1-9]/i.test(cls);
-      // Normalize child markers to leading spaces (Sellerboard CSV convention).
+        || /(?:^|\s)(?:child|sub-?row|nested|indent|level-[1-9])(?:\s|$)/i.test(cls);
       if (isChild && leading < 2) return `    ${trimmed}`;
       return leading >= 2 ? raw.replace(/\t/g, '    ') : trimmed;
     };
@@ -1181,29 +1315,74 @@ async function findTableData(page) {
 
     const gridContainers = document.querySelectorAll('[class*="table"], [class*="grid"], [class*="row"], [role="table"], [role="grid"]');
     return { source: 'none', tableCount: tables.length, gridCount: gridContainers.length, bestRows, data: null };
-  });
+  }, Array.from(TOP_LEVEL_PL_LABELS));
+}
+
+async function pageHasAmazonFeeChild(page, childName = 'Referral fee') {
+  return page.evaluate((wanted) => {
+    const want = String(wanted || '').toLowerCase();
+    for (const row of document.querySelectorAll('tr')) {
+      const first = (row.querySelector('th, td')?.innerText || '').split('\n')[0].trim().toLowerCase();
+      if (first === want || first.endsWith(want)) return true;
+    }
+    return false;
+  }, childName).catch(() => false);
 }
 
 async function expandAmazonFeeRows(page) {
-  try {
-    await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll('tr'));
-      for (const row of rows) {
-        const first = (row.querySelector('th, td')?.innerText || '').split('\n')[0].trim();
-        if (!/^Amazon fees$/i.test(first)) continue;
-        const clickables = row.querySelectorAll(
-          'button, a, [role="button"], [class*="expand"], [class*="collapse"], [class*="toggle"], svg, i, span',
-        );
-        for (const el of clickables) {
-          try { el.click(); } catch { /* ignore */ }
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    if (await pageHasAmazonFeeChild(page, 'Referral fee')) {
+      if (attempt > 1) console.log(`      ✅ Amazon fees expanded (attempt ${attempt})`);
+      return true;
+    }
+
+    try {
+      await page.evaluate(() => {
+        const rows = Array.from(document.querySelectorAll('tr'));
+        for (const row of rows) {
+          const firstCell = row.querySelector('th, td');
+          const first = (firstCell?.innerText || '').split('\n')[0].trim();
+          if (!/^Amazon fees$/i.test(first)) continue;
+
+          // Prefer explicit expand/collapse controls inside the row.
+          const clickables = [
+            ...row.querySelectorAll(
+              'button, a, [role="button"], [aria-expanded], [class*="expand"], [class*="collapse"], [class*="toggle"], [class*="tree"], [class*="chevron"], [class*="arrow"], svg, i',
+            ),
+          ];
+          for (const el of clickables) {
+            try {
+              const aria = el.getAttribute('aria-expanded');
+              if (aria === 'true') continue;
+              el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+            } catch { /* ignore */ }
+          }
+
+          // Double-click the label cell (Sellerboard tree toggle).
+          try {
+            firstCell?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
+          } catch { /* ignore */ }
+          try {
+            firstCell?.click();
+          } catch { /* ignore */ }
+
+          // Toggle via keyboard when focused.
+          try {
+            firstCell?.focus?.();
+            firstCell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
+            firstCell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          } catch { /* ignore */ }
         }
-        try { row.querySelector('th, td')?.click(); } catch { /* ignore */ }
-      }
-    });
-    await page.waitForTimeout(1200);
-  } catch {
-    /* ignore */
+      });
+    } catch {
+      /* ignore */
+    }
+
+    await page.waitForTimeout(900 + attempt * 400);
   }
+
+  console.log('      ⚠️ Amazon fees DOM expand did not reveal Referral fee');
+  return false;
 }
 
 /** Prefer Sellerboard native CSV — it always includes indented Amazon fees sub-lines. */
@@ -1217,6 +1396,7 @@ async function tryDownloadSellerboardPlCsv(page, market) {
     page.locator('button, a, [role="button"]').filter({ hasText: /^export$/i }),
     page.locator('[title*="Export" i], [aria-label*="Export" i], [data-testid*="export" i]'),
     page.locator('button, a').filter({ hasText: /export.*csv|csv.*export|download/i }),
+    page.locator('[class*="export"] button, [class*="export"] a, button[class*="export"]'),
   ];
 
   let trigger = null;
@@ -1233,12 +1413,13 @@ async function tryDownloadSellerboardPlCsv(page, market) {
   if (!trigger) return null;
 
   try {
-    const downloadPromise = page.waitForEvent('download', { timeout: 20000 });
+    const downloadPromise = page.waitForEvent('download', { timeout: 25000 });
     await trigger.click({ timeout: 4000 });
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(700);
+    // Menu item variants after Export click.
     const csvItem = page.locator(
-      'text=/export to csv/i, text=/download csv/i, text=/^csv$/i, [role="menuitem"]',
-    ).filter({ hasText: /csv/i }).first();
+      '[role="menuitem"], [role="option"], button, a, li, div',
+    ).filter({ hasText: /^(export to )?csv$|download csv|csv export/i }).first();
     if (await csvItem.count() && await csvItem.isVisible().catch(() => false)) {
       await csvItem.click({ timeout: 4000 });
     }
@@ -1261,8 +1442,14 @@ async function scrapeMainPlTable(page, market = 'unknown') {
     try {
       const parsed = parseSellerboardCsvText(fs.readFileSync(csvPath, 'utf8'));
       if (parsed?.rows?.length) {
-        console.log(`      📊 Using native CSV (${parsed.rows.length} rows, source=csv)`);
-        return parsed;
+        const prefixed = attachAmazonFeeSublinePrefixes(parsed.rows);
+        const missing = missingRequiredAmazonFeeSublines(prefixed);
+        // Only accept CSV if core fee children parse — otherwise fall through to DOM expand.
+        if (!missing.length || amazonFeeSublineNames(prefixed).length >= 3) {
+          console.log(`      📊 Using native CSV (${parsed.rows.length} rows, source=csv)`);
+          return parsed;
+        }
+        console.log(`      ⚠️ Native CSV missing core fee sub-lines (${missing.join(', ') || 'sparse'}) — trying DOM`);
       }
     } catch (e) {
       console.log(`      ⚠️ CSV parse failed, falling back to DOM: ${e.message}`);
@@ -1270,6 +1457,11 @@ async function scrapeMainPlTable(page, market = 'unknown') {
   }
 
   await expandAmazonFeeRows(page);
+  // Second pass after expand settles.
+  if (!(await pageHasAmazonFeeChild(page, 'Referral fee'))) {
+    await page.waitForTimeout(1500);
+    await expandAmazonFeeRows(page);
+  }
 
   const result = await findTableData(page);
 
@@ -1376,12 +1568,41 @@ async function scrapeMarketMonthlyPl(page, market, config, navOptions = {}) {
   monthly.rows = normalizeExportedRows(monthly.rows);
   monthly.rows = normalizeRowsCurrency(monthly.rows, config.symbol);
 
+  // Refuse EU currency bleed on US/CA markets.
+  const symbols = detectCurrencySymbols(monthly.rows);
+  if (config.account === 'us' && symbols.includes('€')) {
+    console.log(`      ❌ Currency mismatch: US market ${market} still has € (${symbols.join(',')})`);
+    return { ok: false, reason: 'currency_mismatch_eur_on_us', symbols };
+  }
+
   const missingFeeSubs = missingRequiredAmazonFeeSublines(monthly.rows);
+  const missingOptionalFees = missingOptionalAmazonFeeSublines(monthly.rows);
   if (missingFeeSubs.length) {
     console.log(`      ⚠️ Amazon fees sub-lines missing: ${missingFeeSubs.join(', ')} (source=${mainData.source || 'dom'})`);
+    // One more expand+rescrape if DOM path lacked children.
+    if ((mainData.source || 'dom') !== 'csv') {
+      await expandAmazonFeeRows(page);
+      const retryFees = await findTableData(page);
+      if (retryFees?.data?.length) {
+        const retryMonthly = extractMonthly2026(retryFees.data[0], retryFees.data.slice(1));
+        retryMonthly.rows = attachAmazonFeeSublinePrefixes(retryMonthly.rows);
+        retryMonthly.rows = normalizeExportedRows(retryMonthly.rows);
+        retryMonthly.rows = normalizeRowsCurrency(retryMonthly.rows, config.symbol);
+        const stillMissing = missingRequiredAmazonFeeSublines(retryMonthly.rows);
+        if (stillMissing.length < missingFeeSubs.length) {
+          monthly.headers = retryMonthly.headers;
+          monthly.rows = retryMonthly.rows;
+          monthly.months = retryMonthly.months;
+          console.log(`      ✅ Fee expand recovery improved sub-lines (${missingFeeSubs.length} → ${stillMissing.length} missing)`);
+        }
+      }
+    }
   } else {
     const feeCount = amazonFeeSublineNames(monthly.rows).length;
     console.log(`      ✅ Amazon fees sub-lines: ${feeCount} (incl. required set)`);
+  }
+  if (missingOptionalFees.length) {
+    console.log(`      ℹ️ Optional fee sub-lines absent (warn only): ${missingOptionalFees.join(', ')}`);
   }
 
   if (!findEstimatedPayoutRow(monthly.rows)) {
@@ -1402,7 +1623,14 @@ async function scrapeMarketMonthlyPl(page, market, config, navOptions = {}) {
   }
 
   if (!findEstimatedPayoutRow(monthly.rows)) {
-    return { ok: false, reason: 'missing_estimated_payout_row', row_count: monthly.rows.length };
+    const hasSales = !!getSalesRow(monthly.rows);
+    const hasNet = (monthly.rows || []).some((r) => /^Net profit$/i.test(String(r?.[0] || '').trim()));
+    if (hasSales && hasNet) {
+      // Soften hard-fail: label mismatch / DOM hierarchy quirk — continue with warning.
+      console.log(`      ⚠️ Estimated payout label not found — continuing (Sales + Net profit present)`);
+    } else {
+      return { ok: false, reason: 'missing_estimated_payout_row', row_count: monthly.rows.length };
+    }
   }
 
   // US/CA: refuse scrapes that still look like the previous market (both use $).
@@ -1422,6 +1650,7 @@ async function scrapeMarketMonthlyPl(page, market, config, navOptions = {}) {
     monthly,
     fee_sublines: amazonFeeSublineNames(monthly.rows),
     missing_fee_sublines: missingRequiredAmazonFeeSublines(monthly.rows),
+    missing_optional_fee_sublines: missingOptionalAmazonFeeSublines(monthly.rows),
     scrape_source: mainData.source || 'dom',
   };
 }
@@ -1515,7 +1744,7 @@ async function main() {
     process.exit(1);
   }
   
-  console.log(`📊 Sellerboard P&L Export v12 — ${EXPORT_YEAR} monthly`);
+  console.log(`📊 Sellerboard P&L Export v14 — ${EXPORT_YEAR} monthly`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   View: monthly_pl (per-ASIN overgeslagen)`);
   console.log(`   Run ID: ${RUN_ID}`);
@@ -1612,10 +1841,14 @@ async function main() {
         if (!scrapeResult.ok) {
           // Allow zero/duplicate failures to retry market switch (esp. USA→CA).
           if (
-            ['zero_export_detected', 'duplicate_sales_row_detected'].includes(scrapeResult.reason)
+            ['zero_export_detected', 'duplicate_sales_row_detected', 'currency_mismatch_eur_on_us'].includes(scrapeResult.reason)
             && marketRetries < MAX_MARKET_SWITCH_RETRIES
           ) {
             console.log(`      ⚠️ ${scrapeResult.reason} — retrying UI market select for ${market}`);
+            if (scrapeResult.reason === 'currency_mismatch_eur_on_us') {
+              const forced = await ensureCorrectAccount(page, 'us', 'eu');
+              if (forced.ok) currentAccount = 'us';
+            }
             await selectMarketInUi(page, config, { networkTracker, previousSalesRow });
             continue;
           }
@@ -1680,6 +1913,7 @@ async function main() {
         else if (reason === 'duplicate_sales_row_detected') summary[market] = '❌ Duplicate Sales row';
         else if (reason === 'zero_export_detected') summary[market] = '❌ Zero export';
         else if (reason === 'market_ui_select_failed') summary[market] = '❌ Market UI select';
+        else if (reason === 'currency_mismatch_eur_on_us') summary[market] = '❌ € on US market';
         else summary[market] = `❌ ${reason}`;
         details[market] = { ok: false, reason, ...scrapeResult };
         hardFailures++;
@@ -1803,15 +2037,31 @@ function runFeeSublineSelfTest() {
   const monthly = extractMonthly2026(parsed.headers, parsed.rows);
   const rows = attachAmazonFeeSublinePrefixes(monthly.rows);
   const missing = missingRequiredAmazonFeeSublines(rows);
+  const missingOptional = missingOptionalAmazonFeeSublines(rows);
   const names = amazonFeeSublineNames(rows);
-  console.log(`SELFTEST_OK|fee_sublines=${names.length}|missing=${missing.join(',') || 'none'}`);
+  console.log(`SELFTEST_OK|fee_sublines=${names.length}|missing=${missing.join(',') || 'none'}|optional_missing=${missingOptional.join(',') || 'none'}`);
   console.log(names.slice(0, 8).map((n) => `Amazon fees > ${n}`).join('\n'));
   if (missing.length) {
-    // Long term / disposal can be absent on some markets — warn but don't fail self-test hard
-    console.log(`SELFTEST_WARN|missing_required=${missing.join(',')}`);
+    throw new Error(`SELFTEST_FAIL|missing_required=${missing.join(',')}`);
+  }
+  if (missingOptional.length) {
+    console.log(`SELFTEST_WARN|optional_absent=${missingOptional.join(',')} (ok)`);
   }
   const referral = rows.find((r) => /^Amazon fees > Referral fee$/i.test(r[0]));
   if (!referral) throw new Error('SELFTEST_FAIL|missing Referral fee prefix row');
+  const payout = findEstimatedPayoutRow(rows);
+  if (!payout) throw new Error('SELFTEST_FAIL|missing Estimated payout');
+
+  // Simulate DOM pad false-positive: top-level rows wrongly indented under Amazon fees.
+  const bogus = attachAmazonFeeSublinePrefixes([
+    ['Amazon fees', '1'],
+    ['    Referral fee', '2'],
+    ['    Estimated payout', '3'],
+    ['    Net profit', '4'],
+  ]);
+  if (!findEstimatedPayoutRow(bogus)) throw new Error('SELFTEST_FAIL|payout not promoted from false indent');
+  if (!bogus.some((r) => /^Net profit$/i.test(r[0]))) throw new Error('SELFTEST_FAIL|Net profit dropped');
+  console.log('SELFTEST_OK|false-indent promotion');
   return 0;
 }
 
