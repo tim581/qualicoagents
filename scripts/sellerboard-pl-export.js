@@ -1200,72 +1200,115 @@ async function debugLog(page, step, message, takeScreenshot = true) {
 
 async function switchAccount(page, targetAccount) {
   const targetName = targetAccount === 'us' ? 'AMZ USA' : 'Tim@qualico.be';
+  const otherName = targetAccount === 'us' ? 'Tim@qualico.be' : 'AMZ USA';
   await debugLog(page, 'account-switch-start', `🔄 Switchen naar ${targetAccount} (${targetName})...`);
-  
+
   try {
-    // Click avatar/account button in top navigation bar
-    let clicked = false;
-    
-    for (const text of ['Tim@qualico.be', 'tim@qualico.be', 'AMZ USA', 'AMZ usa']) {
-      try {
-        const el = page.locator(`text="${text}"`).first();
-        const box = await el.boundingBox({ timeout: 2000 });
-        if (box && box.y < 80) {
-          await el.click({ timeout: 3000 });
-          clicked = true;
-          console.log(`      ✅ Klikte op: ${text}`);
-          break;
-        }
-      } catch (e) { /* try next */ }
-    }
-    
-    // Fallback: top-right avatar position
-    if (!clicked) {
-      const vp = page.viewportSize();
-      await page.mouse.click(vp.width - 60, 35);
-      clicked = true;
-      console.log(`      ✅ Klikte op avatar positie`);
-    }
-    
-    await page.waitForTimeout(2000);
-    await debugLog(page, 'account-dropdown-open', '📋 Account dropdown geopend');
-    
-    // Click target account
-    let switched = false;
-    try {
-      await page.locator(`text="${targetName}"`).first().click({ timeout: 3000 });
-      switched = true;
-      console.log(`      ✅ Geswitcht naar: ${targetName}`);
-    } catch (e) {
-      const found = await page.evaluate((name) => {
-        const items = document.querySelectorAll('li, div[role="menuitem"], a, button, span');
-        for (const item of items) {
-          if (item.innerText?.trim()?.includes(name)) {
-            item.click();
-            return true;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      // Open account menu via current badge (prefer OTHER account's opposite label in header).
+      let opened = false;
+      for (const text of [otherName, targetName, 'Tim@qualico.be', 'AMZ USA']) {
+        try {
+          const el = page.locator(`text="${text}"`).first();
+          const box = await el.boundingBox({ timeout: 1500 });
+          if (box && box.y < 90 && box.x > 400) {
+            await el.click({ timeout: 3000, force: true });
+            opened = true;
+            console.log(`      ✅ Klikte op badge: ${text}`);
+            break;
           }
+        } catch {
+          /* next */
         }
-        return false;
-      }, targetName);
-      if (found) {
-        switched = true;
-        console.log(`      ✅ Geswitcht via evaluate: ${targetName}`);
       }
+      if (!opened) {
+        const vp = page.viewportSize() || { width: 1280, height: 720 };
+        await page.mouse.click(vp.width - 60, 35);
+        console.log('      ✅ Klikte op avatar positie');
+      }
+
+      await page.waitForTimeout(1500);
+      await debugLog(page, 'account-dropdown-open', `📋 Account dropdown geopend (try ${attempt})`, attempt === 1);
+
+      // Click the TARGET account entry inside the open menu — skip tiny header badge.
+      const clicked = await page.evaluate((name) => {
+        const norm = (s) => (s || '').replace(/\s+/g, ' ').trim();
+        const items = Array.from(document.querySelectorAll(
+          'li, div[role="menuitem"], a, button, .dropdown-menu *, [class*="account"] *, [class*="user"] *',
+        ));
+        // Prefer larger / lower menu rows (not the top badge).
+        const scored = [];
+        for (const item of items) {
+          const text = norm(item.innerText || item.textContent || '');
+          if (!text || text.length > 80) continue;
+          if (!text.includes(name) && !text.toLowerCase().includes(name.toLowerCase())) continue;
+          const r = item.getBoundingClientRect();
+          if (r.width < 8 || r.height < 8) continue;
+          // Header badge is usually y < 70; menu items are below.
+          const score = (r.top >= 60 ? 1000 : 0) + r.width * r.height;
+          scored.push({ el: item, score, top: r.top, text });
+        }
+        scored.sort((a, b) => b.score - a.score);
+        if (!scored.length) return { ok: false };
+        scored[0].el.click();
+        return { ok: true, text: scored[0].text, top: scored[0].top };
+      }, targetName);
+
+      if (!clicked?.ok) {
+        // Playwright fallback
+        try {
+          const menuItem = page.locator('.dropdown-menu, [role="menu"], [class*="dropdown"]')
+            .locator(`text=${targetName}`).first();
+          if (await menuItem.count()) {
+            await menuItem.click({ timeout: 3000, force: true });
+            console.log(`      ✅ Geswitcht via menu locator: ${targetName}`);
+          } else {
+            await page.locator(`text="${targetName}"`).nth(1).click({ timeout: 3000, force: true }).catch(() => null);
+            console.log(`      ℹ️ Fallback click nth(1) ${targetName}`);
+          }
+        } catch {
+          console.log(`      ⚠️ Target account item not clicked (try ${attempt})`);
+        }
+      } else {
+        console.log(`      ✅ Geswitcht via evaluate: ${clicked.text} (y=${Math.round(clicked.top || 0)})`);
+      }
+
+      // Wait for reload / account change
+      await page.waitForTimeout(5000);
+      try {
+        await page.waitForLoadState('domcontentloaded', { timeout: 10000 });
+      } catch { /* ignore */ }
+      await page.waitForTimeout(3000);
+
+      const profile = await detectAccountMarketplaceProfile(page);
+      const name = await detectAccountOnPage(page);
+      const url = page.url();
+      console.log(`      ℹ️ Post-switch check: profile=${profile || 'null'} name=${name || 'null'} url=${url.substring(0, 90)}`);
+
+      if (profile === targetAccount || name === targetAccount) {
+        await debugLog(page, 'account-switch-done', `✅ Account switch compleet. URL: ${url}`);
+        return true;
+      }
+
+      // Navigate to a market URL that belongs to the target account to force session settle.
+      const settleUrl = targetAccount === 'us'
+        ? 'https://app.sellerboard.com/en/dashboard/?viewType=table&market%5B%5D=Amazon.com'
+        : 'https://app.sellerboard.com/en/dashboard/?viewType=table&market%5B%5D=Amazon.de';
+      await page.goto(settleUrl, { waitUntil: 'domcontentloaded' }).catch(() => null);
+      await page.waitForTimeout(4000);
+      const profile2 = await detectAccountMarketplaceProfile(page);
+      const name2 = await detectAccountOnPage(page);
+      if (profile2 === targetAccount || name2 === targetAccount) {
+        await debugLog(page, 'account-switch-done', `✅ Account switch compleet after settle. URL: ${page.url()}`);
+        return true;
+      }
+
+      console.log(`      ⚠️ Switch try ${attempt}/3 still not on ${targetAccount} (profile=${profile2}, name=${name2})`);
+      await page.keyboard.press('Escape').catch(() => null);
     }
-    
-    if (!switched) {
-      await debugLog(page, 'account-switch-failed', `❌ Account "${targetName}" niet gevonden`);
-      return false;
-    }
-    
-    // Wait for account switch to complete (page redirects + session update)
-    await page.waitForTimeout(8000);
-    
-    // Log the current URL to verify we're on the right account
-    const currentUrl = page.url();
-    await debugLog(page, 'account-switch-done', `✅ Account switch compleet. URL: ${currentUrl}`);
-    return true;
-    
+
+    await debugLog(page, 'account-switch-failed', `❌ Account switch naar ${targetName} niet bevestigd`);
+    return false;
   } catch (err) {
     await debugLog(page, 'account-switch-error', `❌ Error: ${err.message}`);
     return false;
@@ -1836,7 +1879,7 @@ async function main() {
     process.exit(1);
   }
   
-  console.log(`📊 Sellerboard P&L Export v14.2 — ${EXPORT_YEAR} monthly`);
+  console.log(`📊 Sellerboard P&L Export v14.3 — ${EXPORT_YEAR} monthly`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   View: monthly_pl (per-ASIN overgeslagen)`);
   console.log(`   Run ID: ${RUN_ID}`);
