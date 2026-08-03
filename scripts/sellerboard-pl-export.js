@@ -866,21 +866,35 @@ function findSuspiciousZeroMonths(monthly) {
 async function detectAccountMarketplaceProfile(page) {
   try {
     return await page.evaluate(() => {
+      // URL market param is the strongest post-switch signal.
+      try {
+        const url = new URL(window.location.href);
+        const markets = [
+          ...url.searchParams.getAll('market[]'),
+          ...url.searchParams.getAll('market'),
+        ].map((m) => (m || '').toLowerCase());
+        const joined = markets.join(' ');
+        if (/amazon\.(de|fr|it|es|nl|co\.uk|com\.be)/.test(joined)) return 'eu';
+        if (/amazon\.ca/.test(joined) || /amazon\.com(?!\.be)/.test(joined)) return 'us';
+      } catch { /* ignore */ }
+
       const body = (document.body?.innerText || '').toLowerCase();
-      const hasUsChips = /\bamazon\.com\b/.test(body) && /\bamazon\.ca\b/.test(body);
-      const hasEuChips = /\bamazon\.de\b/.test(body)
-        || /\bamazon\.co\.uk\b/.test(body)
-        || /\bamazon\.fr\b/.test(body)
-        || /\bamazon\.com\.be\b/.test(body);
+      // Do NOT let amazon.com.be satisfy amazon.com (negative lookahead).
+      const hasUsChips = /amazon\.com(?!\.be)/.test(body) && /amazon\.ca/.test(body);
+      const hasEuChips = /amazon\.de/.test(body)
+        || /amazon\.co\.uk/.test(body)
+        || /amazon\.fr/.test(body)
+        || /amazon\.com\.be/.test(body);
       if (hasUsChips && !hasEuChips) return 'us';
       if (hasEuChips && !hasUsChips) return 'eu';
-      // Select2 rendered marketplace value is a strong signal.
+
+      // Select2 rendered marketplace value.
       const rendered = document.querySelector(
         '.filter-item.marketplaces .select2-selection__rendered, .select-marketplaces-wrapper .select2-selection__rendered',
       );
       const renderedText = (rendered?.textContent || rendered?.title || '').trim().toLowerCase();
-      if (/amazon\.ca|amazon\.com$/.test(renderedText) && !/amazon\.com\.be/.test(renderedText)) return 'us';
-      if (/amazon\.(de|fr|it|es|nl|co\.uk|com\.be)/.test(renderedText)) return 'eu';
+      if (/amazon\.com\.be|amazon\.(de|fr|it|es|nl|co\.uk)/.test(renderedText)) return 'eu';
+      if (/amazon\.ca/.test(renderedText) || /amazon\.com(?!\.be)/.test(renderedText)) return 'us';
       return null;
     });
   } catch {
@@ -955,16 +969,20 @@ async function ensureCorrectAccount(page, targetAccount, currentAccount) {
   const afterName = await detectAccountOnPage(page);
   const after = afterProfile || afterName || targetAccount;
 
+  // Soft verify: URL/market profile wins. Name-only mismatches are warnings.
   if (targetAccount === 'us') {
     const euroBleed = await salesPreviewHasEuro(page);
-    if (after === 'eu' || euroBleed) {
+    if (afterProfile === 'eu' || (euroBleed && afterProfile !== 'us')) {
       console.log(`   ❌ Still on EU after US switch (markets=${afterProfile}, €=${euroBleed})`);
       return { ok: false, account: afterProfile || 'eu' };
     }
   }
-  if (targetAccount === 'eu' && afterProfile === 'us') {
+  if (targetAccount === 'eu' && afterProfile === 'us' && afterName !== 'eu') {
     console.log(`   ❌ Still on US markets after EU switch`);
     return { ok: false, account: 'us' };
+  }
+  if (afterProfile && afterProfile !== targetAccount) {
+    console.log(`   ⚠️ Post-switch profile=${afterProfile} (expected ${targetAccount}) — continuing with switch result`);
   }
 
   return { ok: true, account: targetAccount };
