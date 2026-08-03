@@ -1268,7 +1268,11 @@ async function findTableData(page) {
     };
 
     const labelFromCell = (cell, row) => {
-      const raw = (cell?.innerText || cell?.textContent || '').split('\n')[0] || '';
+      // Prefer dedicated label span in <th>; avoid dumping all cell text for value cells.
+      const rawLabel = row.querySelector('th') === cell
+        ? ((cell.querySelector('span.ng-binding, span')?.innerText || cell.innerText || '').split('\n')[0] || '')
+        : ((cell?.innerText || cell?.textContent || '').split('\n')[0] || '');
+      const raw = rawLabel;
       const trimmed = raw.trim();
       if (!trimmed) return '';
       // Never demote known top-level metrics — Sellerboard pads many parent rows.
@@ -1278,25 +1282,30 @@ async function findTableData(page) {
       const depth = Number(row.getAttribute('data-level') || row.getAttribute('aria-level') || 0);
       const cls = `${row.className || ''} ${cell.className || ''}`;
       // Prefer explicit hierarchy signals. Do NOT use paddingLeft alone (false positives).
+      // Sellerboard fee children: tr.dashboard-table-table-fieldRow.child
       const isChild = leading >= 2
         || depth > 0
-        || /(?:^|\s)(?:child|sub-?row|nested|indent|level-[1-9])(?:\s|$)/i.test(cls);
+        || /(?:^|\s)child(?:\s|$)/i.test(row.className || '')
+        || /(?:^|\s)(?:sub-?row|nested|indent|level-[1-9])(?:\s|$)/i.test(cls);
       if (isChild && leading < 2) return `    ${trimmed}`;
       return leading >= 2 ? raw.replace(/\t/g, '    ') : trimmed;
     };
 
+    // Prefer the monthly P&L field table over calendar / other tables.
+    const preferredRows = document.querySelectorAll('tr.dashboard-table-table-fieldRow');
+    let bestTable = preferredRows.length > 5 ? preferredRows[0].closest('table') : null;
+    let bestRows = preferredRows.length > 5 ? preferredRows.length : 0;
+
     const tables = document.querySelectorAll('table');
-    let bestTable = null;
-    let bestRows = 0;
-
-    tables.forEach((t) => {
-      const rows = t.querySelectorAll('tr');
-      if (rows.length > bestRows) {
-        bestRows = rows.length;
-        bestTable = t;
-      }
-    });
-
+    if (!bestTable) {
+      tables.forEach((t) => {
+        const rows = t.querySelectorAll('tr');
+        if (rows.length > bestRows) {
+          bestRows = rows.length;
+          bestTable = t;
+        }
+      });
+    }
     if (bestTable && bestRows > 5) {
       const rows = bestTable.querySelectorAll('tr');
       const result = [];
