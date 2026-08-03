@@ -538,6 +538,7 @@ async function freshNavigate(page, url, label, config = null, options = {}) {
   await page.waitForTimeout(500);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(3000);
+  await dismissSellerboardOverlays(page);
 
   if (await isOnLoginPage(page)) {
     await debugLog(page, `login-redirect-${label}`, '⚠️ Login redirect — recovering session before scrape');
@@ -1330,10 +1331,32 @@ async function pageHasAmazonFeeChild(page, childName = 'Referral fee') {
 }
 
 async function expandAmazonFeeRows(page) {
+  await dismissSellerboardOverlays(page);
+
   for (let attempt = 1; attempt <= 4; attempt++) {
     if (await pageHasAmazonFeeChild(page, 'Referral fee')) {
       if (attempt > 1) console.log(`      ✅ Amazon fees expanded (attempt ${attempt})`);
       return true;
+    }
+
+    try {
+      // Playwright locator path: click the expand control next to "Amazon fees".
+      const feeRow = page.locator('tr').filter({
+        has: page.locator('th, td').filter({ hasText: /^Amazon fees$/i }),
+      }).first();
+      if (await feeRow.count()) {
+        const toggles = feeRow.locator(
+          'button, a, [role="button"], [aria-expanded], [class*="expand"], [class*="collapse"], [class*="toggle"], [class*="tree"], [class*="chevron"], [class*="arrow"], i, svg',
+        );
+        const n = await toggles.count();
+        for (let i = 0; i < Math.min(n, 6); i += 1) {
+          await toggles.nth(i).click({ timeout: 1500, force: true }).catch(() => null);
+        }
+        await feeRow.locator('th, td').first().dblclick({ timeout: 1500, force: true }).catch(() => null);
+        await feeRow.locator('th, td').first().click({ timeout: 1500, force: true }).catch(() => null);
+      }
+    } catch {
+      /* fall through to evaluate */
     }
 
     try {
@@ -1344,7 +1367,6 @@ async function expandAmazonFeeRows(page) {
           const first = (firstCell?.innerText || '').split('\n')[0].trim();
           if (!/^Amazon fees$/i.test(first)) continue;
 
-          // Prefer explicit expand/collapse controls inside the row.
           const clickables = [
             ...row.querySelectorAll(
               'button, a, [role="button"], [aria-expanded], [class*="expand"], [class*="collapse"], [class*="toggle"], [class*="tree"], [class*="chevron"], [class*="arrow"], svg, i',
@@ -1358,7 +1380,6 @@ async function expandAmazonFeeRows(page) {
             } catch { /* ignore */ }
           }
 
-          // Double-click the label cell (Sellerboard tree toggle).
           try {
             firstCell?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, view: window }));
           } catch { /* ignore */ }
@@ -1366,7 +1387,6 @@ async function expandAmazonFeeRows(page) {
             firstCell?.click();
           } catch { /* ignore */ }
 
-          // Toggle via keyboard when focused.
           try {
             firstCell?.focus?.();
             firstCell?.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }));
@@ -1385,18 +1405,58 @@ async function expandAmazonFeeRows(page) {
   return false;
 }
 
+async function dismissSellerboardOverlays(page) {
+  try {
+    await page.evaluate(() => {
+      // New-feature / tour modals block clicks (modal-backdrop.newFeature).
+      for (const sel of [
+        '.modal-backdrop',
+        '.modal.in',
+        '.modal.show',
+        '[class*="newFeature"]',
+        '[class*="onboarding"]',
+        '[class*="joyride"]',
+        '[class*="shepherd"]',
+      ]) {
+        document.querySelectorAll(sel).forEach((el) => {
+          try { el.remove(); } catch { /* ignore */ }
+        });
+      }
+      document.body?.classList?.remove('modal-open');
+      document.documentElement?.classList?.remove('modal-open');
+    });
+  } catch {
+    /* ignore */
+  }
+
+  for (const label of [/got it/i, /close/i, /dismiss/i, /skip/i, /not now/i, /^ok$/i, /continue/i]) {
+    try {
+      const btn = page.locator('button, a, [role="button"]').filter({ hasText: label }).first();
+      if (await btn.count() && await btn.isVisible().catch(() => false)) {
+        await btn.click({ timeout: 1500, force: true }).catch(() => null);
+        await page.waitForTimeout(300);
+      }
+    } catch {
+      /* next */
+    }
+  }
+  await page.keyboard.press('Escape').catch(() => null);
+}
+
 /** Prefer Sellerboard native CSV — it always includes indented Amazon fees sub-lines. */
 async function tryDownloadSellerboardPlCsv(page, market) {
   const dir = path.join(__dirname, 'csv-downloads');
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
+  await dismissSellerboardOverlays(page);
+
   const exportTriggers = [
+    page.locator('button.viewType-export, .viewType-export').first(),
     page.getByRole('button', { name: /^export$/i }),
     page.getByRole('link', { name: /^export$/i }),
     page.locator('button, a, [role="button"]').filter({ hasText: /^export$/i }),
     page.locator('[title*="Export" i], [aria-label*="Export" i], [data-testid*="export" i]'),
     page.locator('button, a').filter({ hasText: /export.*csv|csv.*export|download/i }),
-    page.locator('[class*="export"] button, [class*="export"] a, button[class*="export"]'),
   ];
 
   let trigger = null;
@@ -1412,30 +1472,42 @@ async function tryDownloadSellerboardPlCsv(page, market) {
   }
   if (!trigger) return null;
 
+  // Attach download waiter with .catch so a failed click never leaves an unhandled rejection.
+  const downloadPromise = page.waitForEvent('download', { timeout: 20000 }).catch(() => null);
+
   try {
-    const downloadPromise = page.waitForEvent('download', { timeout: 25000 });
-    await trigger.click({ timeout: 4000 });
+    await trigger.click({ timeout: 5000, force: true });
     await page.waitForTimeout(700);
     // Menu item variants after Export click.
     const csvItem = page.locator(
-      '[role="menuitem"], [role="option"], button, a, li, div',
-    ).filter({ hasText: /^(export to )?csv$|download csv|csv export/i }).first();
+      '.dropdown-menu li a, .dropdown-menu a, [role="menuitem"], [role="option"], button, a, li, div',
+    ).filter({ hasText: /csv/i }).first();
     if (await csvItem.count() && await csvItem.isVisible().catch(() => false)) {
-      await csvItem.click({ timeout: 4000 });
+      await csvItem.click({ timeout: 4000, force: true });
     }
     const download = await downloadPromise;
+    if (!download) {
+      console.log('      ℹ️ Native CSV download skipped: no download event');
+      await page.keyboard.press('Escape').catch(() => null);
+      return null;
+    }
     const safe = String(market).replace(/[^\w.-]+/g, '_');
     const dest = path.join(dir, `main_pl_${safe}_${RUN_ID}.csv`);
     await download.saveAs(dest);
     console.log(`      ✅ Native CSV downloaded: ${path.basename(dest)}`);
     return dest;
   } catch (e) {
-    console.log(`      ℹ️ Native CSV download skipped: ${e.message}`);
+    // Drain download waiter so it cannot crash the process later.
+    await downloadPromise;
+    console.log(`      ℹ️ Native CSV download skipped: ${e.message.split('\n')[0]}`);
+    await page.keyboard.press('Escape').catch(() => null);
     return null;
   }
 }
 
 async function scrapeMainPlTable(page, market = 'unknown') {
+  await dismissSellerboardOverlays(page);
+
   // Prefer CSV (always has Amazon fees sub-lines with leading spaces).
   const csvPath = await tryDownloadSellerboardPlCsv(page, market);
   if (csvPath) {
@@ -1456,6 +1528,7 @@ async function scrapeMainPlTable(page, market = 'unknown') {
     }
   }
 
+  await dismissSellerboardOverlays(page);
   await expandAmazonFeeRows(page);
   // Second pass after expand settles.
   if (!(await pageHasAmazonFeeChild(page, 'Referral fee'))) {
@@ -1744,7 +1817,7 @@ async function main() {
     process.exit(1);
   }
   
-  console.log(`📊 Sellerboard P&L Export v14 — ${EXPORT_YEAR} monthly`);
+  console.log(`📊 Sellerboard P&L Export v14.1 — ${EXPORT_YEAR} monthly`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   View: monthly_pl (per-ASIN overgeslagen)`);
   console.log(`   Run ID: ${RUN_ID}`);
