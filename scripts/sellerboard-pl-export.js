@@ -946,18 +946,20 @@ async function salesPreviewHasEuro(page) {
 async function ensureCorrectAccount(page, targetAccount, currentAccount) {
   const nameDetected = await detectAccountOnPage(page);
   const profileDetected = await detectAccountMarketplaceProfile(page);
-  let effective = profileDetected || nameDetected || currentAccount;
+  // Account badge is source of truth for which Sellerboard login we're on.
+  // Marketplace URL/chips can lag after a switch (still showing previous market).
+  let effective = nameDetected || profileDetected || currentAccount;
 
   if (profileDetected && nameDetected && profileDetected !== nameDetected) {
-    console.log(`   ⚠️ Account name=${nameDetected} vs markets=${profileDetected} — trusting marketplace chips`);
-    effective = profileDetected;
+    console.log(`   ⚠️ Account name=${nameDetected} vs markets=${profileDetected} — trusting account badge`);
+    effective = nameDetected;
   }
 
-  // US markets must never scrape while Sales still shows € (EU bleed).
+  // US markets must never scrape while Sales still shows € (EU bleed) on a claimed US badge.
   if (targetAccount === 'us' && effective === 'us') {
     const euroBleed = await salesPreviewHasEuro(page);
-    if (euroBleed || profileDetected === 'eu') {
-      console.log(`   ⚠️ Claimed US account but ${euroBleed ? '€ Sales' : 'EU markets'} visible — forcing switch`);
+    if (euroBleed) {
+      console.log('   ⚠️ Claimed US account but € Sales visible — forcing re-switch');
       effective = 'eu';
     }
   }
@@ -971,25 +973,18 @@ async function ensureCorrectAccount(page, targetAccount, currentAccount) {
   const switched = await switchAccount(page, targetAccount);
   if (!switched) return { ok: false, account: effective };
 
-  await page.waitForTimeout(2000);
-  const afterProfile = await detectAccountMarketplaceProfile(page);
+  // switchAccount already confirmed badge text — do not fail on stale EU URL params.
   const afterName = await detectAccountOnPage(page);
-  const after = afterProfile || afterName || targetAccount;
-
-  // Soft verify: URL/market profile wins. Name-only mismatches are warnings.
+  if (afterName && afterName !== targetAccount) {
+    console.log(`   ❌ Badge still ${afterName} after switch to ${targetAccount}`);
+    return { ok: false, account: afterName };
+  }
   if (targetAccount === 'us') {
     const euroBleed = await salesPreviewHasEuro(page);
-    if (afterProfile === 'eu' || (euroBleed && afterProfile !== 'us')) {
-      console.log(`   ❌ Still on EU after US switch (markets=${afterProfile}, €=${euroBleed})`);
-      return { ok: false, account: afterProfile || 'eu' };
+    if (euroBleed) {
+      console.log('   ❌ Still seeing € Sales after US switch');
+      return { ok: false, account: 'eu' };
     }
-  }
-  if (targetAccount === 'eu' && afterProfile === 'us' && afterName !== 'eu') {
-    console.log(`   ❌ Still on US markets after EU switch`);
-    return { ok: false, account: 'us' };
-  }
-  if (afterProfile && afterProfile !== targetAccount) {
-    console.log(`   ⚠️ Post-switch profile=${afterProfile} (expected ${targetAccount}) — continuing with switch result`);
   }
 
   return { ok: true, account: targetAccount };
