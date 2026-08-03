@@ -1242,43 +1242,25 @@ async function switchAccount(page, targetAccount) {
       await page.waitForTimeout(1200);
       await debugLog(page, 'account-dropdown-open', `📋 Account dropdown geopend (try ${attempt})`, attempt === 1);
 
-      // Click target inside accountFilter-dropdown-list (force visible even if 0-size until open).
-      let switched = false;
-      try {
-        const link = page.locator('ul.accountFilter-dropdown-list a.accountFilter-dropdown-list-item-link')
-          .filter({ hasText: new RegExp(`^\\s*${targetName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`, 'i') })
-          .first();
-        if (await link.count()) {
-          await link.click({ timeout: 4000, force: true });
-          switched = true;
-          console.log(`      ✅ Geswitcht via accountFilter link: ${targetName}`);
-        }
-      } catch {
-        /* evaluate fallback */
-      }
-
-      if (!switched) {
-        const found = await page.evaluate((name) => {
-          const links = Array.from(document.querySelectorAll(
-            'ul.accountFilter-dropdown-list a.accountFilter-dropdown-list-item-link, a.accountFilter-dropdown-list-item-link',
-          ));
-          for (const a of links) {
-            const text = (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim();
-            if (text.toLowerCase() === name.toLowerCase() || text.includes(name)) {
-              a.click();
-              return { ok: true, text };
-            }
+      // Menu items often report 0×0 until painted — use evaluate click (Playwright visible click fails).
+      const found = await page.evaluate((name) => {
+        const links = Array.from(document.querySelectorAll(
+          'ul.accountFilter-dropdown-list a.accountFilter-dropdown-list-item-link',
+        ));
+        for (const a of links) {
+          const text = (a.innerText || a.textContent || '').replace(/\s+/g, ' ').trim();
+          if (text.toLowerCase() === name.toLowerCase() || text.includes(name)) {
+            a.click();
+            return { ok: true, text, dataAccount: a.getAttribute('data-account') };
           }
-          return { ok: false };
-        }, targetName);
-        if (found?.ok) {
-          switched = true;
-          console.log(`      ✅ Geswitcht via evaluate accountFilter: ${found.text}`);
         }
-      }
+        return { ok: false, available: links.map((a) => (a.innerText || '').replace(/\s+/g, ' ').trim()).filter(Boolean) };
+      }, targetName);
 
-      if (!switched) {
-        console.log(`      ⚠️ Target account item not clicked (try ${attempt})`);
+      if (found?.ok) {
+        console.log(`      ✅ Geswitcht via accountFilter: ${found.text} (${found.dataAccount || 'no-id'})`);
+      } else {
+        console.log(`      ⚠️ Target account item not clicked (try ${attempt}) available=${(found?.available || []).join('|')}`);
         await page.keyboard.press('Escape').catch(() => null);
         continue;
       }
