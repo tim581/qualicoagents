@@ -1,5 +1,9 @@
-// Sellerboard P&L Export v11 — 2026 monthly P&L per market
+// Sellerboard P&L Export v13 — 2026 monthly P&L per market
 // Scrapes main P&L table → filters 2026 month columns → upserts monthly_pl to Supabase
+// v13: Amazon fees sub-lines (`Amazon fees > …`) via native CSV or expanded DOM;
+//      CA Select2 harden (search + header confirm); refuse USA→CA duplicate/$ mixups
+// v12: deterministic post-switch wait, Sales-row duplicate + all-zero Sales guard (3× retry),
+//      Estimated payout row, soft warning for isolated zero months
 // v11: account verify per market, UI market select (BE), zero-export guard
 // Skips per-ASIN. June (and current month) may be partial.
 
@@ -43,8 +47,24 @@ const MARKET_CONFIG = {
     uiLabels: ['Amazon.com.be', 'Belgium', 'BE'],
     needsUiMarketSelect: true,
   },
-  'Amazon.com':    { account: 'us', urlParam: 'Amazon.com', currency: 'USD', symbol: '$' },
-  'Amazon.ca':     { account: 'us', urlParam: 'Amazon.ca', currency: 'CAD', symbol: '$' }
+  'Amazon.com': {
+    account: 'us',
+    urlParam: 'Amazon.com',
+    currency: 'USD',
+    symbol: '$',
+    // Sellerboard chips render lowercase "amazon.com" (exact — do not match amazon.com.be).
+    uiLabels: ['amazon.com', 'Amazon.com', 'United States', 'USA'],
+    needsUiMarketSelect: true,
+  },
+  'Amazon.ca': {
+    account: 'us',
+    urlParam: 'Amazon.ca',
+    currency: 'CAD',
+    symbol: '$',
+    // Exact Select2 chip is "amazon.ca" — do not include amazon.com.ca (steals longest-match search).
+    uiLabels: ['amazon.ca', 'Amazon.ca'],
+    needsUiMarketSelect: true,
+  },
 };
 
 const EU_MARKETS = ['Amazon.de', 'Amazon.co.uk', 'Amazon.fr', 'Amazon.it', 'Amazon.es', 'Amazon.nl'];
@@ -65,6 +85,8 @@ const SCOPE_ALIASES = {
 
 const MARKET_ALIASES = {
   'Amazon.com.be': 'Amazon.be',
+  ca: 'Amazon.ca',
+  usa: 'Amazon.com',
 };
 
 function normalizeMarketKey(market) {
@@ -121,7 +143,301 @@ const MONTH_NAMES = [
 ];
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
+const MAX_MARKET_SWITCH_RETRIES = 3;
+const ESTIMATED_PAYOUT_LABELS = ['Estimated payout', 'Estimated Payout'];
+const PL_NETWORK_URL_RE = /sellerboard\.com.*(?:\/api\/|table|dashboard|profit|pl|market|period)/i;
+
+/** Minimum Amazon fees children required for ingest fee split (rest → residual). */
+const REQUIRED_AMAZON_FEE_SUBLINES = [
+  'Referral fee',
+  'FBA per unit fulfilment fee',
+  'FBA storage fee',
+  'FBA disposal fee',
+  'Long term storage fee',
+];
+const AMAZON_FEES_PARENT = 'Amazon fees';
+
 // --- HELPERS ---
+function normalizeRowLabel(label) {
+  const trimmed = (label || '').trim();
+  if (ESTIMATED_PAYOUT_LABELS.includes(trimmed)) return 'Estimated payout';
+  return trimmed;
+}
+
+function normalizeExportedRows(rows) {
+  return (rows || []).map((row) => [normalizeRowLabel(row[0]), ...row.slice(1)]);
+}
+
+/**
+ * Sellerboard CSV / expanded DOM uses leading spaces (or deep padding) for children.
+ * Keep Amazon fees children as `Amazon fees > Referral fee`; drop other children
+ * (Sales > Organic, etc.) so Sellerboard_Exports stays ingest-friendly.
+ */
+function attachAmazonFeeSublinePrefixes(rows) {
+  const out = [];
+  let currentParent = null;
+
+  for (const row of rows || []) {
+    const raw = String(row?.[0] ?? '');
+    if (!raw.trim()) continue;
+
+    // Already prefixed from a prior pass
+    if (/^amazon fees\s*>/i.test(raw.trim())) {
+      out.push([raw.trim().replace(/\s*>\s*/g, ' > ').replace(/^amazon fees/i, AMAZON_FEES_PARENT), ...row.slice(1)]);
+      currentParent = AMAZON_FEES_PARENT;
+      continue;
+    }
+
+    const indented = /^\s+/.test(raw);
+    const label = raw.trim();
+
+    if (!indented) {
+      currentParent = label;
+      out.push([label, ...row.slice(1)]);
+      continue;
+    }
+
+    if (currentParent === AMAZON_FEES_PARENT) {
+      out.push([`${AMAZON_FEES_PARENT} > ${label}`, ...row.slice(1)]);
+    }
+    // Non-Amazon-fees children are intentionally dropped
+  }
+
+  return out;
+}
+
+function amazonFeeSublineNames(rows) {
+  const names = [];
+  for (const row of rows || []) {
+    const label = String(row?.[0] ?? '').trim();
+    const m = label.match(/^Amazon fees\s*>\s*(.+)$/i);
+    if (m) names.push(m[1].trim());
+  }
+  return names;
+}
+
+function missingRequiredAmazonFeeSublines(rows) {
+  const have = new Set(amazonFeeSublineNames(rows).map((n) => n.toLowerCase()));
+  // US spelling variant of fulfilment
+  if (have.has('fba per unit fulfillment fee')) {
+    have.add('fba per unit fulfilment fee');
+  }
+  return REQUIRED_AMAZON_FEE_SUBLINES.filter((n) => !have.has(n.toLowerCase()));
+}
+
+/** Minimal CSV parser that preserves leading spaces in field 1. */
+function parseSellerboardCsvText(text) {
+  const lines = String(text || '').replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length < 2) return null;
+
+  const parseLine = (line) => {
+    const result = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i += 1) {
+      const ch = line[i];
+      if (inQuotes) {
+        if (ch === '"') {
+          if (line[i + 1] === '"') {
+            cur += '"';
+            i += 1;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          cur += ch;
+        }
+      } else if (ch === '"') {
+        inQuotes = true;
+      } else if (ch === ',' || ch === ';') {
+        result.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    result.push(cur);
+    return result;
+  };
+
+  const headers = parseLine(lines[0]);
+  const rows = lines.slice(1).map(parseLine).filter((r) => r.some((c) => String(c || '').trim()));
+  return { headers, rows, source: 'csv' };
+}
+
+function getSalesRow(rows) {
+  return (rows || []).find((r) => normalizeRowLabel(r?.[0]) === 'Sales') || null;
+}
+
+function findEstimatedPayoutRow(rows) {
+  return (rows || []).find((r) => ESTIMATED_PAYOUT_LABELS.includes((r?.[0] || '').trim())) || null;
+}
+
+function salesRowsIdentical(rowA, rowB) {
+  if (!rowA || !rowB) return false;
+  const a = rowA.map((c) => String(c ?? '').trim());
+  const b = rowB.map((c) => String(c ?? '').trim());
+  if (a.length !== b.length) return false;
+  return a.every((val, idx) => val === b[idx]);
+}
+
+function salesRowHasNonZeroValue(salesRow) {
+  if (!salesRow?.length) return false;
+  return salesRow.slice(1).some((cell) => Math.abs(parseNumericCell(cell)) > 0);
+}
+
+function createPlNetworkTracker(page) {
+  let inflight = 0;
+  let lastCompleteAt = Date.now();
+
+  const onRequest = (req) => {
+    if (!PL_NETWORK_URL_RE.test(req.url())) return;
+    inflight += 1;
+  };
+  const onResponse = (resp) => {
+    if (!PL_NETWORK_URL_RE.test(resp.url())) return;
+    inflight = Math.max(0, inflight - 1);
+    lastCompleteAt = Date.now();
+  };
+
+  page.on('request', onRequest);
+  page.on('response', onResponse);
+
+  return {
+    async waitForIdle(timeoutMs = 20000) {
+      const started = Date.now();
+      while (Date.now() - started < timeoutMs) {
+        const quietFor = Date.now() - lastCompleteAt;
+        if (inflight === 0 && quietFor >= 600) return true;
+        await page.waitForTimeout(250);
+      }
+      return false;
+    },
+    detach() {
+      page.off('request', onRequest);
+      page.off('response', onResponse);
+    },
+  };
+}
+
+async function readSalesRowFromPage(page) {
+  return page.evaluate(() => {
+    const tables = document.querySelectorAll('table');
+    for (const table of tables) {
+      for (const row of table.querySelectorAll('tr')) {
+        const cells = Array.from(row.querySelectorAll('th, td')).map((c) => (c.innerText || '').split('\n')[0].trim());
+        if (cells[0] === 'Sales') return cells;
+      }
+    }
+    return null;
+  });
+}
+
+function marketChipPatterns(config) {
+  const labels = [config.urlParam, ...(config.uiLabels || [])];
+  const patterns = [
+    config.urlParam.replace(/^Amazon\./i, 'amazon.').toLowerCase(),
+    config.urlParam.toLowerCase(),
+    ...labels.map((l) => String(l).toLowerCase()),
+  ];
+  // Prefer exact amazon.* domain chips (longest first → amazon.com.be before amazon.com).
+  // Keep short CA/BE tokens only as Select2 search hints, not primary click targets.
+  const domainPatterns = [...new Set(patterns.filter((p) => p && p.includes('amazon.')))]
+    .sort((a, b) => b.length - a.length);
+  return domainPatterns.length ? domainPatterns : [...new Set(patterns.filter(Boolean))];
+}
+
+async function readMarketHeaderLabel(page, config) {
+  const chipWanted = marketChipPatterns(config);
+  return page.evaluate((wanted) => {
+    const norm = (s) => (s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const isWanted = (text) => wanted.some((t) => text === t);
+
+    // Select2 single-select rendered value (US marketplaces filter).
+    const rendered = document.querySelector(
+      '.filter-item.marketplaces .select2-selection__rendered, .select-marketplaces-wrapper .select2-selection__rendered',
+    );
+    if (rendered) {
+      const text = norm(rendered.textContent || rendered.title || '');
+      if (text && isWanted(text)) return true;
+    }
+
+    const firstLine = (el) => norm((el.innerText || el.textContent || '').split('\n')[0]);
+    const nodes = Array.from(document.querySelectorAll('a, button, label, span, div, li, input'));
+    for (const el of nodes) {
+      const text = firstLine(el);
+      if (!text || text.length > 40 || !isWanted(text)) continue;
+      const cls = `${el.className || ''} ${el.parentElement?.className || ''}`;
+      const selected = el.getAttribute('aria-selected') === 'true'
+        || el.getAttribute('aria-checked') === 'true'
+        || (el.tagName === 'INPUT' && el.checked)
+        || /active|selected|checked|current|is-active|isSelected/i.test(cls);
+      if (selected) return true;
+    }
+
+    try {
+      const url = new URL(window.location.href);
+      const markets = [...url.searchParams.getAll('market[]'), ...url.searchParams.getAll('market')]
+        .map(norm)
+        .filter(Boolean);
+      if (markets.length && markets.every((m) => isWanted(m))) return true;
+    } catch {
+      /* ignore */
+    }
+    return false;
+  }, chipWanted);
+}
+
+async function waitForMarketDataRefresh(page, config, options = {}) {
+  const {
+    networkTracker = null,
+    previousSalesRow = null,
+    timeoutMs = config?.account === 'us' ? 45000 : 30000,
+    requireNonZeroSales = config?.account === 'us',
+  } = options;
+
+  if (networkTracker) {
+    await networkTracker.waitForIdle(Math.min(timeoutMs, 20000));
+  }
+
+  const started = Date.now();
+  let lastPreview = null;
+
+  while (Date.now() - started < timeoutMs) {
+    const headerOk = await readMarketHeaderLabel(page, config).catch(() => false);
+    const salesRow = await readSalesRowFromPage(page);
+
+    if (salesRow?.length > 1) {
+      const values = salesRow.slice(1);
+      const hasExpectedSymbol = config.symbol === '$'
+        ? values.some((v) => v.includes('$'))
+        : values.some((v) => v.includes(config.symbol));
+      const janValue = values[0] || '';
+      const differsFromPrevious = previousSalesRow
+        ? !salesRowsIdentical(salesRow, previousSalesRow)
+        : true;
+      const hasNonZeroSales = salesRowHasNonZeroValue(salesRow);
+
+      lastPreview = { janValue, hasExpectedSymbol, headerOk, differsFromPrevious, hasNonZeroSales };
+
+      const ready = hasExpectedSymbol
+        && differsFromPrevious
+        && (headerOk || !config.needsUiMarketSelect)
+        && (!requireNonZeroSales || hasNonZeroSales);
+
+      if (ready) {
+        console.log(`      Ô£à Market data refreshed (Sales jan: ${janValue.substring(0, 24)})`);
+        return { ok: true, salesRow, preview: lastPreview };
+      }
+    }
+
+    await page.waitForTimeout(500);
+  }
+
+  console.log(`      ÔÜá´©Å Market refresh timeout (${config.urlParam}) preview=${JSON.stringify(lastPreview)}`);
+  return { ok: false, salesRow: await readSalesRowFromPage(page), preview: lastPreview };
+}
+
 function buildUrl(market) {
   const now = new Date();
   const start = new Date(EXPORT_YEAR, 0, 1);
@@ -147,39 +463,63 @@ async function isOnLoginPage(page) {
   return (await page.locator('input#username, input[name="login"]').count()) > 0;
 }
 
-async function freshNavigate(page, url, label, config = null) {
+async function freshNavigate(page, url, label, config = null, options = {}) {
+  const { networkTracker = null, previousSalesRow = null } = options;
   console.log(`      🌐 Navigate: ${url.substring(0, 90)}...`);
+
   await page.goto('about:blank');
   await page.waitForTimeout(500);
   await page.goto(url, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(8000);
+  await page.waitForTimeout(3000);
 
   if (await isOnLoginPage(page)) {
     await debugLog(page, `login-redirect-${label}`, '⚠️ Login redirect — recovering session before scrape');
     const ok = await ensureSellerboardSession(page);
     if (!ok) {
       await debugLog(page, label, `Pagina geladen: ${page.url().substring(0, 80)}...`);
-      return false;
+      return { ok: false, uiMarketSelected: false };
     }
     await page.goto(url, { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(8000);
+    await page.waitForTimeout(3000);
   }
 
   let currentUrl = page.url();
   if (!currentUrl.includes('market') && !await isOnLoginPage(page)) {
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2000);
     currentUrl = page.url();
   }
 
+  let uiMarketSelected = false;
   if (config?.needsUiMarketSelect || config?.uiLabels?.length) {
-    await selectMarketInUi(page, config);
+    uiMarketSelected = await selectMarketInUi(page, config, {
+      networkTracker,
+      previousSalesRow,
+    });
     await ensurePlView(page);
-    await waitForMarketTable(page, config).catch(() => null);
+    // Hard confirm for US/CA — both use $ so URL alone is not enough.
+    if (uiMarketSelected && config.account === 'us') {
+      const headerOk = await readMarketHeaderLabel(page, config).catch(() => false);
+      if (!headerOk) {
+        console.log(`      ⚠️ US market header mismatch after select (${config.urlParam})`);
+        uiMarketSelected = false;
+      }
+    }
+  }
+
+  if (config) {
+    const refresh = await waitForMarketDataRefresh(page, config, {
+      networkTracker,
+      previousSalesRow,
+    });
+    if (!refresh.ok) {
+      await waitForMarketTable(page, config).catch(() => null);
+    }
   }
 
   await debugLog(page, label, `Pagina geladen: ${currentUrl.substring(0, 80)}...`);
-  return !await isOnLoginPage(page);
+  const ok = !await isOnLoginPage(page);
+  return { ok, uiMarketSelected };
 }
 
 function isLoginUrl(url) {
@@ -375,6 +715,13 @@ function normalizeMonetaryCell(cell, expectedSymbol) {
   if (!raw) return raw;
   if (/%$/.test(raw) || raw === '—') return raw;
   if (!/\d/.test(raw)) return raw;
+  // Native Sellerboard CSV cells are bare numbers — stamp the market symbol.
+  const trimmed = raw.trim();
+  if (!/[€$£]/.test(trimmed) && /^-?\d/.test(trimmed)) {
+    const neg = trimmed.startsWith('-');
+    const num = trimmed.replace(/^-/, '');
+    return neg ? `-${expectedSymbol} ${num}` : `${expectedSymbol} ${num}`;
+  }
   // Normalize a visible currency sign without changing the numeric amount.
   return raw
     .replace(/^-\s*[€$£]\s*/, `-${expectedSymbol} `)
@@ -394,16 +741,76 @@ function parseNumericCell(cell) {
   return Number.isFinite(n) ? n : 0;
 }
 
-function isZeroExport(monthlyRows) {
+/**
+ * Bug 2 hard block: do not upload when Sales are effectively all-zero.
+ * - Missing Sales row / empty cells → zero
+ * - Sum of ALL month Sales == 0 → zero
+ * - Sum of all completed (non-partial) month Sales == 0 → also zero
+ *   (catches stale USA scrapes where only the current partial month has noise)
+ */
+function isZeroExport(monthlyRows, months = null) {
   if (!Array.isArray(monthlyRows) || monthlyRows.length === 0) return true;
-  const sales = monthlyRows.find(r => (r?.[0] || '').trim() === 'Sales');
-  const units = monthlyRows.find(r => (r?.[0] || '').trim() === 'Units');
-  if (!sales && !units) return false;
-  const salesVals = sales ? sales.slice(1) : [];
-  const unitVals = units ? units.slice(1) : [];
+  const sales = getSalesRow(monthlyRows);
+  if (!sales) return true;
+  const salesVals = sales.slice(1);
+  if (salesVals.length === 0) return true;
+
   const salesSum = salesVals.reduce((sum, cell) => sum + Math.abs(parseNumericCell(cell)), 0);
-  const unitSum = unitVals.reduce((sum, cell) => sum + Math.abs(parseNumericCell(cell)), 0);
-  return salesSum === 0 && unitSum === 0;
+  if (salesSum === 0) return true;
+
+  const monthKeys = Array.isArray(months) && months.length === salesVals.length
+    ? months
+    : null;
+  if (monthKeys) {
+    const completedIdx = monthKeys
+      .map((m, i) => ({ m: String(m || ''), i }))
+      .filter(({ m }) => !/_partial$/i.test(m) && !/partial/i.test(m))
+      .map(({ i }) => i);
+    if (completedIdx.length > 0) {
+      const completedSum = completedIdx.reduce(
+        (sum, i) => sum + Math.abs(parseNumericCell(salesVals[i])),
+        0,
+      );
+      if (completedSum === 0) return true;
+    }
+  }
+
+  return false;
+}
+
+/** Soft warning: Sales=0 months flanked by >€/$1000 neighbors (still upload). */
+function findSuspiciousZeroMonths(monthly) {
+  const sales = getSalesRow(monthly?.rows);
+  if (!sales?.length || !Array.isArray(monthly?.months)) return [];
+  const warnings = [];
+  const values = sales.slice(1).map(parseNumericCell);
+  for (let i = 0; i < values.length; i += 1) {
+    if (Math.abs(values[i]) >= 0.01) continue;
+    const prev = i > 0 ? values[i - 1] : 0;
+    const next = i < values.length - 1 ? values[i + 1] : 0;
+    if (Math.abs(prev) > 1000 || Math.abs(next) > 1000) {
+      warnings.push(`${monthly.months[i] || `month-${i + 1}`}: Sales is 0 but adjacent month > 1000`);
+    }
+  }
+  return warnings;
+}
+
+async function detectAccountMarketplaceProfile(page) {
+  try {
+    return await page.evaluate(() => {
+      const body = (document.body?.innerText || '').toLowerCase();
+      const hasUsChips = /\bamazon\.com\b/.test(body) && /\bamazon\.ca\b/.test(body);
+      const hasEuChips = /\bamazon\.de\b/.test(body)
+        || /\bamazon\.co\.uk\b/.test(body)
+        || /\bamazon\.fr\b/.test(body)
+        || /\bamazon\.com\.be\b/.test(body);
+      if (hasUsChips && !hasEuChips) return 'us';
+      if (hasEuChips && !hasUsChips) return 'eu';
+      return null;
+    });
+  } catch {
+    return null;
+  }
 }
 
 async function detectAccountOnPage(page) {
@@ -433,8 +840,13 @@ async function ensureCorrectAccount(page, targetAccount, currentAccount) {
   return { ok: switched, account: switched ? targetAccount : effective };
 }
 
-async function selectMarketInUi(page, config) {
+async function selectMarketInUi(page, config, options = {}) {
+  const {
+    networkTracker = null,
+    previousSalesRow = null,
+  } = options;
   const labels = [config.urlParam, ...(config.uiLabels || [])];
+  const chipPatterns = marketChipPatterns(config);
   await debugLog(page, `market-ui-start-${config.urlParam}`, `🎯 UI market select: ${labels.join(', ')}`, false);
 
   // Open markets filter if collapsed.
@@ -443,7 +855,7 @@ async function selectMarketInUi(page, config) {
       const btn = page.locator('button, a, [role="button"], label').filter({ hasText: opener }).first();
       if (await btn.count()) {
         await btn.click({ timeout: 2000 });
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(1000);
         break;
       }
     } catch {
@@ -451,41 +863,113 @@ async function selectMarketInUi(page, config) {
     }
   }
 
-  const clicked = await page.evaluate((targets) => {
-    const norm = (s) => (s || '').trim().toLowerCase();
-    const wanted = targets.map(norm);
-    const isMarketChip = (text) => wanted.some((t) => text === t || text === `amazon.${t.replace('amazon.', '')}`);
+  // Select2 marketplace dropdown (US account uses this — not legacy chips).
+  // Filter row can sit far off to the right until scrolled into view.
+  let clickedLabel = null;
+  try {
+    const filterItem = page.locator('.filter-item.marketplaces, .select-marketplaces-wrapper').first();
+    if (await filterItem.count()) {
+      await filterItem.scrollIntoViewIfNeeded();
+      await page.waitForTimeout(300);
+      const selection = filterItem.locator('.select2-selection, .select2-selection__rendered').first();
+      const openTarget = (await selection.count()) ? selection : filterItem;
+      await openTarget.click({ timeout: 3000 });
+      await page.waitForTimeout(600);
 
-    // Prefer exact market chips in the marketplace filter row.
-    const chipCandidates = Array.from(document.querySelectorAll('a, button, label, span, div, li'));
-    for (const el of chipCandidates) {
-      const text = norm(el.innerText || '');
-      if (!text || text.length > 40) continue;
-      if (!isMarketChip(text)) continue;
-      const rect = el.getBoundingClientRect();
-      if (rect.width < 5 || rect.height < 5) continue;
-      el.click();
-      return { ok: true, label: text };
-    }
+      // Type the most specific domain into Select2 search (critical for amazon.ca vs amazon.com).
+      const searchHint = chipPatterns[0] || config.urlParam;
+      const searchBox = page.locator(
+        '.select2-container--open .select2-search__field, .select2-search__field, input.select2-search__field',
+      ).first();
+      if (await searchBox.count()) {
+        await searchBox.fill('');
+        await searchBox.type(String(searchHint).replace(/^amazon\./i, ''), { delay: 40 });
+        await page.waitForTimeout(400);
+      }
 
-    const nodes = document.querySelectorAll('label, li, span, div, a, button, input[type="checkbox"]');
-    for (const el of nodes) {
-      const text = norm(el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') || '');
-      const value = norm(el.getAttribute('value') || '');
-      for (const target of wanted) {
-        if ((text && text === target) || (value && value.includes(target))) {
-          el.click();
-          return { ok: true, label: text || value || target };
-        }
+      // Prefer the open select2 dropdown results (appended to body).
+      for (const pattern of chipPatterns) {
+        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const option = page.locator(
+          '.select2-container--open .select2-results__option, .select2-results__option, li[role="option"]',
+        ).filter({ hasText: new RegExp(`^\\s*${escaped}\\s*$`, 'i') }).first();
+        if (!(await option.count())) continue;
+        await option.scrollIntoViewIfNeeded().catch(() => null);
+        if (!(await option.isVisible().catch(() => false))) continue;
+        await option.click({ timeout: 3000 });
+        clickedLabel = pattern;
+        break;
+      }
+      if (!clickedLabel) {
+        await page.keyboard.press('Escape').catch(() => null);
       }
     }
-    return { ok: false };
-  }, labels);
+  } catch {
+    /* fall through to chip/evaluate paths */
+  }
 
-  if (clicked?.ok) {
-    console.log(`      ✅ UI market geklikt: ${clicked.label}`);
-    await page.waitForTimeout(5000);
-    await debugLog(page, `market-ui-done-${config.urlParam}`, `✅ UI market geselecteerd: ${clicked.label}`, true);
+  // Playwright-native exact chip click (longest pattern first → amazon.com.be before amazon.com).
+  if (!clickedLabel) {
+    for (const pattern of chipPatterns) {
+      try {
+        const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const chip = page.locator('a, button, span, div, label, li').filter({
+          hasText: new RegExp(`^\\s*${escaped}\\s*$`, 'i'),
+        }).first();
+        if (!(await chip.count())) continue;
+        if (!(await chip.isVisible().catch(() => false))) continue;
+        const box = await chip.boundingBox().catch(() => null);
+        // Skip off-screen Select2 clones (left >> viewport width).
+        if (box && box.x > 2000) continue;
+        await chip.click({ timeout: 3000 });
+        clickedLabel = pattern;
+        break;
+      } catch {
+        /* try next pattern */
+      }
+    }
+  }
+
+  if (!clickedLabel) {
+    const clicked = await page.evaluate((wanted) => {
+      const norm = (s) => (s || '').trim().toLowerCase();
+      const firstLine = (el) => norm((el.innerText || el.textContent || '').split('\n')[0]);
+      const isMarketChip = (text) => wanted.some((t) => text === t);
+
+      const chipCandidates = Array.from(document.querySelectorAll('a, button, label, span, div, li'));
+      for (const el of chipCandidates) {
+        const text = firstLine(el);
+        if (!text || text.length > 40) continue;
+        if (!isMarketChip(text)) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 5 || rect.height < 5 || rect.top > 420 || rect.left > 2000) continue;
+        el.click();
+        return { ok: true, label: text };
+      }
+      return { ok: false };
+    }, chipPatterns);
+    if (clicked?.ok) clickedLabel = clicked.label;
+  }
+
+  if (clickedLabel) {
+    console.log(`      ✅ UI market geklikt: ${clickedLabel}`);
+    const refresh = await waitForMarketDataRefresh(page, config, {
+      networkTracker,
+      previousSalesRow,
+      requireNonZeroSales: true,
+      timeoutMs: config.account === 'us' ? 60000 : 35000,
+    });
+    // Confirm Select2 / header actually landed on the requested market (CA vs USA both use $).
+    const headerOk = await readMarketHeaderLabel(page, config).catch(() => false);
+    if (!headerOk) {
+      console.log(`      ⚠️ Market header not confirmed after click (${config.urlParam})`);
+      await debugLog(page, `market-ui-unconfirmed-${config.urlParam}`, '⚠️ Select2 click did not confirm market header', true);
+      return false;
+    }
+    if (!refresh.ok) {
+      await waitForMarketTable(page, config).catch(() => null);
+    }
+    await debugLog(page, `market-ui-done-${config.urlParam}`, `✅ UI market geselecteerd: ${clickedLabel}`, true);
     return true;
   }
 
@@ -640,67 +1124,161 @@ async function switchAccount(page, targetAccount) {
   }
 }
 
-// Enhanced table detection: supports both <table> and div-based grids
+// Enhanced table detection: supports both <table> and div-based grids.
+// Preserves leading spaces / indent so Amazon fees children survive into exports.
 async function findTableData(page) {
   return await page.evaluate(() => {
-    // Strategy 1: Regular <table> elements
+    const labelFromCell = (cell, row) => {
+      const raw = (cell?.innerText || cell?.textContent || '').split('\n')[0] || '';
+      const trimmed = raw.trim();
+      if (!trimmed) return '';
+      const leading = (raw.match(/^(\s*)/) || ['', ''])[1].length;
+      let pad = 0;
+      try {
+        pad = parseFloat(window.getComputedStyle(cell).paddingLeft || '0') || 0;
+      } catch {
+        pad = 0;
+      }
+      const depth = Number(row.getAttribute('data-level') || row.getAttribute('aria-level') || 0);
+      const cls = `${row.className || ''} ${cell.className || ''}`;
+      const isChild = leading >= 2
+        || pad >= 24
+        || depth > 0
+        || /child|sub-?row|nested|indent|level-?[1-9]/i.test(cls);
+      // Normalize child markers to leading spaces (Sellerboard CSV convention).
+      if (isChild && leading < 2) return `    ${trimmed}`;
+      return leading >= 2 ? raw.replace(/\t/g, '    ') : trimmed;
+    };
+
     const tables = document.querySelectorAll('table');
     let bestTable = null;
     let bestRows = 0;
-    
-    tables.forEach(t => {
+
+    tables.forEach((t) => {
       const rows = t.querySelectorAll('tr');
       if (rows.length > bestRows) {
         bestRows = rows.length;
         bestTable = t;
       }
     });
-    
+
     if (bestTable && bestRows > 5) {
       const rows = bestTable.querySelectorAll('tr');
       const result = [];
       for (const row of rows) {
         const cells = row.querySelectorAll('th, td');
         const rowData = [];
+        let col = 0;
         for (const cell of cells) {
-          rowData.push(cell.innerText?.split('\n')[0]?.trim() || '');
+          if (col === 0) rowData.push(labelFromCell(cell, row));
+          else rowData.push(cell.innerText?.split('\n')[0]?.trim() || '');
+          col += 1;
         }
-        if (rowData.some(c => c)) result.push(rowData);
+        if (rowData.some((c) => String(c || '').trim())) result.push(rowData);
       }
       return { source: 'table', tableCount: tables.length, data: result };
     }
-    
-    // Strategy 2: Look for div-based grids (modern React dashboards)
-    // Find containers with many rows of similarly-structured divs
+
     const gridContainers = document.querySelectorAll('[class*="table"], [class*="grid"], [class*="row"], [role="table"], [role="grid"]');
-    
     return { source: 'none', tableCount: tables.length, gridCount: gridContainers.length, bestRows, data: null };
   });
 }
 
-async function scrapeMainPlTable(page) {
-  // Try expanding fee rows
+async function expandAmazonFeeRows(page) {
   try {
     await page.evaluate(() => {
-      const expandables = document.querySelectorAll('[class*="expand"], [class*="collapse"], [class*="toggle"], tr[class*="parent"]');
-      expandables.forEach(el => {
-        const text = el.innerText?.toLowerCase() || '';
-        if (text.includes('fee') || text.includes('amazon') || text.includes('advertising')) {
-          el.click();
+      const rows = Array.from(document.querySelectorAll('tr'));
+      for (const row of rows) {
+        const first = (row.querySelector('th, td')?.innerText || '').split('\n')[0].trim();
+        if (!/^Amazon fees$/i.test(first)) continue;
+        const clickables = row.querySelectorAll(
+          'button, a, [role="button"], [class*="expand"], [class*="collapse"], [class*="toggle"], svg, i, span',
+        );
+        for (const el of clickables) {
+          try { el.click(); } catch { /* ignore */ }
         }
-      });
+        try { row.querySelector('th, td')?.click(); } catch { /* ignore */ }
+      }
     });
-    await page.waitForTimeout(1000);
-  } catch (e) { /* ignore */ }
-  
+    await page.waitForTimeout(1200);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Prefer Sellerboard native CSV — it always includes indented Amazon fees sub-lines. */
+async function tryDownloadSellerboardPlCsv(page, market) {
+  const dir = path.join(__dirname, 'csv-downloads');
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const exportTriggers = [
+    page.getByRole('button', { name: /^export$/i }),
+    page.getByRole('link', { name: /^export$/i }),
+    page.locator('button, a, [role="button"]').filter({ hasText: /^export$/i }),
+    page.locator('[title*="Export" i], [aria-label*="Export" i], [data-testid*="export" i]'),
+    page.locator('button, a').filter({ hasText: /export.*csv|csv.*export|download/i }),
+  ];
+
+  let trigger = null;
+  for (const loc of exportTriggers) {
+    try {
+      if (await loc.count() && await loc.first().isVisible().catch(() => false)) {
+        trigger = loc.first();
+        break;
+      }
+    } catch {
+      /* next */
+    }
+  }
+  if (!trigger) return null;
+
+  try {
+    const downloadPromise = page.waitForEvent('download', { timeout: 20000 });
+    await trigger.click({ timeout: 4000 });
+    await page.waitForTimeout(500);
+    const csvItem = page.locator(
+      'text=/export to csv/i, text=/download csv/i, text=/^csv$/i, [role="menuitem"]',
+    ).filter({ hasText: /csv/i }).first();
+    if (await csvItem.count() && await csvItem.isVisible().catch(() => false)) {
+      await csvItem.click({ timeout: 4000 });
+    }
+    const download = await downloadPromise;
+    const safe = String(market).replace(/[^\w.-]+/g, '_');
+    const dest = path.join(dir, `main_pl_${safe}_${RUN_ID}.csv`);
+    await download.saveAs(dest);
+    console.log(`      ✅ Native CSV downloaded: ${path.basename(dest)}`);
+    return dest;
+  } catch (e) {
+    console.log(`      ℹ️ Native CSV download skipped: ${e.message}`);
+    return null;
+  }
+}
+
+async function scrapeMainPlTable(page, market = 'unknown') {
+  // Prefer CSV (always has Amazon fees sub-lines with leading spaces).
+  const csvPath = await tryDownloadSellerboardPlCsv(page, market);
+  if (csvPath) {
+    try {
+      const parsed = parseSellerboardCsvText(fs.readFileSync(csvPath, 'utf8'));
+      if (parsed?.rows?.length) {
+        console.log(`      📊 Using native CSV (${parsed.rows.length} rows, source=csv)`);
+        return parsed;
+      }
+    } catch (e) {
+      console.log(`      ⚠️ CSV parse failed, falling back to DOM: ${e.message}`);
+    }
+  }
+
+  await expandAmazonFeeRows(page);
+
   const result = await findTableData(page);
-  
+
   if (!result.data || result.data.length === 0) {
     console.log(`      ℹ️ Table info: ${result.tableCount} tables, ${result.gridCount || 0} grids, best: ${result.bestRows || 0} rows`);
     return null;
   }
-  
-  return { headers: result.data[0], rows: result.data.slice(1) };
+
+  return { headers: result.data[0], rows: result.data.slice(1), source: result.source || 'table' };
 }
 
 async function ensurePlView(page) {
@@ -757,25 +1335,95 @@ async function scrapeTable(page, viewType, market) {
   await page.waitForTimeout(3000);
   await debugLog(page, `table-found-${viewType}-${market}`, `✅ Table gevonden voor ${viewType} ${market}`, true);
   
-  return await scrapeMainPlTable(page);
+  return await scrapeMainPlTable(page, market);
 }
 
-async function scrapeTableWithRecovery(page, viewType, market) {
+async function scrapeTableWithRecovery(page, viewType, market, config = null, navOptions = {}) {
   const first = await scrapeTable(page, viewType, market);
   if (first) return first;
 
   await debugLog(page, `recover-${viewType}-${market}`, '♻️ Retrying market once after session refresh');
   const ok = await ensureSellerboardSession(page);
   if (!ok) return null;
-  const config = MARKET_CONFIG[market];
-  const navigated = await freshNavigate(
+  const marketConfig = config || MARKET_CONFIG[market];
+  const nav = await freshNavigate(
     page,
-    buildUrl(config?.urlParam || market),
+    buildUrl(marketConfig?.urlParam || market),
     `retry-${viewType}-${market}`,
-    config,
+    marketConfig,
+    navOptions,
   );
-  if (!navigated) return null;
+  if (!nav?.ok) return null;
   return scrapeTable(page, viewType, market);
+}
+
+async function scrapeMarketMonthlyPl(page, market, config, navOptions = {}) {
+  const mainData = await scrapeTableWithRecovery(page, 'main_pl', market, config, navOptions);
+  if (!mainData) return { ok: false, reason: 'no_table_data' };
+
+  const monthly = extractMonthly2026(mainData.headers, mainData.rows);
+  if (!monthly.rows.length || !monthly.months.length) {
+    return {
+      ok: false,
+      reason: 'empty_export',
+      row_count: monthly.rows.length,
+      month_count: monthly.months.length,
+    };
+  }
+
+  // Keep Amazon fees children as `Amazon fees > Referral fee` (drop other indented rows).
+  monthly.rows = attachAmazonFeeSublinePrefixes(monthly.rows);
+  monthly.rows = normalizeExportedRows(monthly.rows);
+  monthly.rows = normalizeRowsCurrency(monthly.rows, config.symbol);
+
+  const missingFeeSubs = missingRequiredAmazonFeeSublines(monthly.rows);
+  if (missingFeeSubs.length) {
+    console.log(`      ⚠️ Amazon fees sub-lines missing: ${missingFeeSubs.join(', ')} (source=${mainData.source || 'dom'})`);
+  } else {
+    const feeCount = amazonFeeSublineNames(monthly.rows).length;
+    console.log(`      ✅ Amazon fees sub-lines: ${feeCount} (incl. required set)`);
+  }
+
+  if (!findEstimatedPayoutRow(monthly.rows)) {
+    console.log(`      ⚠️ Estimated payout row missing for ${market} — retrying scrape once`);
+    await ensurePlView(page);
+    const retryData = await scrapeMainPlTable(page, market);
+    if (retryData) {
+      const retryMonthly = extractMonthly2026(retryData.headers, retryData.rows);
+      retryMonthly.rows = attachAmazonFeeSublinePrefixes(retryMonthly.rows);
+      retryMonthly.rows = normalizeExportedRows(retryMonthly.rows);
+      retryMonthly.rows = normalizeRowsCurrency(retryMonthly.rows, config.symbol);
+      if (findEstimatedPayoutRow(retryMonthly.rows)) {
+        monthly.headers = retryMonthly.headers;
+        monthly.rows = retryMonthly.rows;
+        monthly.months = retryMonthly.months;
+      }
+    }
+  }
+
+  if (!findEstimatedPayoutRow(monthly.rows)) {
+    return { ok: false, reason: 'missing_estimated_payout_row', row_count: monthly.rows.length };
+  }
+
+  // US/CA: refuse scrapes that still look like the previous market (both use $).
+  if (config.account === 'us' && navOptions.previousSalesRow) {
+    const sales = getSalesRow(monthly.rows);
+    if (sales && salesRowsIdentical(sales, navOptions.previousSalesRow)) {
+      return {
+        ok: false,
+        reason: 'duplicate_sales_row_detected',
+        row_count: monthly.rows.length,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    monthly,
+    fee_sublines: amazonFeeSublineNames(monthly.rows),
+    missing_fee_sublines: missingRequiredAmazonFeeSublines(monthly.rows),
+    scrape_source: mainData.source || 'dom',
+  };
 }
 
 async function saveToSupabase(market, viewType, headers, rows) {
@@ -867,7 +1515,7 @@ async function main() {
     process.exit(1);
   }
   
-  console.log(`📊 Sellerboard P&L Export v11 — ${EXPORT_YEAR} monthly`);
+  console.log(`📊 Sellerboard P&L Export v12 — ${EXPORT_YEAR} monthly`);
   console.log(`   Markten: ${marketsToScrape.join(', ')}`);
   console.log(`   View: monthly_pl (per-ASIN overgeslagen)`);
   console.log(`   Run ID: ${RUN_ID}`);
@@ -891,7 +1539,8 @@ async function main() {
   let totalRowsExported = 0;
   let hardFailures = 0;
   let previousMarket = null;
-  let previousFingerprint = '';
+  let previousSalesRow = null;
+  const networkTracker = createPlNetworkTracker(page);
   
   try {
     const sessionOk = await ensureSellerboardSession(page);
@@ -919,101 +1568,149 @@ async function main() {
 
       console.log(`\n   📋 ${EXPORT_YEAR} Monthly P&L...`);
       const mainUrl = buildUrl(config.urlParam);
-      const navigated = await freshNavigate(page, mainUrl, `monthly-pl-${market}`, config);
-      if (!navigated) {
-        summary[market] = '❌ Login redirect';
-        details[market] = { ok: false, reason: 'login_redirect_unresolved' };
+
+      let monthly = null;
+      let scrapeResult = null;
+      let marketRetries = 0;
+
+      while (marketRetries < MAX_MARKET_SWITCH_RETRIES) {
+        marketRetries += 1;
+        const attemptLabel = marketRetries === 1 ? 'initial' : `retry-${marketRetries}`;
+        console.log(`      🔁 Market scrape attempt ${marketRetries}/${MAX_MARKET_SWITCH_RETRIES} (${attemptLabel})`);
+
+        const nav = await freshNavigate(page, mainUrl, `monthly-pl-${market}-${attemptLabel}`, config, {
+          networkTracker,
+          previousSalesRow,
+        });
+        if (!nav?.ok) {
+          scrapeResult = { ok: false, reason: 'login_redirect_unresolved' };
+          break;
+        }
+
+        if (config.needsUiMarketSelect && !nav.uiMarketSelected) {
+          console.log(`      ⚠️ UI market chip mist for ${market} — retry switch`);
+          await debugLog(
+            page,
+            `market-ui-required-${market}-try${marketRetries}`,
+            `⚠️ needsUiMarketSelect but chip click mist attempt ${marketRetries}/${MAX_MARKET_SWITCH_RETRIES}`,
+            true,
+          );
+          if (marketRetries < MAX_MARKET_SWITCH_RETRIES) continue;
+          scrapeResult = {
+            ok: false,
+            reason: 'market_ui_select_failed',
+            retries: marketRetries,
+          };
+          monthly = null;
+          break;
+        }
+
+        scrapeResult = await scrapeMarketMonthlyPl(page, market, config, {
+          networkTracker,
+          previousSalesRow,
+        });
+        if (!scrapeResult.ok) {
+          // Allow zero/duplicate failures to retry market switch (esp. USA→CA).
+          if (
+            ['zero_export_detected', 'duplicate_sales_row_detected'].includes(scrapeResult.reason)
+            && marketRetries < MAX_MARKET_SWITCH_RETRIES
+          ) {
+            console.log(`      ⚠️ ${scrapeResult.reason} — retrying UI market select for ${market}`);
+            await selectMarketInUi(page, config, { networkTracker, previousSalesRow });
+            continue;
+          }
+          break;
+        }
+
+        monthly = scrapeResult.monthly;
+        const currentSalesRow = getSalesRow(monthly.rows);
+        let needsRetry = false;
+        let retryReason = null;
+
+        if (previousSalesRow && currentSalesRow && salesRowsIdentical(currentSalesRow, previousSalesRow)) {
+          const janPrev = previousSalesRow[1] || '';
+          const janCurr = currentSalesRow[1] || '';
+          console.log(`      ⚠️ Duplicate Sales snapshot (${previousMarket} -> ${market}) jan ${janPrev} == ${janCurr}`);
+          await debugLog(
+            page,
+            `dup-sales-${market}-try${marketRetries}`,
+            `⚠️ Duplicate Sales row (${previousMarket} -> ${market}) attempt ${marketRetries}/${MAX_MARKET_SWITCH_RETRIES}`,
+            true,
+          );
+          needsRetry = true;
+          retryReason = 'duplicate_sales_row_detected';
+        }
+
+        if (isZeroExport(monthly.rows, monthly.months)) {
+          console.log(`      ❌ Zero Sales export — alle (completed) maanden Sales = 0 voor ${market}`);
+          await debugLog(
+            page,
+            `zero-export-${market}-try${marketRetries}`,
+            `❌ Zero Sales export voor ${market} attempt ${marketRetries}/${MAX_MARKET_SWITCH_RETRIES}`,
+            true,
+          );
+          needsRetry = true;
+          retryReason = retryReason || 'zero_export_detected';
+        }
+
+        if (needsRetry) {
+          if (marketRetries < MAX_MARKET_SWITCH_RETRIES) {
+            await selectMarketInUi(page, config, { networkTracker, previousSalesRow });
+            continue;
+          }
+          scrapeResult = {
+            ok: false,
+            reason: retryReason,
+            previous_market: previousMarket,
+            retries: marketRetries,
+          };
+          monthly = null;
+          break;
+        }
+
+        break;
+      }
+
+      if (!scrapeResult?.ok || !monthly) {
+        const reason = scrapeResult?.reason || 'unknown_scrape_failure';
+        if (reason === 'login_redirect_unresolved') summary[market] = '❌ Login redirect';
+        else if (reason === 'empty_export') summary[market] = '❌ Lege export';
+        else if (reason === 'no_table_data') summary[market] = '❌ Geen data';
+        else if (reason === 'missing_estimated_payout_row') summary[market] = '❌ Missing Estimated payout';
+        else if (reason === 'duplicate_sales_row_detected') summary[market] = '❌ Duplicate Sales row';
+        else if (reason === 'zero_export_detected') summary[market] = '❌ Zero export';
+        else if (reason === 'market_ui_select_failed') summary[market] = '❌ Market UI select';
+        else summary[market] = `❌ ${reason}`;
+        details[market] = { ok: false, reason, ...scrapeResult };
         hardFailures++;
         continue;
       }
 
-      const mainData = await scrapeTableWithRecovery(page, 'main_pl', market);
-      if (!mainData) {
-        summary[market] = '❌ Geen data';
-        details[market] = { ok: false, reason: 'no_table_data' };
-        hardFailures++;
-        continue;
-      }
-
-      const monthly = extractMonthly2026(mainData.headers, mainData.rows);
-      if (!monthly.rows.length || !monthly.months.length) {
-        console.log(`      ❌ Lege export gedetecteerd (${monthly.rows.length} rijen, ${monthly.months.length} maanden)`);
-        summary[market] = '❌ Lege export';
+      // Defense in depth: never upload all-zero Sales even after loop exit
+      if (isZeroExport(monthly.rows, monthly.months)) {
+        summary[market] = '❌ Zero export';
         details[market] = {
           ok: false,
-          reason: 'empty_export',
-          row_count: monthly.rows.length,
-          month_count: monthly.months.length
+          reason: 'zero_export_detected',
+          retries: marketRetries,
+          symbols: detectCurrencySymbols(monthly.rows),
         };
         hardFailures++;
         continue;
       }
+
+      const suspiciousZeros = findSuspiciousZeroMonths(monthly);
+      if (suspiciousZeros.length) {
+        console.log(`      ⚠️ Soft zero-month warnings: ${suspiciousZeros.join('; ')}`);
+      }
+
       const beforeSymbols = detectCurrencySymbols(monthly.rows);
-      monthly.rows = normalizeRowsCurrency(monthly.rows, config.symbol);
       const afterSymbols = detectCurrencySymbols(monthly.rows);
 
-      if (isZeroExport(monthly.rows)) {
-        console.log(`      ❌ Zero-export gedetecteerd — geen echte omzet/units voor ${market}`);
-        await debugLog(page, `zero-export-${market}`, `❌ Zero export voor ${market} (symbols ${beforeSymbols.join(',') || 'none'})`, true);
-        await selectMarketInUi(page, config);
-        await page.waitForTimeout(5000);
-        const retryZeroData = await scrapeTableWithRecovery(page, 'main_pl', market);
-        if (retryZeroData) {
-          const retryZeroMonthly = extractMonthly2026(retryZeroData.headers, retryZeroData.rows);
-          retryZeroMonthly.rows = normalizeRowsCurrency(retryZeroMonthly.rows, config.symbol);
-          if (!isZeroExport(retryZeroMonthly.rows)) {
-            monthly.headers = retryZeroMonthly.headers;
-            monthly.rows = retryZeroMonthly.rows;
-            console.log(`      ♻️ Zero-export retry succeeded for ${market}`);
-          }
-        }
-      }
-
-      if (isZeroExport(monthly.rows)) {
-        summary[market] = '❌ Zero export';
-        details[market] = { ok: false, reason: 'zero_export_detected', symbols: beforeSymbols };
-        hardFailures++;
-        continue;
-      }
-
-      const fingerprint = tableFingerprint(monthly.rows);
-      if (previousMarket && previousFingerprint && previousFingerprint === fingerprint) {
-        await debugLog(page, `dup-suspect-${market}`, `⚠️ Mogelijk hergebruikte tabelsnapshot (${previousMarket} -> ${market}), UI retry`);
-        await selectMarketInUi(page, config);
-        const dupNavigated = await freshNavigate(page, mainUrl, `duplicate-retry-${market}`, config);
-        if (!dupNavigated) {
-          summary[market] = '❌ Duplicate retry login';
-          details[market] = { ok: false, reason: 'duplicate_retry_login' };
-          hardFailures++;
-          continue;
-        }
-        const retryData = await scrapeTableWithRecovery(page, 'main_pl', market);
-        if (!retryData) {
-          summary[market] = '❌ Duplicate retry failed';
-          details[market] = { ok: false, reason: 'duplicate_retry_failed' };
-          hardFailures++;
-          continue;
-        }
-        const retryMonthly = extractMonthly2026(retryData.headers, retryData.rows);
-        retryMonthly.rows = normalizeRowsCurrency(retryMonthly.rows, config.symbol);
-        const retryFingerprint = tableFingerprint(retryMonthly.rows);
-        if (retryFingerprint === previousFingerprint || isZeroExport(retryMonthly.rows)) {
-          console.log(`      ⚠️ Duplicate/zero snapshot na retry (${previousMarket} -> ${market}) — markeren als failure`);
-          summary[market] = '❌ Duplicate snapshot';
-          details[market] = {
-            ok: false,
-            reason: 'duplicate_snapshot_detected',
-            previous_market: previousMarket,
-            zero_after_retry: isZeroExport(retryMonthly.rows),
-          };
-          hardFailures++;
-          continue;
-        }
-        monthly.headers = retryMonthly.headers;
-        monthly.rows = retryMonthly.rows;
-      }
+      const payoutRow = findEstimatedPayoutRow(monthly.rows);
       console.log(`      📅 Maanden: ${monthly.months.join(', ')}`);
       console.log(`      💱 Currency ${config.currency}: symbols ${beforeSymbols.join(',') || 'none'} -> ${afterSymbols.join(',') || 'none'}`);
+      console.log(`      💰 Estimated payout jan: ${(payoutRow?.[1] || 'n/a').substring(0, 30)}`);
 
       saveCsv(market, 'monthly_pl', monthly.headers, monthly.rows);
       const saveResult = await saveToSupabase(market, 'monthly_pl', monthly.headers, monthly.rows);
@@ -1030,14 +1727,22 @@ async function main() {
         month_count: monthly.months.length,
         save_mode: saveResult.mode,
         market: market,
-        currency: config.currency
+        currency: config.currency,
+        estimated_payout_jan: payoutRow?.[1] || null,
+        sales_jan: getSalesRow(monthly.rows)?.[1] || null,
+        market_retries: marketRetries,
+        zero_month_warnings: suspiciousZeros,
+        fee_sublines: scrapeResult.fee_sublines || amazonFeeSublineNames(monthly.rows),
+        missing_fee_sublines: scrapeResult.missing_fee_sublines || missingRequiredAmazonFeeSublines(monthly.rows),
+        scrape_source: scrapeResult.scrape_source || null,
       };
       totalRowsExported += monthly.rows.length;
       previousMarket = market;
-      previousFingerprint = tableFingerprint(monthly.rows);
+      previousSalesRow = getSalesRow(monthly.rows);
     }
     
   } finally {
+    networkTracker.detach();
     await browser.close();
   }
   
@@ -1082,9 +1787,46 @@ module.exports = async function runSellerboardPlExport({ task } = {}) {
   return { success: true, run_id: RUN_ID, ...result };
 };
 
+module.exports.attachAmazonFeeSublinePrefixes = attachAmazonFeeSublinePrefixes;
+module.exports.parseSellerboardCsvText = parseSellerboardCsvText;
+module.exports.missingRequiredAmazonFeeSublines = missingRequiredAmazonFeeSublines;
+module.exports.amazonFeeSublineNames = amazonFeeSublineNames;
+module.exports.extractMonthly2026 = extractMonthly2026;
+
+function runFeeSublineSelfTest() {
+  const sample = path.join(__dirname, 'csv-downloads', 'main_pl_Amazon_de_sb-1776948343178.csv');
+  if (!fs.existsSync(sample)) {
+    console.log('SELFTEST_SKIP|no sample CSV');
+    return 0;
+  }
+  const parsed = parseSellerboardCsvText(fs.readFileSync(sample, 'utf8'));
+  const monthly = extractMonthly2026(parsed.headers, parsed.rows);
+  const rows = attachAmazonFeeSublinePrefixes(monthly.rows);
+  const missing = missingRequiredAmazonFeeSublines(rows);
+  const names = amazonFeeSublineNames(rows);
+  console.log(`SELFTEST_OK|fee_sublines=${names.length}|missing=${missing.join(',') || 'none'}`);
+  console.log(names.slice(0, 8).map((n) => `Amazon fees > ${n}`).join('\n'));
+  if (missing.length) {
+    // Long term / disposal can be absent on some markets — warn but don't fail self-test hard
+    console.log(`SELFTEST_WARN|missing_required=${missing.join(',')}`);
+  }
+  const referral = rows.find((r) => /^Amazon fees > Referral fee$/i.test(r[0]));
+  if (!referral) throw new Error('SELFTEST_FAIL|missing Referral fee prefix row');
+  return 0;
+}
+
 if (require.main === module) {
-  main().catch(err => {
-    console.error(`\n❌ Fatal error: ${err.message}`);
-    process.exit(1);
-  });
+  if (process.argv.includes('--self-test-fee-sublines')) {
+    try {
+      process.exit(runFeeSublineSelfTest());
+    } catch (err) {
+      console.error(`\n❌ ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    main().catch(err => {
+      console.error(`\n❌ Fatal error: ${err.message}`);
+      process.exit(1);
+    });
+  }
 }
