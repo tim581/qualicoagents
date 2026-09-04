@@ -76,6 +76,32 @@ const WAREHOUSE_CHANNEL = {
   'vancouver': '3PL CA', 'toronto': '3PL CA',
 };
 
+// EAN is the binding inventory identity. Never create a Forceget row without one.
+const EAN_PRODUCT = {
+  '5419980414717': 'PUZZLUP 1000 GIFT',
+  '5419980047489': 'PUZZLUP 1500 ECO',
+  '5419980047458': 'PUZZLUP 1500 GIFT',
+  '5419980414748': '1500 MAT LUX',
+  '5419980047472': 'PUZZLUP 3000 ECO',
+  '5419980047465': 'PUZZLUP 3000 GIFT',
+  '5419980414724': 'PUZZLUP 5000 GIFT',
+  '5419980414700': 'TRAYS 1500 BLACK',
+  '5419980414762': 'TRAYS 3000 BLACK',
+  '5419980047496': 'PUZZL BOARD 1500',
+};
+
+function extractEan(sku) {
+  const match = String(sku || '').match(/\b(\d{13})\b/);
+  return match ? match[1] : null;
+}
+
+function canonicalWarehouse(rawWarehouse, channel) {
+  const lower = String(rawWarehouse || '').toLowerCase();
+  if (lower.includes('toronto')) return 'Forceget Toronto';
+  if (lower.includes('perris') || lower.includes('los angeles')) return 'Forceget LA Perris';
+  return channel === '3PL CA' ? 'Forceget Toronto' : 'Forceget LA Perris';
+}
+
 function matchProduct(rawName) {
   if (!rawName) return null;
   const lower = rawName.toLowerCase().trim();
@@ -484,7 +510,7 @@ module.exports = async function run({ page, credentials, log }) {
     // Step 5: Scrape inventory table
     await log('scrape', 'Scraping inventory table...');
     
-    const tableData = await page.evaluate(() => {
+    const scrapeVisibleTable = async () => page.evaluate(() => {
       const rows = [];
       
       // Method 1: Standard HTML table
@@ -540,10 +566,62 @@ module.exports = async function run({ page, credentials, log }) {
       return { rows, headers, tableCount: document.querySelectorAll('table').length };
     });
     
+    // Forceget paginates the live inventory table (10 rows/page by default).
+    // Scrape every page; the previous implementation only read page 1, silently
+    // dropping products (especially most Forceget LA Perris rows).
+    const allRows = [];
+    const seenPageSignatures = new Set();
+    let tableHeaders = [];
+    let tableCount = 0;
+    let pagesScraped = 0;
+
+    for (let pageNo = 1; pageNo <= 50; pageNo++) {
+      const visible = await scrapeVisibleTable();
+      const signature = JSON.stringify(visible.rows.map((r) => r.cells).slice(0, 2));
+      if (!visible.rows.length || seenPageSignatures.has(signature)) break;
+      seenPageSignatures.add(signature);
+      allRows.push(...visible.rows);
+      tableHeaders = visible.headers?.length ? visible.headers : tableHeaders;
+      tableCount = Math.max(tableCount, visible.tableCount || 0);
+      pagesScraped++;
+
+      const nextButton = await page.$([
+        'li.ant-pagination-next:not(.ant-pagination-disabled) button',
+        'li.ant-pagination-next:not(.ant-pagination-disabled) a',
+        'button[aria-label="Next Page"]:not([disabled])',
+        'button[aria-label="next"]:not([disabled])',
+        'a[aria-label="Next Page"]',
+        'img[alt="right"]'
+      ].join(','));
+      if (!nextButton) break;
+
+      const oldSignature = signature;
+      await nextButton.click();
+      await page.waitForTimeout(1500);
+      await page.waitForFunction((previous) => {
+        const rows = Array.from(document.querySelectorAll('table tbody tr'));
+        const current = JSON.stringify(rows.slice(0, 2).map((tr) =>
+          Array.from(tr.querySelectorAll('td')).map((td) => td.textContent.trim())
+        ));
+        return current && current !== previous;
+      }, oldSignature, { timeout: 8000 }).catch(() => {});
+    }
+
+    const tableData = { rows: allRows, headers: tableHeaders, tableCount, pagesScraped };
+    const expectedTotalRecords = await page.evaluate(() => {
+      const match = (document.body?.innerText || '').match(/Total Records\s*:\s*([0-9,]+)/i);
+      return match ? parseInt(match[1].replace(/,/g, ''), 10) : null;
+    });
+    if (expectedTotalRecords && tableData.rows.length < expectedTotalRecords) {
+      throw new Error(`Incomplete Forceget scrape: captured ${tableData.rows.length}/${expectedTotalRecords} rows across ${pagesScraped} page(s). Database write aborted.`);
+    }
+
     await log('table_data', JSON.stringify({
       rowCount: tableData.rows.length,
       headers: tableData.headers,
       tableCount: tableData.tableCount,
+      pagesScraped: tableData.pagesScraped,
+      expectedTotalRecords,
       sampleRows: tableData.rows.slice(0, 3)
     }));
     
@@ -585,18 +663,26 @@ module.exports = async function run({ page, credentials, log }) {
         }
       }
       
+      const ean = extractEan(sku);
       const productMatch = matchProduct(productName) || matchProduct(sku);
       const channel = matchWarehouse(warehouse);
+      const resolvedChannel = channel || '3PL US';
+      const resolvedWarehouse = canonicalWarehouse(warehouse, resolvedChannel);
+      const canonicalName = ean && EAN_PRODUCT[ean]
+        ? EAN_PRODUCT[ean]
+        : productMatch ? inventoryProductName(productMatch.product_name) : null;
       
-      if (productMatch && qty > 0) {
+      if (ean && canonicalName && qty >= 0) {
         inventoryItems.push({
-          product_name: inventoryProductName(productMatch.product_name),
-          product_id: productMatch.product_id,
-          channel: channel || '3PL US',
+          ean,
+          product_name: canonicalName,
+          product_id: productMatch?.product_id || null,
+          channel: resolvedChannel,
+          warehouse: resolvedWarehouse,
           qty, raw_sku: sku, raw_warehouse: warehouse, raw_name: productName
         });
       } else {
-        results.errors.push({ msg: `Unmatched: SKU=${sku}, Name=${productName}, WH=${warehouse}, Qty=${qty}` });
+        results.errors.push({ msg: `Unmatched/no-EAN: SKU=${sku}, Name=${productName}, WH=${warehouse}, Qty=${qty}` });
       }
     }
     
@@ -608,63 +694,54 @@ module.exports = async function run({ page, credentials, log }) {
       await log('write_supabase', `Writing ${inventoryItems.length} items to Inventory_Levels...`);
       const now = new Date().toISOString();
       
-      for (const item of inventoryItems) {
+      // Aggregate duplicate portal rows by physical warehouse + EAN.
+      const aggregated = [...inventoryItems.reduce((map, item) => {
+        const key = `${item.warehouse}|${item.ean}`;
+        const prior = map.get(key);
+        map.set(key, prior ? { ...prior, qty: prior.qty + item.qty } : { ...item });
+        return map;
+      }, new Map()).values()];
+
+      for (const item of aggregated) {
         try {
-          // Check if row exists
+          const source = sourceForChannel(item.channel);
+          const rowFilter = `source=eq.${encodeURIComponent(source)}&ean=eq.${encodeURIComponent(item.ean)}&warehouse=eq.${encodeURIComponent(item.warehouse)}`;
           const checkRes = await fetch(
-            `${SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(item.product_name)}&channel=eq.${encodeURIComponent(item.channel)}&select=id`,
+            `${SUPABASE_URL}/rest/v1/Inventory_Levels?${rowFilter}&select=id`,
             { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
           );
+          if (!checkRes.ok) throw new Error(`Existence check failed ${checkRes.status}: ${await checkRes.text()}`);
           const existing = await checkRes.json();
-          
-          if (existing && existing.length > 0) {
-            const updateRes = await fetch(
-              `${SUPABASE_URL}/rest/v1/Inventory_Levels?product_name=eq.${encodeURIComponent(item.product_name)}&channel=eq.${encodeURIComponent(item.channel)}`,
-              {
-                method: 'PATCH',
-                headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-                body: JSON.stringify({
-                  on_hand: item.qty,
-                  warehouse: item.raw_warehouse || (item.channel === '3PL CA' ? 'Forceget Toronto Warehouse' : 'Forceget US Warehouse'),
-                  region: item.channel === '3PL CA' ? 'CA' : 'US',
-                  last_synced_at: now,
-                  source: sourceForChannel(item.channel)
-                })
-              }
-            );
-            if (!updateRes.ok) {
-              const msg = await updateRes.text();
-              throw new Error(`Update failed ${updateRes.status}: ${msg}`);
+          const payload = {
+            ean: item.ean,
+            product_name: item.product_name,
+            channel: item.channel,
+            channel_type: '3PL',
+            warehouse: item.warehouse,
+            region: item.channel === '3PL CA' ? 'CA' : 'US',
+            on_hand: item.qty,
+            last_synced_at: now,
+            source,
+          };
+
+          const writeRes = await fetch(
+            existing?.length
+              ? `${SUPABASE_URL}/rest/v1/Inventory_Levels?${rowFilter}`
+              : `${SUPABASE_URL}/rest/v1/Inventory_Levels`,
+            {
+              method: existing?.length ? 'PATCH' : 'POST',
+              headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
+              body: JSON.stringify(payload),
             }
-            await log('updated', `${item.product_name} (${item.channel}): ${item.qty}`);
-          } else {
-            const insertRes = await fetch(
-              `${SUPABASE_URL}/rest/v1/Inventory_Levels`,
-              {
-                method: 'POST',
-                headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-                body: JSON.stringify({
-                  product_name: item.product_name,
-                  channel: item.channel, channel_type: '3PL',
-                  warehouse: item.raw_warehouse || (item.channel === '3PL CA' ? 'Forceget Toronto Warehouse' : 'Forceget US Warehouse'),
-                  region: item.channel === '3PL CA' ? 'CA' : 'US',
-                  on_hand: item.qty,
-                  last_synced_at: now,
-                  source: sourceForChannel(item.channel)
-                })
-              }
-            );
-            if (!insertRes.ok) {
-              const msg = await insertRes.text();
-              throw new Error(`Insert failed ${insertRes.status}: ${msg}`);
-            }
-            await log('inserted', `${item.product_name} (${item.channel}): ${item.qty}`);
-          }
+          );
+          if (!writeRes.ok) throw new Error(`Write failed ${writeRes.status}: ${await writeRes.text()}`);
+          await log(existing?.length ? 'updated' : 'inserted', `${item.warehouse} | ${item.ean} | ${item.product_name}: ${item.qty}`);
         } catch (e) {
-          results.errors.push({ product: item.product_name, error: e.message });
+          results.errors.push({ product: item.product_name, ean: item.ean, warehouse: item.warehouse, error: e.message });
         }
       }
-      await log('write_done', `Wrote ${inventoryItems.length} items to Inventory_Levels`);
+
+      await log('write_done', `Wrote ${aggregated.length} warehouse+EAN rows to Inventory_Levels`);
       const touchedChannels = [...new Set(inventoryItems.map((i) => i.channel))];
       for (const ch of touchedChannels) {
         await fetch(
