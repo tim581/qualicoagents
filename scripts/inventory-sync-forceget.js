@@ -1,132 +1,377 @@
 /**
- * inventory-sync-forceget.js v2.1
- * 
+ * inventory-sync-forceget.js v2.4
+ *
  * Key fixes over v1.0:
  * - Angular-specific login (dispatch input/change/blur events after typing)
  * - Cookie persistence: saves cookies after successful login, reuses next time
  * - Screenshot at every step for debugging
  * - Better error messages
- * 
+ *
+ * v2.3: Two Forceget locations — Toronto (CA) + LA Perris (US); key = (source, ean, warehouse)
+ * v2.4: Live Inventory defaults to ~10 rows/page — expand page size + paginate + scroll
+ *       so LA Perris rows beyond the first page are not dropped. Completeness guard via
+ *       Total Records / max row #. Keep qty=0 portal rows. Prefer Sku (not Shopify Sku).
+ *
  * Flow:
  * 1. Try cookie-based login first (skip form entirely)
  * 2. If no cookies / cookies expired → Angular-aware form login
  * 3. Save cookies on success for next run
  * 4. Navigate to Inventory at Forceget WH → Live Inventory
- * 5. Scrape table → map to products → write to Inventory_Levels
- * 
+ * 5. Expand page size / paginate / scroll → scrape all rows → write Inventory_Levels
+ *
  * Channels: 3PL US, 3PL CA
  * credentials_key: forceget
  */
 
-const { COGS_BY_PRODUCT } = require('./inventory-helpers');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const {
+  SUPABASE_URL,
+  resolveProductFromText,
+  loadPortalNameMappings,
+  classifyForcegetWarehouse,
+  buildInventoryItem,
+} = require('./inventory-helpers');
+const { writeInventoryToSupabase } = require('./inventory-supabase');
 
-const SUPABASE_URL = process.env.SUPABASE_URL || 'https://zlteahycfmpiaxdbnlvr.supabase.co';
 const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+const SHOT_DIR = process.env.FORCEGET_SHOT_DIR || path.join(os.tmpdir(), 'forceget-shots');
 
-function inventoryProductName(rawName) {
-  if (!rawName) return rawName;
-  if (COGS_BY_PRODUCT[rawName]) return COGS_BY_PRODUCT[rawName];
-  return rawName
-    .replace(/^PUZZLUP MAT /i, 'MAT ')
-    .replace(/^PUZZLUP TRAYS /i, 'TRAYS ')
-    .replace(/^PUZZLUP /i, '');
+function shotPath(name) {
+  try {
+    fs.mkdirSync(SHOT_DIR, { recursive: true });
+  } catch (_) {
+    /* ignore */
+  }
+  return path.join(SHOT_DIR, name);
 }
 
-function sourceForChannel(channel) {
-  return channel === '3PL US' ? 'playwright_forceget_us' : 'playwright_forceget';
-}
-
-// Product name mapping
-const PRODUCT_MAP = {
-  'puzzlup 1000': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
-  'puzzlup mat 1000': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
-  'mat 1000': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
-  '1000 piece': { product_name: 'PUZZLUP MAT 1000', product_id: 1 },
-  'puzzlup 1500 eco': { product_name: 'PUZZLUP MAT 1500 ECO', product_id: 2 },
-  'mat 1500 eco': { product_name: 'PUZZLUP MAT 1500 ECO', product_id: 2 },
-  'puzzlup 1500 gift': { product_name: 'PUZZLUP MAT 1500 GIFT', product_id: 4 },
-  'mat 1500 gift': { product_name: 'PUZZLUP MAT 1500 GIFT', product_id: 4 },
-  '1500 gift': { product_name: 'PUZZLUP MAT 1500 GIFT', product_id: 4 },
-  'puzzlup 1500 lux': { product_name: 'PUZZLUP MAT 1500 LUX', product_id: 5 },
-  'mat 1500 lux': { product_name: 'PUZZLUP MAT 1500 LUX', product_id: 5 },
-  '1500 lux': { product_name: 'PUZZLUP MAT 1500 LUX', product_id: 5 },
-  'puzzlup 3000 eco': { product_name: 'PUZZLUP MAT 3000 ECO', product_id: 6 },
-  'mat 3000 eco': { product_name: 'PUZZLUP MAT 3000 ECO', product_id: 6 },
-  'puzzlup 3000 gift': { product_name: 'PUZZLUP MAT 3000 GIFT', product_id: 7 },
-  'mat 3000 gift': { product_name: 'PUZZLUP MAT 3000 GIFT', product_id: 7 },
-  '3000 gift': { product_name: 'PUZZLUP MAT 3000 GIFT', product_id: 7 },
-  'puzzlup 5000 gift': { product_name: 'PUZZLUP MAT 5000 GIFT', product_id: 8 },
-  'mat 5000 gift': { product_name: 'PUZZLUP MAT 5000 GIFT', product_id: 8 },
-  '5000 gift': { product_name: 'PUZZLUP MAT 5000 GIFT', product_id: 8 },
-  'puzzlup 1000 gift': { product_name: 'PUZZLUP MAT 1000 GIFT', product_id: 9 },
-  'mat 1000 gift': { product_name: 'PUZZLUP MAT 1000 GIFT', product_id: 9 },
-  '1000 gift': { product_name: 'PUZZLUP MAT 1000 GIFT', product_id: 9 },
-  'puzzlup tray 1500': { product_name: 'PUZZLUP TRAYS 1500 BLACK', product_id: 10 },
-  'tray 1500': { product_name: 'PUZZLUP TRAYS 1500 BLACK', product_id: 10 },
-  'trays 1500 black': { product_name: 'PUZZLUP TRAYS 1500 BLACK', product_id: 10 },
-  'puzzlup tray 3000': { product_name: 'PUZZLUP TRAYS 3000 BLACK', product_id: 12 },
-  'tray 3000': { product_name: 'PUZZLUP TRAYS 3000 BLACK', product_id: 12 },
-  'trays 3000 black': { product_name: 'PUZZLUP TRAYS 3000 BLACK', product_id: 12 },
-};
-
-const WAREHOUSE_CHANNEL = {
-  'us': '3PL US', 'usa': '3PL US', 'united states': '3PL US',
-  'los angeles': '3PL US', 'la': '3PL US', 'new york': '3PL US',
-  'ca': '3PL CA', 'can': '3PL CA', 'canada': '3PL CA',
-  'vancouver': '3PL CA', 'toronto': '3PL CA',
-};
-
-// EAN is the binding inventory identity. Never create a Forceget row without one.
-const EAN_PRODUCT = {
-  '5419980414717': 'PUZZLUP 1000 GIFT',
-  '5419980047489': 'PUZZLUP 1500 ECO',
-  '5419980047458': 'PUZZLUP 1500 GIFT',
-  '5419980414748': '1500 MAT LUX',
-  '5419980047472': 'PUZZLUP 3000 ECO',
-  '5419980047465': 'PUZZLUP 3000 GIFT',
-  '5419980414724': 'PUZZLUP 5000 GIFT',
-  '5419980414700': 'TRAYS 1500 BLACK',
-  '5419980414762': 'TRAYS 3000 BLACK',
-  '5419980047496': 'PUZZL BOARD 1500',
-};
-
-function extractEan(sku) {
-  const match = String(sku || '').match(/\b(\d{13})\b/);
-  return match ? match[1] : null;
-}
-
-function canonicalWarehouse(rawWarehouse, channel) {
-  const lower = String(rawWarehouse || '').toLowerCase();
-  if (lower.includes('toronto')) return 'Forceget Toronto';
-  if (lower.includes('perris') || lower.includes('los angeles')) return 'Forceget LA Perris';
-  return channel === '3PL CA' ? 'Forceget Toronto' : 'Forceget LA Perris';
-}
-
-function matchProduct(rawName) {
-  if (!rawName) return null;
-  const lower = rawName.toLowerCase().trim();
-  if (PRODUCT_MAP[lower]) return PRODUCT_MAP[lower];
-  for (const [key, val] of Object.entries(PRODUCT_MAP)) {
-    if (lower.includes(key) || key.includes(lower)) return val;
+function extractEan(cells) {
+  for (const cell of cells) {
+    const match = String(cell || '').match(/\b(541998\d{7})\b/);
+    if (match) return match[1];
   }
   return null;
 }
 
-function matchWarehouse(rawWarehouse) {
-  if (!rawWarehouse) return null;
-  const lower = rawWarehouse.toLowerCase().trim();
-  const entries = Object.entries(WAREHOUSE_CHANNEL).sort((a, b) => b[0].length - a[0].length);
-  for (const [key, val] of entries) {
-    // Short keys like "us" must match as whole words to avoid matching "...warehouse".
-    if (key.length <= 2) {
-      const pattern = new RegExp(`\\b${key}\\b`, 'i');
-      if (pattern.test(lower)) return val;
-      continue;
+/** One row per EAN + warehouse (Toronto vs LA Perris stay separate). */
+function aggregateInventoryRows(rawItems) {
+  const byKey = new Map();
+  for (const item of rawItems) {
+    if (!item.ean) continue;
+    const warehouse = item.warehouse || '';
+    const key = `${item.ean}|${warehouse}`;
+    const existing = byKey.get(key);
+    if (existing) {
+      // Prefer the latest scrape value (do not double-count pagination duplicates)
+      existing.on_hand = item.on_hand;
+    } else {
+      byKey.set(key, { ...item });
     }
-    if (lower.includes(key)) return val;
   }
-  if (lower.includes('us') || lower.includes('america')) return '3PL US';
-  if (lower.includes('ca') || lower.includes('canada')) return '3PL CA';
+  return Array.from(byKey.values());
+}
+
+/** Prefer exact "Sku" over "Shopify Sku". */
+function findHeaderIndex(headersLower, matcher) {
+  if (typeof matcher === 'string') {
+    const exact = headersLower.findIndex((h) => h === matcher);
+    if (exact >= 0) return exact;
+    return headersLower.findIndex((h) => h.includes(matcher));
+  }
+  return headersLower.findIndex(matcher);
+}
+
+function rowFingerprint(cells) {
+  return cells
+    .map((c) => String(c || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('|');
+}
+
+/** DOM extract for the currently rendered Live Inventory page. */
+async function readInventoryTableDom(page) {
+  return page.evaluate(() => {
+    const rows = [];
+
+    const pushFromCells = (cellEls) => {
+      if (!cellEls || cellEls.length < 3) return;
+      const cells = Array.from(cellEls).map((c) => (c.innerText || c.textContent || '').trim());
+      const hasData = cells.some((c) => c && c !== '0');
+      const hasWarehouse = cells.some((c) => /forceget|toronto|perris|warehouse/i.test(c));
+      const hasEanOrName = cells.some((c) => /541998\d{7}/.test(c) || /^(mat|tray|puzzl)/i.test(c));
+      if (!hasData && !hasWarehouse && !hasEanOrName) return;
+      if (!hasWarehouse && !hasEanOrName) return;
+      rows.push({ cells, cellCount: cells.length });
+    };
+
+    for (const table of document.querySelectorAll('table')) {
+      for (const tr of table.querySelectorAll('tbody tr')) {
+        pushFromCells(tr.querySelectorAll('td'));
+      }
+    }
+
+    if (rows.length === 0) {
+      for (const row of document.querySelectorAll('mat-row, [role="row"]')) {
+        pushFromCells(row.querySelectorAll('mat-cell, [role="cell"], [role="gridcell"]'));
+      }
+    }
+
+    if (rows.length === 0) {
+      for (const row of document.querySelectorAll('.ag-row, [class*="ag-row"]')) {
+        pushFromCells(row.querySelectorAll('.ag-cell, [class*="ag-cell"]'));
+      }
+    }
+
+    const headers = [];
+    for (const th of document.querySelectorAll('th, mat-header-cell, [role="columnheader"], .ag-header-cell')) {
+      headers.push((th.innerText || th.textContent || '').trim());
+    }
+
+    const bodyText = document.body?.innerText || '';
+    const totalMatch =
+      bodyText.match(/Total\s*Records?\s*[:=]?\s*(\d+)/i) ||
+      bodyText.match(/(\d+)\s*Total\s*Records?/i) ||
+      bodyText.match(/Showing\s+\d+\s*[-–]\s*\d+\s+of\s+(\d+)/i);
+
+    let maxRowNum = 0;
+    for (const row of rows) {
+      const n = parseInt(row.cells[1], 10);
+      if (!isNaN(n) && n > maxRowNum) maxRowNum = n;
+    }
+
+    const pageSizeText =
+      document.querySelector('.ant-pagination-options-size-changer')?.textContent?.trim() ||
+      document.querySelector('.ant-select-selection-item')?.textContent?.trim() ||
+      null;
+
+    return {
+      rows,
+      headers,
+      tableCount: document.querySelectorAll('table').length,
+      expectedTotalRecords: totalMatch ? parseInt(totalMatch[1], 10) : null,
+      maxRowNum,
+      pageSizeText,
+      paginationPresent: !!document.querySelector('.ant-pagination, [class*="pagination"]'),
+    };
+  });
+}
+
+/** Scroll ant-table body so virtualized / overflow rows enter the DOM. */
+async function scrollInventoryTable(page) {
+  await page.evaluate(async () => {
+    const bodies = [
+      ...document.querySelectorAll('.ant-table-body'),
+      ...document.querySelectorAll('.ant-table-content'),
+      ...document.querySelectorAll('[class*="table-body"]'),
+    ];
+    for (const el of bodies) {
+      let guard = 0;
+      let last = -1;
+      while (guard < 40 && el.scrollTop !== last) {
+        last = el.scrollTop;
+        el.scrollTop = el.scrollHeight;
+        await new Promise((r) => setTimeout(r, 150));
+        guard += 1;
+      }
+      el.scrollTop = 0;
+    }
+    window.scrollTo(0, document.body.scrollHeight);
+  });
+  await page.waitForTimeout(500);
+}
+
+/**
+ * Ant Design default page size is often 10 — that is why LA Perris rows 11+ were missing.
+ * Expand to the largest available option (100 / 200 / 50 / ...).
+ */
+async function expandInventoryPageSize(page, log) {
+  const changers = [
+    '.ant-pagination-options-size-changer',
+    '.ant-pagination .ant-select',
+    '[class*="pagination"] .ant-select',
+  ];
+
+  let opened = false;
+  for (const sel of changers) {
+    const el = await page.$(sel);
+    if (!el) continue;
+    try {
+      await el.click({ timeout: 2000 });
+      opened = true;
+      await log('page_size', `Opened size changer: ${sel}`);
+      break;
+    } catch (_) {
+      /* next */
+    }
+  }
+
+  if (!opened) {
+    // Some Forceget builds put "10 / page" in a generic ant-select near the table footer
+    const candidates = await page.$$('.ant-select-selector');
+    for (const el of candidates) {
+      const text = ((await el.textContent().catch(() => '')) || '').toLowerCase();
+      if (text.includes('/ page') || text.includes('page') || /\b10\b/.test(text)) {
+        try {
+          await el.click({ timeout: 1500 });
+          opened = true;
+          await log('page_size', `Opened size changer via ant-select text: ${text.trim()}`);
+          break;
+        } catch (_) {
+          /* next */
+        }
+      }
+    }
+  }
+
+  if (!opened) {
+    await log('page_size', 'No page-size changer found (may already show all rows)');
+    return false;
+  }
+
+  await page.waitForTimeout(400);
+
+  const optionTexts = ['200 / page', '100 / page', '50 / page', '200', '100', '50'];
+  for (const text of optionTexts) {
+    try {
+      const opt = page.locator('.ant-select-item-option, .ant-select-dropdown [title], div[title]').filter({ hasText: text }).first();
+      if ((await opt.count()) === 0) continue;
+      await opt.click({ timeout: 2000 });
+      await page.waitForTimeout(2500);
+      await page.waitForLoadState('networkidle').catch(() => {});
+      await log('page_size', `Selected page size option: ${text}`);
+      return true;
+    } catch (_) {
+      /* next */
+    }
+  }
+
+  // Keyboard fallback: arrow to largest then Enter
+  try {
+    await page.keyboard.press('End');
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(2500);
+    await log('page_size', 'Selected largest page size via keyboard End+Enter');
+    return true;
+  } catch (e) {
+    await log('page_size_warn', `Could not select larger page size: ${e.message}`);
+    return false;
+  }
+}
+
+async function clickNextInventoryPage(page) {
+  const nextSelectors = [
+    'li.ant-pagination-next:not(.ant-pagination-disabled) button',
+    'li.ant-pagination-next:not(.ant-pagination-disabled)',
+    'button.ant-pagination-item-link[aria-label="Next page"]',
+    '[aria-label="Next Page"]:not([disabled])',
+    '[aria-label="next page"]:not([disabled])',
+    'button:has-text("Next"):not([disabled])',
+  ];
+  for (const sel of nextSelectors) {
+    const btn = await page.$(sel);
+    if (!btn) continue;
+    const disabled =
+      (await btn.getAttribute('disabled').catch(() => null)) != null ||
+      ((await btn.getAttribute('aria-disabled').catch(() => '')) || '') === 'true' ||
+      ((await btn.getAttribute('class').catch(() => '')) || '').includes('disabled');
+    if (disabled) continue;
+    try {
+      await btn.click({ timeout: 2000 });
+      await page.waitForTimeout(2000);
+      await page.waitForLoadState('networkidle').catch(() => {});
+      return true;
+    } catch (_) {
+      /* next */
+    }
+  }
+  return false;
+}
+
+/**
+ * Collect every Live Inventory row across page size, scroll, and pagination.
+ * Dedupes by cell fingerprint so virtualization / re-renders do not inflate counts.
+ */
+async function scrapeAllInventoryRows(page, log) {
+  await expandInventoryPageSize(page, log);
+  await scrollInventoryTable(page);
+
+  const allRows = [];
+  const seen = new Set();
+  let headers = [];
+  let expectedTotalRecords = null;
+  let pagesScraped = 0;
+  let maxRowNum = 0;
+
+  for (let pageNum = 1; pageNum <= 25; pageNum++) {
+    await scrollInventoryTable(page);
+    const snap = await readInventoryTableDom(page);
+    if (snap.headers?.length) headers = snap.headers;
+    if (snap.expectedTotalRecords != null) expectedTotalRecords = snap.expectedTotalRecords;
+    if (snap.maxRowNum > maxRowNum) maxRowNum = snap.maxRowNum;
+
+    let added = 0;
+    for (const row of snap.rows || []) {
+      const fp = rowFingerprint(row.cells);
+      if (!fp || seen.has(fp)) continue;
+      seen.add(fp);
+      allRows.push(row);
+      added += 1;
+    }
+    pagesScraped = pageNum;
+
+    await log(
+      'table_page',
+      JSON.stringify({
+        pageNum,
+        pageRows: snap.rows?.length || 0,
+        added,
+        totalUnique: allRows.length,
+        expectedTotalRecords,
+        maxRowNum: snap.maxRowNum,
+        pageSizeText: snap.pageSizeText,
+        paginationPresent: snap.paginationPresent,
+      })
+    );
+
+    const completeByTotal =
+      expectedTotalRecords != null && allRows.length >= expectedTotalRecords;
+    const completeByMaxRow =
+      expectedTotalRecords != null && maxRowNum >= expectedTotalRecords;
+    if (completeByTotal || completeByMaxRow) break;
+
+    const moved = await clickNextInventoryPage(page);
+    if (!moved) break;
+  }
+
+  return {
+    rows: allRows,
+    headers,
+    tableCount: 1,
+    expectedTotalRecords,
+    maxRowNum,
+    pagesScraped,
+  };
+}
+
+// ============ CREDENTIALS ============
+
+async function loadForcegetCredentials(log) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/Browser_Credentials?key=eq.forceget&select=username,password`,
+      { headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` } }
+    );
+    const data = await res.json();
+    if (data?.[0]?.username && data[0].password) {
+      await log('credentials_loaded', `Using Supabase credentials for ${data[0].username}`);
+      return { username: data[0].username, password: data[0].password };
+    }
+  } catch (e) {
+    await log('credentials_error', e.message);
+  }
   return null;
 }
 
@@ -200,7 +445,7 @@ async function angularLogin(page, credentials, log) {
   await log('login_start', 'Angular login flow starting...');
   
   // Screenshot before login
-  await page.screenshot({ path: '/tmp/forceget-01-login-page.png', fullPage: true });
+  await page.screenshot({ path: shotPath('forceget-01-login-page.png'), fullPage: true });
   
   // Angular-specific: find inputs with multiple selector strategies
   const emailSelectors = [
@@ -279,7 +524,7 @@ async function angularLogin(page, credentials, log) {
   await page.waitForTimeout(500);
   
   // Screenshot after filling
-  await page.screenshot({ path: '/tmp/forceget-02-filled.png', fullPage: true });
+  await page.screenshot({ path: shotPath('forceget-02-filled.png'), fullPage: true });
   
   // === CLICK LOGIN BUTTON ===
   const btnSelectors = [
@@ -332,7 +577,7 @@ async function angularLogin(page, credentials, log) {
   await page.waitForTimeout(3000);
   
   // Screenshot after click
-  await page.screenshot({ path: '/tmp/forceget-03-after-login.png', fullPage: true });
+  await page.screenshot({ path: shotPath('forceget-03-after-login.png'), fullPage: true });
   
   const postUrl = page.url();
   await log('login_result', `Post-login URL: ${postUrl}`);
@@ -347,7 +592,7 @@ async function angularLogin(page, credentials, log) {
     await page.keyboard.press('Enter');
     await page.waitForTimeout(5000);
     
-    await page.screenshot({ path: '/tmp/forceget-04-retry.png', fullPage: true });
+    await page.screenshot({ path: shotPath('forceget-04-retry.png'), fullPage: true });
     
     const retryUrl = page.url();
     await log('retry_result', `After Enter: ${retryUrl}`);
@@ -371,6 +616,15 @@ async function angularLogin(page, credentials, log) {
 
 module.exports = async function run({ page, credentials, log }) {
   const results = { products: [], errors: [], channel: 'forceget' };
+
+  if (!credentials?.username || !credentials?.password) {
+    credentials = await loadForcegetCredentials(log);
+  }
+  if (!credentials?.username || !credentials?.password) {
+    results.success = false;
+    results.error = 'No Forceget credentials — set Browser_Credentials key=forceget';
+    return results;
+  }
   
   try {
     // Step 1: Try cookie login first
@@ -403,7 +657,7 @@ module.exports = async function run({ page, credentials, log }) {
       const loginOk = await angularLogin(page, credentials, log);
       if (!loginOk) {
         results.success = false;
-        results.error = 'Login failed - check screenshots in /tmp/forceget-*.png';
+        results.error = `Login failed - check screenshots in ${SHOT_DIR}`;
         return results;
       }
       
@@ -413,7 +667,7 @@ module.exports = async function run({ page, credentials, log }) {
     
     // Step 3: Navigate to Inventory at Forceget WH
     await log('nav_inventory', 'Looking for Inventory in sidebar...');
-    await page.screenshot({ path: '/tmp/forceget-05-dashboard.png', fullPage: true });
+    await page.screenshot({ path: shotPath('forceget-05-dashboard.png'), fullPage: true });
     
     // Dump all visible text for debugging
     const pageText = await page.evaluate(() => {
@@ -467,18 +721,20 @@ module.exports = async function run({ page, credentials, log }) {
     }
     
     if (!clicked) {
-      await log('sidebar_failed', 'Could not find Inventory link in sidebar');
-      await page.screenshot({ path: '/tmp/forceget-06-no-sidebar.png', fullPage: true });
-      results.success = false;
-      results.error = 'Inventory link not found in sidebar';
-      return results;
+      await log('sidebar_failed', 'Could not find Inventory link in sidebar — trying direct URL');
+      await page.screenshot({ path: shotPath('forceget-06-no-sidebar.png'), fullPage: true });
+      await page.goto('https://app.forceget.com/inventory-management/inventory', {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
+      await page.waitForTimeout(4000);
     }
     
     await page.waitForTimeout(3000);
     await page.waitForLoadState('networkidle').catch(() => {});
-    await page.screenshot({ path: '/tmp/forceget-06-inventory-page.png', fullPage: true });
+    await page.screenshot({ path: shotPath('forceget-06-inventory-page.png'), fullPage: true });
     
-    // Step 4: Click "Live Inventory"
+    // Step 4: Click "Live Inventory" (or land via direct URL)
     await log('nav_live', 'Looking for Live Inventory...');
     
     const liveSelectors = [
@@ -502,275 +758,224 @@ module.exports = async function run({ page, credentials, log }) {
         }
       } catch (e) { /* next */ }
     }
+
+    if (!clicked && !page.url().includes('/inventory-management/inventory')) {
+      await page.goto('https://app.forceget.com/inventory-management/inventory', {
+        waitUntil: 'networkidle',
+        timeout: 30000,
+      });
+      await log('live_direct', 'Opened Live Inventory via direct URL');
+    }
     
     await page.waitForTimeout(5000);
     await page.waitForLoadState('networkidle').catch(() => {});
-    await page.screenshot({ path: '/tmp/forceget-07-live-inventory.png', fullPage: true });
-    
-    // Step 5: Scrape inventory table
-    await log('scrape', 'Scraping inventory table...');
-    
-    const scrapeVisibleTable = async () => page.evaluate(() => {
-      const rows = [];
-      
-      // Method 1: Standard HTML table
-      const tables = document.querySelectorAll('table');
-      for (const table of tables) {
-        const trs = table.querySelectorAll('tbody tr');
-        for (const tr of trs) {
-          const cells = tr.querySelectorAll('td');
-          if (cells.length >= 3) {
-            rows.push({ cells: Array.from(cells).map(c => c.textContent.trim()), cellCount: cells.length });
-          }
-        }
-      }
-      
-      // Method 2: Angular Material table (mat-table)
-      if (rows.length === 0) {
-        const matRows = document.querySelectorAll('mat-row, [role="row"]');
-        for (const row of matRows) {
-          const cells = row.querySelectorAll('mat-cell, [role="cell"], [role="gridcell"]');
-          if (cells.length >= 3) {
-            rows.push({ cells: Array.from(cells).map(c => c.textContent.trim()), cellCount: cells.length });
-          }
-        }
-      }
-      
-      // Method 3: AG-Grid (common in Angular apps)
-      if (rows.length === 0) {
-        const agRows = document.querySelectorAll('.ag-row, [class*="ag-row"]');
-        for (const row of agRows) {
-          const cells = row.querySelectorAll('.ag-cell, [class*="ag-cell"]');
-          if (cells.length >= 3) {
-            rows.push({ cells: Array.from(cells).map(c => c.textContent.trim()), cellCount: cells.length });
-          }
-        }
-      }
-      
-      // Method 4: Any div-based grid
-      if (rows.length === 0) {
-        const gridRows = document.querySelectorAll('[class*="row"]:not(style), [class*="Row"]:not(style)');
-        for (const row of gridRows) {
-          const cells = row.querySelectorAll('[class*="cell"], [class*="Cell"], [class*="col"], [class*="Col"]');
-          if (cells.length >= 3) {
-            rows.push({ cells: Array.from(cells).map(c => c.textContent.trim()), cellCount: cells.length });
-          }
-        }
-      }
-      
-      // Get headers
-      const headers = [];
-      const ths = document.querySelectorAll('th, mat-header-cell, [role="columnheader"], .ag-header-cell');
-      for (const th of ths) headers.push(th.textContent.trim());
-      
-      return { rows, headers, tableCount: document.querySelectorAll('table').length };
-    });
-    
-    // Forceget paginates the live inventory table (10 rows/page by default).
-    // Scrape every page; the previous implementation only read page 1, silently
-    // dropping products (especially most Forceget LA Perris rows).
-    const allRows = [];
-    const seenPageSignatures = new Set();
-    let tableHeaders = [];
-    let tableCount = 0;
-    let pagesScraped = 0;
 
-    for (let pageNo = 1; pageNo <= 50; pageNo++) {
-      const visible = await scrapeVisibleTable();
-      const signature = JSON.stringify(visible.rows.map((r) => r.cells).slice(0, 2));
-      if (!visible.rows.length || seenPageSignatures.has(signature)) break;
-      seenPageSignatures.add(signature);
-      allRows.push(...visible.rows);
-      tableHeaders = visible.headers?.length ? visible.headers : tableHeaders;
-      tableCount = Math.max(tableCount, visible.tableCount || 0);
-      pagesScraped++;
-
-      const nextButton = await page.$([
-        'li.ant-pagination-next:not(.ant-pagination-disabled) button',
-        'li.ant-pagination-next:not(.ant-pagination-disabled) a',
-        'button[aria-label="Next Page"]:not([disabled])',
-        'button[aria-label="next"]:not([disabled])',
-        'a[aria-label="Next Page"]',
-        'img[alt="right"]'
-      ].join(','));
-      if (!nextButton) break;
-
-      const oldSignature = signature;
-      await nextButton.click();
+    // Wait until at least one data row appears
+    for (let attempt = 1; attempt <= 15; attempt++) {
+      const n = await page.evaluate(
+        () => document.querySelectorAll('table tbody tr, mat-row, .ag-row').length
+      );
+      if (n > 0) {
+        await log('table_ready', `Table rows visible after attempt ${attempt}: ${n}`);
+        break;
+      }
       await page.waitForTimeout(1500);
-      await page.waitForFunction((previous) => {
-        const rows = Array.from(document.querySelectorAll('table tbody tr'));
-        const current = JSON.stringify(rows.slice(0, 2).map((tr) =>
-          Array.from(tr.querySelectorAll('td')).map((td) => td.textContent.trim())
-        ));
-        return current && current !== previous;
-      }, oldSignature, { timeout: 8000 }).catch(() => {});
     }
 
-    const tableData = { rows: allRows, headers: tableHeaders, tableCount, pagesScraped };
-    const expectedTotalRecords = await page.evaluate(() => {
-      const match = (document.body?.innerText || '').match(/Total Records\s*:\s*([0-9,]+)/i);
-      return match ? parseInt(match[1].replace(/,/g, ''), 10) : null;
-    });
-    if (expectedTotalRecords && tableData.rows.length < expectedTotalRecords) {
-      throw new Error(`Incomplete Forceget scrape: captured ${tableData.rows.length}/${expectedTotalRecords} rows across ${pagesScraped} page(s). Database write aborted.`);
-    }
-
+    await page.screenshot({ path: shotPath('forceget-07-live-inventory.png'), fullPage: true });
+    
+    // Step 5: Scrape ALL inventory rows (page size + scroll + pagination)
+    await log('scrape', 'Scraping inventory table (expand page size + paginate)...');
+    const tableData = await scrapeAllInventoryRows(page, log);
+    
     await log('table_data', JSON.stringify({
       rowCount: tableData.rows.length,
       headers: tableData.headers,
       tableCount: tableData.tableCount,
+      expectedTotalRecords: tableData.expectedTotalRecords,
+      maxRowNum: tableData.maxRowNum,
       pagesScraped: tableData.pagesScraped,
-      expectedTotalRecords,
-      sampleRows: tableData.rows.slice(0, 3)
+      sampleRows: tableData.rows.slice(0, 3),
     }));
+
+    if (
+      tableData.expectedTotalRecords != null &&
+      tableData.rows.length < tableData.expectedTotalRecords
+    ) {
+      await log(
+        'scrape_incomplete',
+        `Scraped ${tableData.rows.length} rows but Total Records=${tableData.expectedTotalRecords} (maxRow#=${tableData.maxRowNum})`
+      );
+      results.errors.push({
+        msg: `Incomplete scrape: got ${tableData.rows.length}/${tableData.expectedTotalRecords} portal rows`,
+      });
+    }
     
-    // Parse inventory
-    const inventoryItems = [];
-    
+    // Parse inventory — resolve every row to EAN via shared catalog + Supabase mappings
+    const parsedRows = [];
+    const portalMappings = await loadPortalNameMappings();
+
     const headersLower = (tableData.headers || []).map((h) => (h || '').toLowerCase());
-    const skuHeaderIdx = headersLower.findIndex((h) => h.includes('sku'));
-    const nameHeaderIdx = headersLower.findIndex((h) => h.includes('product name'));
-    const warehouseHeaderIdx = headersLower.findIndex((h) => h.includes('warehouse name'));
-    const qtyHeaderIdx = headersLower.findIndex((h) => h.includes('stock on hand unit'));
+    // Prefer exact "sku" so "Shopify Sku" does not win; same for stock-on-hand unit
+    const skuHeaderIdx = findHeaderIndex(headersLower, (h) => h === 'sku');
+    const nameHeaderIdx = findHeaderIndex(headersLower, 'product name');
+    const warehouseHeaderIdx = findHeaderIndex(headersLower, 'warehouse name');
+    const qtyHeaderIdx = findHeaderIndex(headersLower, (h) => h === 'stock on hand unit');
+    const asinHeaderIdx = findHeaderIndex(headersLower, (h) => h === 'asin');
 
     for (const row of tableData.rows) {
       const cells = row.cells;
       if (cells.length < 3) continue;
-      
-      // Prefer header-based extraction for Forceget table.
-      let sku = '', warehouse = '', productName = '';
+
+      let sku = '';
+      let warehouse = '';
+      let productName = '';
+      let asin = '';
       if (skuHeaderIdx >= 0 && skuHeaderIdx < cells.length) sku = cells[skuHeaderIdx];
       if (nameHeaderIdx >= 0 && nameHeaderIdx < cells.length) productName = cells[nameHeaderIdx];
       if (warehouseHeaderIdx >= 0 && warehouseHeaderIdx < cells.length) warehouse = cells[warehouseHeaderIdx];
+      if (asinHeaderIdx >= 0 && asinHeaderIdx < cells.length) asin = cells[asinHeaderIdx];
 
-      // Fallback for unexpected layouts.
       if (!sku && cells.length >= 5) sku = cells[4];
       if (!productName && cells.length >= 7) productName = cells[6];
       if (!warehouse && cells.length >= 4) warehouse = cells[3];
-      if (!warehouse) warehouse = 'unknown';
+
+      // Canonical key is EAN (541998…). ASIN-looking values are never the EAN key —
+      // resolve via EAN in cells, else product name, else ASIN/SKU aliases.
+      const ean =
+        extractEan(cells) ||
+        (/^541998\d{7}$/.test(sku) ? sku : null);
 
       let qty = 0;
+      let qtyFound = false;
       if (qtyHeaderIdx >= 0 && qtyHeaderIdx < cells.length) {
-        qty = parseInt((cells[qtyHeaderIdx] || '').replace(/[,.\s]/g, ''), 10) || 0;
-      } else {
-        for (let i = cells.length - 1; i >= 0; i--) {
-          const num = parseInt((cells[i] || '').replace(/[,.\s]/g, ''), 10);
-          if (!isNaN(num) && num >= 0) {
+        const rawQty = (cells[qtyHeaderIdx] || '').replace(/[,.\s]/g, '');
+        if (rawQty !== '') {
+          const parsed = parseInt(rawQty, 10);
+          if (!isNaN(parsed)) {
+            qty = parsed;
+            qtyFound = true;
+          }
+        }
+      }
+      if (!qtyFound) {
+        // Prefer Stock On Hand Unit region (after product/ASIN cols); avoid carton/pallet
+        for (let i = 8; i < Math.min(cells.length, 12); i++) {
+          const raw = (cells[i] || '').replace(/[,.\s]/g, '');
+          if (raw === '') continue;
+          const num = parseInt(raw, 10);
+          if (!isNaN(num) && num >= 0 && num < 1000000) {
             qty = num;
+            qtyFound = true;
             break;
           }
         }
       }
-      
-      const ean = extractEan(sku);
-      const productMatch = matchProduct(productName) || matchProduct(sku);
-      const channel = matchWarehouse(warehouse);
-      const resolvedChannel = channel || '3PL US';
-      const resolvedWarehouse = canonicalWarehouse(warehouse, resolvedChannel);
-      const canonicalName = ean && EAN_PRODUCT[ean]
-        ? EAN_PRODUCT[ean]
-        : productMatch ? inventoryProductName(productMatch.product_name) : null;
-      
-      if (ean && canonicalName && qty >= 0) {
-        inventoryItems.push({
-          ean,
-          product_name: canonicalName,
-          product_id: productMatch?.product_id || null,
-          channel: resolvedChannel,
-          warehouse: resolvedWarehouse,
-          qty, raw_sku: sku, raw_warehouse: warehouse, raw_name: productName
+
+      const resolved = resolveProductFromText(
+        ean || productName || sku || asin,
+        portalMappings
+      );
+      const regionInfo = classifyForcegetWarehouse(warehouse);
+
+      if (resolved && regionInfo && qtyFound) {
+        parsedRows.push(
+          buildInventoryItem({
+            ean: resolved.ean,
+            product_name: resolved.product_name,
+            on_hand: qty,
+            country: regionInfo.country,
+            channel: regionInfo.channel,
+            region: regionInfo.region,
+            warehouse: regionInfo.warehouse,
+            raw_name: productName || sku || asin,
+          })
+        );
+      } else if (qtyFound && qty > 0) {
+        results.errors.push({
+          msg: `Unmatched (no EAN): SKU=${sku}, ASIN=${asin}, Name=${productName}, WH=${warehouse}, Qty=${qty}`,
         });
-      } else {
-        results.errors.push({ msg: `Unmatched/no-EAN: SKU=${sku}, Name=${productName}, WH=${warehouse}, Qty=${qty}` });
       }
     }
-    
-    await log('parsed', JSON.stringify({ matched: inventoryItems.length, unmatched: results.errors.length, items: inventoryItems }));
+
+    const inventoryItems = aggregateInventoryRows(parsedRows);
+
+    await log('parsed', JSON.stringify({
+      matched: inventoryItems.length,
+      unmatched: results.errors.filter((e) => String(e?.msg || '').startsWith('Unmatched')).length,
+      toronto: inventoryItems.filter((i) => i.country === 'CA').length,
+      laPerris: inventoryItems.filter((i) => i.country === 'US').length,
+      items: inventoryItems.map((i) => ({
+        product_name: i.product_name,
+        ean: i.ean,
+        warehouse: i.warehouse,
+        channel: i.channel,
+        on_hand: i.on_hand,
+      })),
+    }));
     results.products = inventoryItems;
-    
-    // Step 6: Write to Inventory_Levels
+
+    // Step 6: Single canonical write — DELETE by source/channel + POST with EANs
     if (inventoryItems.length > 0) {
-      await log('write_supabase', `Writing ${inventoryItems.length} items to Inventory_Levels...`);
-      const now = new Date().toISOString();
-      
-      // Aggregate duplicate portal rows by physical warehouse + EAN.
-      const aggregated = [...inventoryItems.reduce((map, item) => {
-        const key = `${item.warehouse}|${item.ean}`;
-        const prior = map.get(key);
-        map.set(key, prior ? { ...prior, qty: prior.qty + item.qty } : { ...item });
-        return map;
-      }, new Map()).values()];
+      const caItems = inventoryItems.filter((i) => i.country === 'CA');
+      // Include zeros when portal lists them (e.g. Trays 1500 White @ LA = 0)
+      const usItems = inventoryItems.filter((i) => i.country === 'US');
+      await log(
+        'write_supabase',
+        `Writing ${caItems.length} Toronto + ${usItems.length} LA Perris rows via inventory-supabase...`
+      );
 
-      for (const item of aggregated) {
+      let written = 0;
+      if (caItems.length) written += await writeInventoryToSupabase('forceget', caItems);
+      if (usItems.length) {
+        written += await writeInventoryToSupabase('forceget_us', usItems);
+      } else {
         try {
-          const source = sourceForChannel(item.channel);
-          const rowFilter = `source=eq.${encodeURIComponent(source)}&ean=eq.${encodeURIComponent(item.ean)}&warehouse=eq.${encodeURIComponent(item.warehouse)}`;
-          const checkRes = await fetch(
-            `${SUPABASE_URL}/rest/v1/Inventory_Levels?${rowFilter}&select=id`,
-            { headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` } }
-          );
-          if (!checkRes.ok) throw new Error(`Existence check failed ${checkRes.status}: ${await checkRes.text()}`);
-          const existing = await checkRes.json();
-          const payload = {
-            ean: item.ean,
-            product_name: item.product_name,
-            channel: item.channel,
-            channel_type: '3PL',
-            warehouse: item.warehouse,
-            region: item.channel === '3PL CA' ? 'CA' : 'US',
-            on_hand: item.qty,
-            last_synced_at: now,
-            source,
-          };
-
-          const writeRes = await fetch(
-            existing?.length
-              ? `${SUPABASE_URL}/rest/v1/Inventory_Levels?${rowFilter}`
-              : `${SUPABASE_URL}/rest/v1/Inventory_Levels`,
-            {
-              method: existing?.length ? 'PATCH' : 'POST',
-              headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-              body: JSON.stringify(payload),
-            }
-          );
-          if (!writeRes.ok) throw new Error(`Write failed ${writeRes.status}: ${await writeRes.text()}`);
-          await log(existing?.length ? 'updated' : 'inserted', `${item.warehouse} | ${item.ean} | ${item.product_name}: ${item.qty}`);
+          const { deleteBySource } = require('./inventory-supabase');
+          await deleteBySource('playwright_forceget_us');
+          await log('write_supabase', 'Cleared playwright_forceget_us (no LA Perris rows scraped)');
         } catch (e) {
-          results.errors.push({ product: item.product_name, ean: item.ean, warehouse: item.warehouse, error: e.message });
+          await log('write_warn', `Could not clear forceget_us: ${e.message}`);
         }
       }
-
-      await log('write_done', `Wrote ${aggregated.length} warehouse+EAN rows to Inventory_Levels`);
-      const touchedChannels = [...new Set(inventoryItems.map((i) => i.channel))];
-      for (const ch of touchedChannels) {
-        await fetch(
-          `${SUPABASE_URL}/rest/v1/Inventory_Levels?channel=eq.${encodeURIComponent(ch)}&source=eq.${encodeURIComponent(sourceForChannel(ch))}`,
-          {
-            method: 'PATCH',
-            headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Content-Type': 'application/json', 'Prefer': 'return=minimal' },
-            body: JSON.stringify({ last_synced_at: now }),
-          }
-        );
-      }
+      await log('write_done', `Wrote ${written} rows to Inventory_Levels (Toronto + LA Perris, with EANs)`);
+      results.inventory_levels_written = written;
     }
     
     // Final screenshot
-    await page.screenshot({ path: '/tmp/forceget-08-final.png', fullPage: true });
+    await page.screenshot({ path: shotPath('forceget-08-final.png'), fullPage: true });
     
-    results.success = true;
+    const incomplete = results.errors.some((e) => String(e?.msg || '').includes('Incomplete scrape'));
+    const writeErrors = results.errors.filter((e) => e?.error);
+    if (inventoryItems.length === 0) {
+      results.success = false;
+      results.error = 'No matched Forceget inventory rows found';
+    } else if (writeErrors.length) {
+      results.success = false;
+      results.error = `Forceget write errors: ${writeErrors.length}`;
+    } else if (incomplete) {
+      results.success = false;
+      results.error = results.errors.find((e) => String(e?.msg || '').includes('Incomplete scrape'))?.msg;
+    } else {
+      results.success = true;
+    }
     results.summary = {
       total_products: inventoryItems.length,
-      total_units: inventoryItems.reduce((sum, i) => sum + i.qty, 0),
+      total_units: inventoryItems.reduce((sum, i) => sum + i.on_hand, 0),
       channels: [...new Set(inventoryItems.map(i => i.channel))],
-      synced_at: new Date().toISOString()
+      expected_total_records: tableData.expectedTotalRecords,
+      scraped_rows: tableData.rows.length,
+      pages_scraped: tableData.pagesScraped,
+      unmatched_rows: results.errors.filter((e) => String(e?.msg || '').startsWith('Unmatched')).length,
+      write_errors: results.errors.filter((e) => e?.error).length,
+      synced_at: new Date().toISOString(),
     };
     
   } catch (error) {
     results.success = false;
     results.error = error.message;
     await log('error', `Script failed: ${error.message}`);
-    try { await page.screenshot({ path: '/tmp/forceget-error.png', fullPage: true }); } catch (e) {}
+    try { await page.screenshot({ path: shotPath('forceget-error.png'), fullPage: true }); } catch (e) {}
   }
   
   return results;
