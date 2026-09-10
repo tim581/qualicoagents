@@ -212,26 +212,51 @@ async function visible(locator) {
   return locator.isVisible({ timeout: 1500 }).catch(() => false);
 }
 
-async function ensureCoraxSession(page, credentials) {
+/**
+ * Compatibility fallback for executors that predate credential injection.
+ * It is only called after an authenticated storage state proved insufficient.
+ * The value is never logged or returned in a task result.
+ */
+async function loadCoraxCredentials(credentials, supabase) {
+  const injectedUsername = text(credentials?.username);
+  const injectedPassword = text(credentials?.password);
+  if (injectedUsername && injectedPassword) {
+    return { username: injectedUsername, password: injectedPassword };
+  }
+
+  if (!supabase || typeof supabase.from !== 'function') {
+    throw new Error('Corax credentials are unavailable');
+  }
+
+  const { data, error } = await supabase
+    .from('Browser_Credentials')
+    .select('username,password')
+    .eq('key', 'vanthiel_corax_wms')
+    .single();
+  if (error || !text(data?.username) || !text(data?.password)) {
+    throw new Error('Corax credentials are unavailable');
+  }
+  return { username: text(data.username), password: text(data.password) };
+}
+
+async function ensureCoraxSession(page, credentials, supabase) {
   await page.goto(CORAX_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(2500);
 
   const needsLogin = /microsoftonline\.com|login/i.test(page.url());
   if (!needsLogin) return;
-  if (!credentials?.username || !credentials?.password) {
-    throw new Error('Corax credentials are unavailable');
-  }
+  const usableCredentials = await loadCoraxCredentials(credentials, supabase);
 
   const email = page.locator('input[type="email"], input[name="loginfmt"], #i0116').first();
   await email.waitFor({ state: 'visible', timeout: 30000 });
-  await email.fill(credentials.username);
+  await email.fill(usableCredentials.username);
   const next = page.locator('#idSIButton9, input[type="submit"], button[type="submit"]').first();
   await next.click();
   await page.waitForTimeout(2000);
 
   const password = page.locator('input[type="password"], input[name="passwd"], #i0118').first();
   await password.waitFor({ state: 'visible', timeout: 30000 });
-  await password.fill(credentials.password);
+  await password.fill(usableCredentials.password);
   await page.locator('#idSIButton9, input[type="submit"], button[type="submit"]').first().click();
   await page.waitForTimeout(4000);
 
@@ -420,7 +445,7 @@ async function run({ page, supabase, credentials, log }) {
   ]);
   const masterByEan = buildMasterByEan(masterRows);
 
-  await ensureCoraxSession(page, credentials);
+  await ensureCoraxSession(page, credentials, supabase);
   await openStocksPerArticle(page);
   const pageSize = await selectLargestPageSize(page);
   const scraped = await scrapeAllStockPages(page);
@@ -467,6 +492,7 @@ module.exports._private = {
   normalizePortalName,
   extractEan,
   parseColliCell,
+  loadCoraxCredentials,
   buildMasterByEan,
   buildCoraxAliasIndex,
   inferMasterCandidates,

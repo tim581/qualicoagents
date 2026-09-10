@@ -46,9 +46,53 @@ assert.throws(
   'unknown positive stock must not be silently dropped or written without an EAN',
 );
 
-console.log(JSON.stringify({
-  ok: true,
-  canonical_ean_count: snapshot.rows.length,
-  total_units: snapshot.total_units,
-  ignored_zero_rows: snapshot.ignored_zero_rows.length,
-}));
+async function testCredentialFallback() {
+  let calls = 0;
+  const fakeSupabase = {
+    from(table) {
+      assert.equal(table, 'Browser_Credentials');
+      return {
+        select(columns) {
+          assert.equal(columns, 'username,password');
+          return {
+            eq(column, value) {
+              assert.equal(column, 'key');
+              assert.equal(value, 'vanthiel_corax_wms');
+              return {
+                async single() {
+                  calls += 1;
+                  return { data: { username: 'corax-user', password: 'corax-password' }, error: null };
+                },
+              };
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const fallback = await run._private.loadCoraxCredentials(null, fakeSupabase);
+  assert.deepEqual(fallback, { username: 'corax-user', password: 'corax-password' });
+  assert.equal(calls, 1, 'legacy executor fallback must query the configured Corax credential once');
+
+  const injected = await run._private.loadCoraxCredentials(
+    { username: 'injected-user', password: 'injected-password' },
+    { from() { throw new Error('fallback must not run when executor injects credentials'); } },
+  );
+  assert.deepEqual(injected, { username: 'injected-user', password: 'injected-password' });
+}
+
+testCredentialFallback()
+  .then(() => {
+    console.log(JSON.stringify({
+      ok: true,
+      canonical_ean_count: snapshot.rows.length,
+      total_units: snapshot.total_units,
+      ignored_zero_rows: snapshot.ignored_zero_rows.length,
+      credential_fallback: 'passed',
+    }));
+  })
+  .catch((error) => {
+    console.error(error.stack || String(error));
+    process.exit(1);
+  });
