@@ -582,6 +582,7 @@
       "category": "inventory"
     },
     {
+      "task_type": "inventory-sync-kamps",
       "script_name": "inventory-sync-kamps.js",
       "title": "Inventory — Kamps / Corax EU",
       "summary": "Retired — raw COLLI / non-atomic Vanthiel path is blocked. Use Inventory — Vanthiel EU.",
@@ -589,6 +590,7 @@
       "category": "inventory"
     },
     {
+      "task_type": "kamps-inventory",
       "script_name": "kamps-inventory.js",
       "title": "Inventory — Kamps discovery export",
       "summary": "Retired — raw COLLI / non-atomic Vanthiel path is blocked. Use Inventory — Vanthiel EU.",
@@ -596,6 +598,7 @@
       "category": "inventory"
     },
     {
+      "task_type": "corax-stock-export",
       "script_name": "corax-wms-stock-export.js",
       "title": "Corax — Stock Export",
       "summary": "Retired — raw COLLI / non-atomic Vanthiel path is blocked. Use Inventory — Vanthiel EU.",
