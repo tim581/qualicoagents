@@ -1,0 +1,66 @@
+{
+  "master": [
+    {"ean":"5419980414717","sku":"Puzzlup MAT BLACK GIFT 1000","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"GIFT","size":"1000","units_per_master":12},
+    {"ean":"5419980047489","sku":"Puzzlup MAT BLACK ECO 1500","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"ECO","size":"1500","units_per_master":10},
+    {"ean":"5419980047458","sku":"Puzzlup MAT BLACK GIFT 1500","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"GIFT","size":"1500","units_per_master":10},
+    {"ean":"5419980414748","sku":"Puzzlup MAT BLACK LUX 1500","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"LUX","size":"1500","units_per_master":10},
+    {"ean":"5419980047472","sku":"Puzzlup MAT BLACK ECO 3000","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"ECO","size":"3000","units_per_master":9},
+    {"ean":"5419980047465","sku":"Puzzlup MAT BLACK GIFT 3000","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"GIFT","size":"3000","units_per_master":6},
+    {"ean":"5419980414724","sku":"Puzzlup MAT BLACK GIFT 5000","product_type":"MAT","brand":"Puzzlup","color":"BLACK","version":"GIFT","size":"5000","units_per_master":4},
+    {"ean":"5419980414700","sku":"Puzzlup TRAY BLACK GIFT 1500","product_type":"TRAY","brand":"Puzzlup","color":"BLACK","version":"GIFT","size":"1500","units_per_master":8},
+    {"ean":"5419980414762","sku":"Puzzlup TRAY BLACK GIFT 3000","product_type":"TRAY","brand":"Puzzlup","color":"BLACK","version":"GIFT","size":"3000","units_per_master":4},
+    {"ean":"5419980047427","sku":"Qualico MAT BLACK GIFT 1500","product_type":"MAT","brand":"Qualico","color":"BLACK","version":"GIFT","size":"1500","units_per_master":10},
+    {"ean":"5419980047441","sku":"Qualico MAT BLACK GIFT 3000","product_type":"MAT","brand":"Qualico","color":"BLACK","version":"GIFT","size":"3000","units_per_master":6}
+  ],
+  "mappings": [
+    {"source_name":"Puzzleup 1000 gift","source":"corax","ean":"5419980414717"},
+    {"source_name":"Puzzleup 1500 eco.","source":"corax","ean":"5419980047489"},
+    {"source_name":"Puzzleup 1500 gift","source":"corax","ean":"5419980047458"},
+    {"source_name":"Puzzleup 1500 lux","source":"corax","ean":"5419980414748"},
+    {"source_name":"Puzzleup 3000 eco","source":"corax","ean":"5419980047472"},
+    {"source_name":"Puzzleup 3000 gift","source":"corax","ean":"5419980047465"},
+    {"source_name":"Puzzleup 5000 gift","source":"corax","ean":"5419980414724"},
+    {"source_name":"Trays 1500 black","source":"corax","ean":"5419980414700"},
+    {"source_name":"Trays 3000 black","source":"corax","ean":"5419980414762"}
+  ],
+  "rows": [
+    {"article":"Puzzleup 1500 eco., Puzzleup 1500 eco.","stock_text":"106 Colli"},
+    {"article":"puzzlup mat 3000GIFT, puzzlup mat 3000GIFT","stock_text":"139 Colli"},
+    {"article":"puzzlup mat Qualico 3000, puzzlup mat Qualico 3000","stock_text":"24 Colli"},
+    {"article":"Puzzlup Mat 1000 GIFT, Puzzlup Mat 1000 GIFT","stock_text":"32 Colli"},
+    {"article":"puzzlup mat 1500 GIFT, puzzlup mat 1500 GIFT","stock_text":"191 Colli"},
+    {"article":"Puzzlup Mat 1500 LUX, Puzzlup Mat 1500 LUX","stock_text":"0 Colli"},
+    {"article":"Puzzlup Mat 5000 GIFT, Puzzlup Mat 5000 GIFT","stock_text":"61 Colli"},
+    {"article":"Puzzlup MAT BLACK ECO 1500, EAN 5419980047489","stock_text":"106 Colli"},
+    {"article":"Puzzlup MAT BLACK ECO 3000, EAN 5419980047472","stock_text":"87 Colli"},
+    {"article":"Puzzlup MAT BLACK GIFT 1000, EAN 5419980414717","stock_text":"75 Colli"},
+    {"article":"Puzzlup MAT BLACK GIFT 3000, EAN 5419980047465","stock_text":"287 Colli"},
+    {"article":"Puzzlup MAT BLACK GIFT 5000, EAN 5419980414724","stock_text":"95 Colli"},
+    {"article":"Puzzlup mat Qualico 1500, Puzzlup mat Qualico 1500","stock_text":"67 Colli"},
+    {"article":"puzzlup mat Qualico 3000, puzzlup mat Qualico 3000","stock_text":"66 Colli"},
+    {"article":"puzzlup sorting trays 1500, puzzlup sorting trays 1500","stock_text":"0 Colli"},
+    {"article":"Puzzlup3000eco.","stock_text":"200 Colli"},
+    {"article":"Q1, Ompak dozen Qualico","stock_text":"0 Colli"},
+    {"article":"Sorting tray double set 3000, Sorting tray double set 3000","stock_text":"0 Colli"},
+    {"article":"Sorting Tray White 1500, Sorting Tray White 1500","stock_text":"0 Colli"},
+    {"article":"trays 1500 black, trays 1500 black","stock_text":"407 Colli"},
+    {"article":"TRAYS DOUBLE SET BLACK, TRAYS DOUBLE SET BLACK","stock_text":"0 Colli"},
+    {"article":"TRAYS DOUBLE SET BLACK 3000, TRAYS DOUBLE SET BLACK 3000","stock_text":"53 Colli"}
+  ],
+  "expected": {
+    "total_units": 15755,
+    "on_hand_by_ean": {
+      "5419980414717": 1284,
+      "5419980047489": 2120,
+      "5419980047458": 1910,
+      "5419980414748": 0,
+      "5419980047472": 2583,
+      "5419980047465": 2556,
+      "5419980414724": 624,
+      "5419980414700": 3256,
+      "5419980414762": 212,
+      "5419980047427": 670,
+      "5419980047441": 540
+    }
+  }
+}
