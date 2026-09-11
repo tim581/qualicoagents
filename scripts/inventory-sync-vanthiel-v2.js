@@ -14,6 +14,8 @@
 
 const CORAX_URL = 'https://kampspijnacker.coraxwms.nl';
 const MAX_PORTAL_PAGES = 50;
+// Included in every task result so a live re-run proves which fail-closed writer ran.
+const RUNNER_VERSION = '2026-09-11.1';
 
 function text(value) {
   return String(value ?? '').trim();
@@ -470,6 +472,7 @@ async function run({ page, supabase, credentials, log }) {
   if (!data || data.dry_run) throw new Error('Vanthiel snapshot RPC did not confirm a live write');
 
   const result = {
+    runner_version: RUNNER_VERSION,
     warehouse: 'Vanthiel',
     source: 'corax_wms',
     source_unit: 'COLLI',

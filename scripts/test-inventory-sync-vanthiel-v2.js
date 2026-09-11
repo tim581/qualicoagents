@@ -31,7 +31,9 @@ assert.throws(
   'unit label changes must fail closed',
 );
 
-const incomplete = clone(fixture.rows).filter((row) => !/tray(?:s)?[^0-9]*1500/i.test(row.article));
+const incomplete = clone(fixture.rows).filter(
+  (row) => !/(?:puzzlup\s+sorting\s+trays?\s+1500|trays?\s+1500\s+black)/i.test(row.article),
+);
 assert.throws(
   () => buildSnapshotPayload(incomplete, fixture.master, fixture.mappings),
   /selling EANs absent from source/,
