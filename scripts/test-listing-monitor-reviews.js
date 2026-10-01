@@ -38,7 +38,7 @@ assert.match(low.review_body, /Die Matte rutscht/);
 assert.equal(low.review_date, '2024-01-03');
 assert.equal(low.country, 'Germany');
 assert.equal(low.verified_purchase, true);
-assert.equal(low.helpful_count, 2);
+assert.equal(low.helpful_votes, 2);
 assert.equal(low.source_url, 'https://www.amazon.de/gp/customer-reviews/R1DELOW');
 assert.equal(page.reviews.some((review) => review.source_review_id === 'R1USFOREIGN'), false);
 assert.equal(page.reviews.some((review) => /40 ratings/.test(review.review_body || '')), false);
@@ -208,8 +208,8 @@ assert.equal(english.translation_status, 'not_required');
 assert.equal(english.translation_provider, null);
 assert.equal(english.review_body_en, english.review_body);
 const englishAssessed = policy.assessReview(english, { assessedAt: de.scrapedAt });
-assert.equal(englishAssessed.policy_status, 'no_clear_policy_case');
-assert.equal(englishAssessed.policy_categories.includes('product_criticism'), true);
+assert.equal(englishAssessed.status, 'no_clear_policy_case');
+assert.equal(englishAssessed.categories.includes('product_criticism'), true);
 
 const dutch = await lib.translateReviews([{
   review_title: 'Schuift',
@@ -218,7 +218,7 @@ const dutch = await lib.translateReviews([{
 }], null);
 assert.equal(dutch[0].translation_status, 'pending');
 assert.equal(dutch[0].review_body_en, null);
-assert.equal(dutch[0].policy_status, 'not_assessed');
+assert.equal(dutch[0].status, 'not_assessed');
 assert.equal(dutch[0].review_body, 'De mat schuift van de tafel en de puzzelstukken vallen eraf.');
 
 let providerCalls = 0;
@@ -242,7 +242,7 @@ assert.equal(translated[0].translation_status, 'translated');
 assert.equal(translated[0].review_body, 'De mat schuift van de tafel en de puzzelstukken vallen eraf.');
 assert.match(translated[0].review_body_en, /puzzle pieces/);
 assert.equal(translated[0].translation_provider, 'test-provider');
-assert.equal(translated[0].policy_evidence_quote, translated[0].review_body);
+assert.deepEqual(translated[0].evidence_quotes, [translated[0].review_body]);
 
 const failed = await lib.translateReviews([{
   review_title: 'Schuift',
@@ -253,58 +253,57 @@ const failed = await lib.translateReviews([{
 });
 assert.equal(failed[0].translation_status, 'failed');
 assert.equal(failed[0].review_body_en, null);
-assert.equal(failed[0].policy_status, 'not_assessed');
+assert.equal(failed[0].status, 'not_assessed');
 assert.equal(lib.resolveTranslationProvider(), null);
 
 const shipping = policy.assessReview(lib.applyTranslation({
   review_title: 'Late',
   review_body: 'The seller shipped this late and the box was crushed. Delivery took three weeks.',
 }, null), { assessedAt: de.scrapedAt });
-assert.equal(shipping.policy_status, 'potential_policy_case');
-assert.equal(shipping.policy_categories.includes('shipping_cost_or_speed_only'), true);
-assert.equal(shipping.policy_evidence_quote, shipping.review_body);
+assert.equal(shipping.status, 'potential_policy_case');
+assert.equal(shipping.categories.includes('shipping_cost_or_speed_only'), true);
+assert.deepEqual(shipping.evidence_quotes, [shipping.review_body]);
 
 const mixed = policy.assessReview(lib.applyTranslation({
   review_title: 'Both',
   review_body: 'The mat slips on the table, and shipping was slow.',
 }, null), { assessedAt: de.scrapedAt });
-assert.equal(mixed.policy_status, 'no_clear_policy_case');
-assert.equal(mixed.policy_categories.includes('mixed_product_and_fulfillment'), true);
+assert.equal(mixed.status, 'no_clear_policy_case');
+assert.equal(mixed.categories.includes('mixed_product_and_fulfillment'), true);
 
 const unrelated = policy.assessReview(lib.applyTranslation({
   review_title: 'Wrong',
   review_body: 'I ordered a lamp and received a completely different product.',
 }, null), { assessedAt: de.scrapedAt });
-assert.equal(unrelated.policy_status, 'potential_policy_case');
-assert.equal(unrelated.policy_categories.includes('unrelated_item'), true);
+assert.equal(unrelated.status, 'potential_policy_case');
+assert.equal(unrelated.categories.includes('unrelated_item'), true);
 
 const criticism = policy.assessReview(lib.applyTranslation({
   review_title: 'Quality',
   review_body: 'The mat slips and the pieces do not stay together.',
 }, null), { assessedAt: de.scrapedAt });
-assert.equal(criticism.policy_status, 'no_clear_policy_case');
+assert.equal(criticism.status, 'no_clear_policy_case');
 
-const first = { ...low, helpful_count: 2, human_decision: 'keep', human_decision_note: 'Tim', human_decision_at: de.scrapedAt };
-const second = { ...low, helpful_count: 5, review_body: low.review_body, human_decision: 'remove', human_decision_note: 'overwrite' };
+const first = { ...low, helpful_votes: 2, human_decision: 'keep', human_decision_note: 'Tim', human_decision_at: de.scrapedAt };
+const second = { ...low, helpful_votes: 5, review_body: low.review_body, human_decision: 'remove', human_decision_note: 'overwrite' };
 const merged = lib.mergeReview(first, second);
 assert.equal(lib.collapseReviews([first, second]).length, 1);
-assert.equal(merged.helpful_count, 5);
+assert.equal(merged.helpful_votes, 5);
 assert.equal(merged.human_decision, 'keep');
 assert.equal(merged.human_decision_note, 'Tim');
 const otherMarket = { ...low, channel_id: 23, product_key: 'B09MBH7RFW' };
 assert.notEqual(lib.reviewIdentity(low), lib.reviewIdentity(otherMarket));
 const written = persist.reviewWriteRow({ ...merged, human_decision: 'keep' });
 assert.equal(Object.hasOwn(written, 'human_decision'), false);
-assert.equal(written.policy_status, undefined);
+assert.equal(written.status, undefined);
 const assessedRow = persist.assessmentWriteRow({ ...englishAssessed, human_decision: 'report', human_decision_note: 'overwrite' });
-assert.equal(assessedRow.policy_status, 'no_clear_policy_case');
-assert.equal(assessedRow.policy_evidence_quote, englishAssessed.review_body);
-assert.equal(assessedRow.assessed_at, de.scrapedAt);
+assert.equal(assessedRow.status, 'no_clear_policy_case');
+assert.deepEqual(assessedRow.evidence_quotes, [englishAssessed.review_body]);
 assert.equal(Object.hasOwn(assessedRow, 'human_decision'), false);
 assert.equal(Object.hasOwn(assessedRow, 'human_decision_note'), false);
-const assessedAgain = persist.assessmentWriteRow({ ...englishAssessed, policy_rationale: 'same version', human_decision: 'remove' });
+const assessedAgain = persist.assessmentWriteRow({ ...englishAssessed, rationale: 'same version', human_decision: 'remove' });
 assert.equal(persist.assessmentConflictKey(assessedRow), persist.assessmentConflictKey(assessedAgain));
-assert.equal(persist.ASSESSMENT_CONFLICT, 'source,channel_id,product_key,source_review_id,policy_model,policy_version');
+assert.equal(persist.ASSESSMENT_CONFLICT, 'source,channel_id,product_key,source_review_id,policy_version,model,model_version');
 const nextVersion = persist.assessmentWriteRow({ ...englishAssessed, policy_version: 'amazon-community-guidelines-next' });
 assert.notEqual(persist.assessmentConflictKey(assessedRow), persist.assessmentConflictKey(nextVersion));
 
@@ -349,7 +348,7 @@ assert.equal(Object.hasOwn(pendingWrite, 'human_decision'), false);
 const englishWrite = persist.reviewWriteRow(englishAssessed);
 assert.equal(englishWrite.translation_status, 'not_required');
 assert.equal(englishWrite.review_body_en, englishAssessed.review_body);
-assert.equal(Object.hasOwn(englishWrite, 'policy_status'), false);
+assert.equal(Object.hasOwn(englishWrite, 'status'), false);
 
 const logs = [];
 await persist.logExternal({
@@ -403,6 +402,18 @@ assert.equal(bol.find((row) => row.star_rating === 1).status, 'complete');
 assert.equal(bol.find((row) => row.star_rating === 5), undefined);
 assert.equal(bol.find((row) => row.star_rating === 3).status, 'empty');
 assert.equal(bol.find((row) => row.star_rating === 2).reviews_collected, 1);
+for (const status of [403, 429, 503]) {
+  const bolBlocked = await lib.collectBolListing({
+    listing: bolListing,
+    scrapedAt: de.scrapedAt,
+    limits: { maxPages: 2, pageSize: 2 },
+    readPage: async () => ({ status, html: '<html>blocked</html>' }),
+  });
+  const bolStar = bolBlocked.find((row) => row.star_rating === 1);
+  assert.equal(bolStar.status, 'blocked');
+  assert.equal(bolStar.reason, `http_${status}`);
+  assert.notEqual(bolStar.status, 'empty');
+}
 
 const webshop = lib.classifyListing({
   product_id: 12,
@@ -469,6 +480,37 @@ assert.equal(persist.taskOutcome({
   assessmentWrite: { ok: true },
   coverageWrite: { ok: false, reason: 'coverage_upsert_failed' },
 }).error, 'coverage_upsert_failed');
+
+assert.deepEqual(persist.REQUIRED_REVIEW_COLUMNS, [
+  'source', 'channel_id', 'product_key', 'source_review_id', 'star_rating', 'scraped_at',
+  'review_title', 'review_body', 'helpful_votes',
+  'original_language', 'review_title_en', 'review_body_en', 'translated_at',
+  'translation_provider', 'translation_model', 'translation_version', 'translation_status',
+]);
+assert.deepEqual(persist.REQUIRED_ASSESSMENT_COLUMNS, [
+  'source', 'channel_id', 'product_key', 'source_review_id',
+  'status', 'categories', 'rationale', 'evidence_quotes', 'confidence', 'source_urls',
+  'policy_version', 'model', 'model_version',
+]);
+assert.equal(persist.REVIEW_CONFLICT, 'source,channel_id,product_key,source_review_id');
+assert.equal(persist.ASSESSMENT_CONFLICT, 'source,channel_id,product_key,source_review_id,policy_version,model,model_version');
+assert.equal(persist.COVERAGE_CONFLICT, 'run_id,source,channel_id,product_key,star_rating');
+const obsolete = [
+  'policy_status', 'policy_categories', 'policy_rationale', 'policy_evidence_quote',
+  'policy_confidence', 'policy_source_urls', 'policy_model', 'helpful_count',
+];
+for (const column of obsolete) {
+  assert.equal(persist.REQUIRED_REVIEW_COLUMNS.includes(column), false);
+  assert.equal(persist.REQUIRED_ASSESSMENT_COLUMNS.includes(column), false);
+  assert.equal(Object.hasOwn(assessedRow, column), false);
+  assert.equal(Object.hasOwn(written, column), false);
+}
+assert.equal(written.helpful_votes, 5);
+assert.deepEqual(assessedRow.categories, englishAssessed.categories);
+assert.deepEqual(assessedRow.source_urls, englishAssessed.source_urls);
+assert.equal(assessedRow.model, 'deterministic-rules');
+assert.equal(assessedRow.model_version, '2026-10-01');
+assert.equal(assessedRow.policy_version, 'amazon-community-guidelines-2026-10-01');
 
 console.log('listing review tests passed');
 }

@@ -77,7 +77,7 @@ const LANGUAGE_SIGNALS = {
 
 const TEXT_FIELDS = [
   'review_title', 'review_body', 'review_title_en', 'review_body_en', 'reviewer_name',
-  'policy_evidence_quote', 'policy_rationale',
+  'evidence_quotes', 'rationale',
 ];
 
 function decodeHtml(text) {
@@ -220,7 +220,7 @@ function mergeReview(previous, incoming) {
     star_rating: incoming.star_rating ?? previous.star_rating,
     review_date: incoming.review_date || previous.review_date,
     source_url: incoming.source_url || previous.source_url,
-    helpful_count: incoming.helpful_count ?? previous.helpful_count,
+    helpful_votes: incoming.helpful_votes ?? previous.helpful_votes,
     verified_purchase: incoming.verified_purchase ?? previous.verified_purchase,
     country: incoming.country || previous.country,
     scraped_at: incoming.scraped_at || previous.scraped_at,
@@ -248,16 +248,15 @@ function mergeReview(previous, incoming) {
     next.translation_version = previous.translation_version ?? null;
     next.translation_status = previous.translation_status ?? incoming.translation_status ?? null;
   }
-  next.policy_status = incoming.policy_status ?? previous.policy_status ?? null;
-  next.policy_categories = incoming.policy_categories ?? previous.policy_categories ?? [];
-  next.policy_rationale = incoming.policy_rationale ?? previous.policy_rationale ?? null;
-  next.policy_evidence_quote = incoming.policy_evidence_quote ?? previous.policy_evidence_quote ?? null;
-  next.policy_confidence = incoming.policy_confidence ?? previous.policy_confidence ?? null;
-  next.policy_source_urls = incoming.policy_source_urls ?? previous.policy_source_urls ?? null;
-  next.policy_checked_on = incoming.policy_checked_on ?? previous.policy_checked_on ?? null;
-  next.policy_assessed_at = incoming.policy_assessed_at ?? previous.policy_assessed_at ?? null;
-  next.policy_model = incoming.policy_model ?? previous.policy_model ?? null;
+  next.status = incoming.status ?? previous.status ?? null;
+  next.categories = incoming.categories ?? previous.categories ?? [];
+  next.rationale = incoming.rationale ?? previous.rationale ?? null;
+  next.evidence_quotes = incoming.evidence_quotes ?? previous.evidence_quotes ?? [];
+  next.confidence = incoming.confidence ?? previous.confidence ?? null;
+  next.source_urls = incoming.source_urls ?? previous.source_urls ?? null;
   next.policy_version = incoming.policy_version ?? previous.policy_version ?? null;
+  next.model = incoming.model ?? previous.model ?? null;
+  next.model_version = incoming.model_version ?? previous.model_version ?? null;
   next.human_decision = previous.human_decision ?? null;
   next.human_decision_note = previous.human_decision_note ?? null;
   next.human_decision_at = previous.human_decision_at ?? null;
@@ -525,7 +524,7 @@ function parseAmazonReviewHtml(html, context) {
       source_url: `https://www.${context.domain}/gp/customer-reviews/${block.id}`,
       reviewer_name: reviewer,
       verified_purchase: verified,
-      helpful_count: parseHelpful(block.html),
+      helpful_votes: parseHelpful(block.html),
       country: statedCountry,
       scraped_at: context.scrapedAt,
     });
@@ -571,8 +570,9 @@ function bolReviewsUrl(listingUrl, offset, limit = BOL_PAGE_SIZE) {
 }
 
 function classifyBolDocument(html, status) {
-  if (status === 403 || status === 401 || status === 429) {
-    return { blocked: true, reason: `http_${status}` };
+  const code = Number(status);
+  if (code === 403 || code === 401 || code === 429 || code >= 500) {
+    return { blocked: true, reason: `http_${code}` };
   }
   const lower = String(html || '').toLowerCase();
   if (lower.includes('captcha') || lower.includes('access denied') || lower.includes('robot')) {
@@ -629,7 +629,7 @@ function parseBolReviewHtml(html, context) {
       source_url: context.listingUrl || null,
       reviewer_name: reviewer,
       verified_purchase: verified,
-      helpful_count: null,
+      helpful_votes: null,
       country: null,
       scraped_at: context.scrapedAt,
     });
@@ -687,7 +687,7 @@ function inspectWebshopHtml(html, context) {
       source_url: context.listingUrl || null,
       reviewer_name: decodeHtml(part.match(/class="woocommerce-review__author"[^>]*>([\s\S]*?)<\//i)?.[1] || '') || null,
       verified_purchase: null,
-      helpful_count: null,
+      helpful_votes: null,
       country: null,
       scraped_at: context.scrapedAt,
     });

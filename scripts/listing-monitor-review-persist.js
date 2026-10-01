@@ -3,10 +3,11 @@
 const { redactForLog } = require('./listing-monitor-review-lib');
 
 const REVIEW_CONFLICT = 'source,channel_id,product_key,source_review_id';
-const ASSESSMENT_CONFLICT = 'source,channel_id,product_key,source_review_id,policy_model,policy_version';
+const ASSESSMENT_CONFLICT = 'source,channel_id,product_key,source_review_id,policy_version,model,model_version';
+const COVERAGE_CONFLICT = 'run_id,source,channel_id,product_key,star_rating';
 const REQUIRED_REVIEW_COLUMNS = [
   'source', 'channel_id', 'product_key', 'source_review_id', 'star_rating', 'scraped_at',
-  'review_title', 'review_body',
+  'review_title', 'review_body', 'helpful_votes',
   'original_language', 'review_title_en', 'review_body_en', 'translated_at',
   'translation_provider', 'translation_model', 'translation_version', 'translation_status',
 ];
@@ -15,9 +16,8 @@ const REQUIRED_COVERAGE_COLUMNS = [
 ];
 const REQUIRED_ASSESSMENT_COLUMNS = [
   'source', 'channel_id', 'product_key', 'source_review_id',
-  'policy_status', 'policy_categories', 'policy_rationale', 'policy_evidence_quote',
-  'policy_confidence', 'policy_source_urls', 'policy_checked_on', 'assessed_at',
-  'policy_model', 'policy_version',
+  'status', 'categories', 'rationale', 'evidence_quotes', 'confidence', 'source_urls',
+  'policy_version', 'model', 'model_version',
 ];
 const TRANSLATION_WRITE_FIELDS = [
   'review_title_en', 'review_body_en', 'translated_at',
@@ -54,10 +54,10 @@ function reviewWriteRow(review) {
     source_url: review.source_url ?? null,
     reviewer_name: review.reviewer_name ?? null,
     verified_purchase: review.verified_purchase ?? null,
-    helpful_count: review.helpful_count ?? null,
     country: review.country ?? null,
     scraped_at: review.scraped_at,
   };
+  if (review.helpful_votes != null) row.helpful_votes = review.helpful_votes;
   if (review.original_language != null) row.original_language = review.original_language;
   const approvedTranslation = review.translation_status === 'not_required' || review.translation_status === 'translated';
   if (approvedTranslation) {
@@ -69,22 +69,28 @@ function reviewWriteRow(review) {
   return row;
 }
 
+function evidenceQuotes(review) {
+  if (Array.isArray(review.evidence_quotes)) {
+    return review.evidence_quotes.filter((quote) => quote != null && quote !== '');
+  }
+  return [];
+}
+
 function assessmentWriteRow(review) {
   return {
     source: review.source,
     channel_id: review.channel_id,
     product_key: review.product_key,
     source_review_id: review.source_review_id,
-    policy_status: review.policy_status,
-    policy_categories: review.policy_categories ?? [],
-    policy_rationale: review.policy_rationale ?? null,
-    policy_evidence_quote: review.policy_evidence_quote ?? null,
-    policy_confidence: review.policy_confidence ?? null,
-    policy_source_urls: review.policy_source_urls ?? null,
-    policy_checked_on: review.policy_checked_on ?? null,
-    assessed_at: review.assessed_at || review.policy_assessed_at || null,
-    policy_model: review.policy_model,
+    status: review.status,
+    categories: review.categories ?? [],
+    rationale: review.rationale ?? null,
+    evidence_quotes: evidenceQuotes(review),
+    confidence: review.confidence ?? null,
+    source_urls: review.source_urls ?? [],
     policy_version: review.policy_version,
+    model: review.model,
+    model_version: review.model_version,
   };
 }
 
@@ -94,8 +100,9 @@ function assessmentConflictKey(row) {
     row.channel_id,
     row.product_key,
     row.source_review_id,
-    row.policy_model,
     row.policy_version,
+    row.model,
+    row.model_version,
   ].join('|');
 }
 
@@ -252,7 +259,7 @@ async function persistAssessments(supabase, reviews, columns) {
   const missing = missingColumns(columns, REQUIRED_ASSESSMENT_COLUMNS);
   if (missing.length) return { ok: false, written: 0, reason: 'schema_missing_policy_assessments' };
   const rows = (reviews || [])
-    .filter((review) => review?.policy_status && review.source_review_id && review.product_key)
+    .filter((review) => review?.status && review.source_review_id && review.product_key)
     .map((review) => filterToColumns(assessmentWriteRow(review), columns));
   if (!rows.length) return { ok: true, written: 0, reason: null };
   const { error } = await supabase.from(ASSESSMENT_TABLE).upsert(rows, { onConflict: ASSESSMENT_CONFLICT });
@@ -273,7 +280,7 @@ async function persistCoverage(supabase, outcomes, columns) {
   }
   const rows = outcomes.map((outcome) => filterToColumns(coverageWriteRow(outcome), columns));
   const { error } = await supabase.from(COVERAGE_TABLE).upsert(rows, {
-    onConflict: 'run_id,source,channel_id,product_key,star_rating',
+    onConflict: COVERAGE_CONFLICT,
   });
   if (error) return { ok: false, written: 0, reason: 'coverage_upsert_failed' };
   return { ok: true, written: rows.length, reason: null };
@@ -282,6 +289,7 @@ async function persistCoverage(supabase, outcomes, columns) {
 module.exports = {
   REVIEW_CONFLICT,
   ASSESSMENT_CONFLICT,
+  COVERAGE_CONFLICT,
   REQUIRED_REVIEW_COLUMNS,
   REQUIRED_COVERAGE_COLUMNS,
   REQUIRED_ASSESSMENT_COLUMNS,

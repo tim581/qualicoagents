@@ -9,7 +9,8 @@
  * https://sellercentral-europe.amazon.com/gp/help/external/GYRKB5RU3FS5TURN
  */
 
-const POLICY_MODEL = 'deterministic-rules';
+const MODEL = 'deterministic-rules';
+const MODEL_VERSION = '2026-10-01';
 const POLICY_VERSION = 'amazon-community-guidelines-2026-10-01';
 const POLICY_CHECKED_ON = '2026-10-01';
 const POLICY_SOURCE_URLS = [
@@ -53,18 +54,17 @@ function quoteOriginal(review) {
   return body || null;
 }
 
-function blankAssessment(assessedAt) {
+function blankAssessment() {
   return {
-    policy_status: 'not_assessed',
-    policy_categories: [],
-    policy_rationale: 'Translation is unavailable, so this review was not assessed.',
-    policy_evidence_quote: null,
-    policy_confidence: null,
-    policy_source_urls: POLICY_SOURCE_URLS,
-    policy_checked_on: POLICY_CHECKED_ON,
-    policy_assessed_at: assessedAt || null,
-    policy_model: POLICY_MODEL,
+    status: 'not_assessed',
+    categories: [],
+    rationale: 'Translation is unavailable, so this review was not assessed.',
+    evidence_quotes: [],
+    confidence: null,
+    source_urls: POLICY_SOURCE_URLS,
     policy_version: POLICY_VERSION,
+    model: MODEL,
+    model_version: MODEL_VERSION,
   };
 }
 
@@ -102,46 +102,46 @@ function decide(text) {
 
   if (hardViolation) {
     return {
-      policy_status: 'potential_policy_case',
-      policy_categories: categories,
-      policy_rationale: 'The text matches a Community Guidelines prohibition. This is an assessment only, not a removal request.',
-      policy_confidence: 0.86,
+      status: 'potential_policy_case',
+      categories: categories,
+      rationale: 'The text matches a Community Guidelines prohibition. This is an assessment only, not a removal request.',
+      confidence: 0.86,
     };
   }
 
   if (unrelated || wrongVariant) {
     return {
-      policy_status: 'potential_policy_case',
-      policy_categories: categories,
-      policy_rationale: 'The review describes an unrelated item or a wrong variant. A person must confirm it before any report. Removal is not guaranteed.',
-      policy_confidence: 0.72,
+      status: 'potential_policy_case',
+      categories: categories,
+      rationale: 'The review describes an unrelated item or a wrong variant. A person must confirm it before any report. Removal is not guaranteed.',
+      confidence: 0.72,
     };
   }
 
   if (misunderstanding && !unrelated) {
     return {
-      policy_status: 'needs_human_review',
-      policy_categories: ['customer_misunderstanding', ...(product ? ['product_criticism'] : [])],
-      policy_rationale: 'The wording can be a customer misunderstanding rather than a prohibited review. It is not automatically a violation.',
-      policy_confidence: 0.55,
+      status: 'needs_human_review',
+      categories: ['customer_misunderstanding', ...(product ? ['product_criticism'] : [])],
+      rationale: 'The wording can be a customer misunderstanding rather than a prohibited review. It is not automatically a violation.',
+      confidence: 0.55,
     };
   }
 
   if (profanity && product) {
     return {
-      policy_status: 'needs_human_review',
-      policy_categories: ['harassment_or_profanity', 'product_criticism'],
-      policy_rationale: 'Profanity appears alongside product feedback. A person should separate the product opinion from the language issue.',
-      policy_confidence: 0.5,
+      status: 'needs_human_review',
+      categories: ['harassment_or_profanity', 'product_criticism'],
+      rationale: 'Profanity appears alongside product feedback. A person should separate the product opinion from the language issue.',
+      confidence: 0.5,
     };
   }
 
   if (product && fulfillment) {
     return {
-      policy_status: 'no_clear_policy_case',
-      policy_categories: ['mixed_product_and_fulfillment'],
-      policy_rationale: 'The review discusses the product and shipping or seller experience together. Mixed feedback is not a strong removal case.',
-      policy_confidence: 0.8,
+      status: 'no_clear_policy_case',
+      categories: ['mixed_product_and_fulfillment'],
+      rationale: 'The review discusses the product and shipping or seller experience together. Mixed feedback is not a strong removal case.',
+      confidence: 0.8,
     };
   }
 
@@ -153,61 +153,61 @@ function decide(text) {
     if (/\b(arrived damaged|damaged in transit)\b/i.test(text)) only.push('product_condition_or_damage_only');
     if (/\b(shipping|delivery|postage|courier|slow to arrive|took three weeks)\b/i.test(text)) only.push('shipping_cost_or_speed_only');
     return {
-      policy_status: 'potential_policy_case',
-      policy_categories: only.length ? only : ['shipping_cost_or_speed_only'],
-      policy_rationale: 'The review only discusses seller, order, packaging, condition, or shipping. Product reviews may not only focus on those topics. This does not submit a report.',
-      policy_confidence: 0.84,
+      status: 'potential_policy_case',
+      categories: only.length ? only : ['shipping_cost_or_speed_only'],
+      rationale: 'The review only discusses seller, order, packaging, condition, or shipping. Product reviews may not only focus on those topics. This does not submit a report.',
+      confidence: 0.84,
     };
   }
 
   if (competitor) {
     return {
-      policy_status: 'no_clear_policy_case',
-      policy_categories: ['competitor_comparison', 'product_criticism'],
-      policy_rationale: 'A competitor comparison that still describes the product is generally not a violation.',
-      policy_confidence: 0.78,
+      status: 'no_clear_policy_case',
+      categories: ['competitor_comparison', 'product_criticism'],
+      rationale: 'A competitor comparison that still describes the product is generally not a violation.',
+      confidence: 0.78,
     };
   }
 
   if (product || text.trim()) {
     return {
-      policy_status: 'no_clear_policy_case',
-      policy_categories: product ? ['product_criticism'] : [],
-      policy_rationale: product
+      status: 'no_clear_policy_case',
+      categories: product ? ['product_criticism'] : [],
+      rationale: product
         ? 'The review describes the product, including negative feedback. That is generally allowed.'
         : 'No clear Community Guidelines category was matched.',
-      policy_confidence: product ? 0.8 : 0.4,
+      confidence: product ? 0.8 : 0.4,
     };
   }
 
   return {
-    policy_status: 'not_assessed',
-    policy_categories: [],
-    policy_rationale: 'The review has no text to assess.',
-    policy_confidence: null,
+    status: 'not_assessed',
+    categories: [],
+    rationale: 'The review has no text to assess.',
+    confidence: null,
   };
 }
 
-function assessReview(review, options = {}) {
-  const assessedAt = options.assessedAt || null;
+function assessReview(review) {
   if (!canAssess(review)) {
-    return { ...review, ...blankAssessment(assessedAt) };
+    return { ...review, ...blankAssessment() };
   }
   const decision = decide(analysisText(review));
+  const quote = quoteOriginal(review);
   return {
     ...review,
     ...decision,
-    policy_evidence_quote: quoteOriginal(review),
-    policy_source_urls: POLICY_SOURCE_URLS,
-    policy_checked_on: POLICY_CHECKED_ON,
-    policy_assessed_at: assessedAt,
-    policy_model: POLICY_MODEL,
+    evidence_quotes: quote ? [quote] : [],
+    source_urls: POLICY_SOURCE_URLS,
     policy_version: POLICY_VERSION,
+    model: MODEL,
+    model_version: MODEL_VERSION,
   };
 }
 
 module.exports = {
-  POLICY_MODEL,
+  MODEL,
+  MODEL_VERSION,
   POLICY_VERSION,
   POLICY_CHECKED_ON,
   POLICY_SOURCE_URLS,
