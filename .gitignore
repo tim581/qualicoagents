@@ -8,3 +8,4 @@ node_modules/
 !scripts/import-*-cookies.js
 *storage-state*
 scripts/amazon-buyer-messages-seen.json
+scripts/listing-review-scrape-data.json

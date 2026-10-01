@@ -174,6 +174,22 @@
       }
     },
     {
+      "task_type": "listing-review-scrape",
+      "script_name": "listing-monitor-review-scraper.js",
+      "title": "Listing Monitor — 1–4★ Review Ingestion",
+      "runnable": true,
+      "summary": "Collect public 1–4 star reviews for canonical Puzzlup listings.",
+      "description": "Reads amazon_monitor_fba_puzzlup at runtime and collects public Amazon 1–4 star review bodies per ASIN and market. 5 star reviews are excluded. Bol.com is blocked when individual reviews are unavailable. The webshop has no individual reviews and is marked unsupported. Writes coverage per ASIN, market, and star, and versioned rows in puzzlup_review_policy_assessments. Does not report reviews or request removal. The local worker does not download this script from GitHub. After merge, Tim must git pull on the executor PC, run node scripts/register-browser-tasks.js, and restart playwright-task-executor.js. See docs/listing-review-ingestion.md.",
+      "category": "monitoring",
+      "duration": "30–90 min",
+      "queue": {
+        "url": "https://www.amazon.de",
+        "credentials_key": null,
+        "actions": [],
+        "priority": 4
+      }
+    },
+    {
       "task_type": "competitor-mat-scrape",
       "script_name": "competitor-mat-scraper.js",
       "title": "Competitor Mats — Page 1 Neoprene/Rubber Scan",

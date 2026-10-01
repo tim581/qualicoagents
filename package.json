@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node scripts/test-listing-monitor-reviews.js",
     "cookies": "node scripts/integrate-cookies.js",
     "cookies:amazon": "node scripts/integrate-amazon-cookies.js",
     "cookies:amazon:merge": "node scripts/convert-amazon-cookies.js",
@@ -15,7 +15,8 @@
     "cookies:mintsoft": "node scripts/integrate-mintsoft-cookies.js",
     "cookies:forceget": "node scripts/integrate-forceget-cookies.js",
     "cookies:corax": "node scripts/integrate-corax-cookies.js",
-    "cookies:test-routing": "node scripts/test-cookie-routing.js"
+    "cookies:test-routing": "node scripts/test-cookie-routing.js",
+    "test:listing-reviews": "node scripts/test-listing-monitor-reviews.js"
   },
   "keywords": [],
   "author": "",

@@ -207,6 +207,7 @@ const TASK_OUTPUT_FILES = {
   'bol-cases-scrape':          'bol-cases-scrape-data.json',
   'staxxer-vat-sync':          'staxxer-vat-scrape-data.json',
   'amazon-buyer-messages':     'amazon-buyer-messages-data.json',
+  'listing-review-scrape':     'listing-review-scrape-data.json',
 };
 
 function parseStdoutJson(output) {
@@ -255,6 +256,10 @@ const GITHUB_RAW = 'https://raw.githubusercontent.com/tim581/qualicoagents/main/
 // Never overwrite local-only scripts until pushed to qualicoagents
 const NEVER_DOWNLOAD_FROM_GITHUB = new Set([
   'price-monitor-scraper.js',
+  'listing-monitor-review-scraper.js',
+  'listing-monitor-review-lib.js',
+  'listing-monitor-review-policy.js',
+  'listing-monitor-review-persist.js',
   'amz-price-update.js',
   'bol-price-sync-all.js',
   'amz-price-sync-all.js',
@@ -478,6 +483,13 @@ async function executeScriptTask(task, scriptName) {
     }
 
     // Amazon price update: pass object actions as TASK_PARAMS (same pattern as bol-price-update loadTask)
+    if (task.task_type === 'listing-review-scrape' && Array.isArray(task.actions) && task.actions.length > 0) {
+      const objAction = task.actions.find((a) => typeof a === 'object' && a !== null);
+      if (objAction) {
+        env.TASK_PARAMS = JSON.stringify(objAction);
+        console.log(`   🏷️ TASK_PARAMS = ${env.TASK_PARAMS.substring(0, 200)}`);
+      }
+    }
     if (task.task_type === 'amz-price-update' && Array.isArray(task.actions) && task.actions.length > 0) {
       const objAction = task.actions.find((a) => typeof a === 'object' && a !== null && (a.asin || a.channel_name));
       if (objAction) {
@@ -541,6 +553,12 @@ async function executeScriptTask(task, scriptName) {
         }
       }
       
+      if (jsonData && jsonData.ok === false) {
+        const reason = jsonData.error || jsonData.schema_reason || 'script_reported_failure';
+        console.error(`❌ Script reported failure: ${reason}`);
+        return { success: false, error: reason, data: jsonData };
+      }
+
       if (jsonData) {
         const jsonStr = JSON.stringify(jsonData);
         if (jsonStr.length > 500000) {
