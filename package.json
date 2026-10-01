@@ -15,7 +15,8 @@
     "cookies:mintsoft": "node scripts/integrate-mintsoft-cookies.js",
     "cookies:forceget": "node scripts/integrate-forceget-cookies.js",
     "cookies:corax": "node scripts/integrate-corax-cookies.js",
-    "cookies:test-routing": "node scripts/test-cookie-routing.js"
+    "cookies:test-routing": "node scripts/test-cookie-routing.js",
+    "test:listing-reviews": "node scripts/test-listing-monitor-reviews.js"
   },
   "keywords": [],
   "author": "",
