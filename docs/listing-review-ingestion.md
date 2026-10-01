@@ -29,15 +29,20 @@ The original evidence quote is stored as the single element of `evidence_quotes`
 
 English text is copied into the English columns with `translation_status = not_required`. A successful approved-provider result is written with `translation_status = translated`. Pending or failed translation omits the English and provider columns, so a previous translation remains. No provider is configured in this repo. An environment variable does not authorize a call.
 
-## Local worker
+## Running v3.6 executor
 
-The executor on Tim's PC does not download these scripts from GitHub. They are listed in `NEVER_DOWNLOAD_FROM_GITHUB`, and the helper modules are loaded from the same `scripts/` directory.
+The executor already running on Tim's PC does not need a code edit or a restart to learn this task. It resolves `listing-review-scrape` from `Browser_Task_Registry`, downloads that one `script_name` from GitHub `main`, and runs it. It does not download the helper modules that the scraper loads beside that file.
 
-After the qualicoagents change is on the revision that machine uses:
+Tasklet sets the registry row directly after the bootstrap is on `main`:
 
-1. `git pull` in `C:\Users\Tim\playwright-render-service`.
-2. Confirm qualico-platform PR #102 is applied. Until then the task fails with a schema reason and does not browse.
-3. Run `node scripts/register-browser-tasks.js` once. That syncs `listing-review-scrape` into `Browser_Task_Registry`.
-4. Restart `node scripts/playwright-task-executor.js`. The process reads the manifest into its task map at startup. A running process keeps the old map.
+- `task_type`: `listing-review-scrape`
+- `script_name`: `listing-review-scrape-bootstrap.js`
 
-Then queue `listing-review-scrape`. Optional `actions[0]` may set `channel_ids`, `asins`, and `max_pages`. The task is failed when schema readiness is false or when review, assessment, or coverage persistence fails.
+That filename is not in the v3.6 skip list. The bootstrap downloads these files over HTTPS into the same `scripts` directory, checks HTTP status, times out, writes a temp file, and renames it into place only after every file validates:
+
+- `listing-monitor-review-policy.js`
+- `listing-monitor-review-lib.js`
+- `listing-monitor-review-persist.js`
+- `listing-monitor-review-scraper.js`
+
+If any fetch or validation fails, it leaves the previous files untouched, prints `{ "ok": false, "error": "listing_review_bootstrap_failed" }`, and exits 1. Otherwise it runs `listing-monitor-review-scraper.js` in a child process and passes through `BROWSER_TASK_ID`, `TASK_PARAMS`, `TASK_ACTIONS`, stdout, and the exit code.
