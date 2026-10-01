@@ -169,23 +169,7 @@ See also: `.cursor/rules/playwright-automation-workflow.mdc` in this repo.
 
 ## Listing review scrape (`listing-review-scrape`)
 
-Merging `qualicoagents` does not update the worker. These files are in `NEVER_DOWNLOAD_FROM_GITHUB`, and the running process loads the manifest only at startup:
-
-- `scripts/playwright-task-executor.js`
-- `scripts/browser-automation-manifest.json`
-- `scripts/listing-monitor-review-scraper.js`
-- `scripts/listing-monitor-review-lib.js`
-- `scripts/listing-monitor-review-policy.js`
-- `scripts/listing-monitor-review-persist.js`
-
-On the PC that runs the executor (`C:\Users\Tim\playwright-render-service`):
-
-1. `git pull` the revision that contains those files. A GitHub merge alone leaves the old files on disk.
-2. Apply qualico-platform PR #102 before the first population. This repo does not ship that SQL.
-3. `node scripts/register-browser-tasks.js` so `Browser_Task_Registry` has `listing-review-scrape`.
-4. Stop and start `node scripts/playwright-task-executor.js`. The new task type, output file, and failure handling are not picked up by the already running process.
-
-The scraper is standalone (no `module.exports`). Schema or persistence failure exits non-zero and the executor marks the Browser_Task failed. Full contract: `docs/listing-review-ingestion.md`.
+The running v3.6 executor downloads one registry script from GitHub. Set `Browser_Task_Registry.script_name` to `listing-review-scrape-bootstrap.js`. That file is not in the v3.6 `NEVER_DOWNLOAD_FROM_GITHUB` set. It fetches the review scraper and helper modules from `main`, then runs the scraper. Do not edit or restart the executor for this. Full contract: `docs/listing-review-ingestion.md`.
 
 ## Troubleshooting
 
