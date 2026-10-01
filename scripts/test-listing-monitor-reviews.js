@@ -141,6 +141,65 @@ assert.equal(blocked.find((row) => row.star_rating === 1).status, 'blocked');
 assert.equal(blocked.find((row) => row.star_rating === 2).status, 'blocked');
 assert.deepEqual(blockedReads, ['one_star:1']);
 
+for (const status of [403, 429, 503]) {
+  const httpBlocked = await lib.collectAmazonListing({
+    listing,
+    scrapedAt: de.scrapedAt,
+    limits: { maxPages: 2, pageSize: 10 },
+    readPage: async () => ({
+      status,
+      html: '<div id="cm_cr-review_list"></div>',
+      url: 'https://www.amazon.de/product-reviews/B09MBH7RFW',
+    }),
+  });
+  const starOne = httpBlocked.find((row) => row.star_rating === 1);
+  assert.equal(starOne.status, 'blocked');
+  assert.equal(starOne.reason, `http_${status}`);
+  assert.notEqual(starOne.status, 'empty');
+}
+
+const genericBlock = lib.parseAmazonReviewHtml(
+  '<html><title>Sorry! Something went wrong</title><p>Dogs of Amazon</p></html>',
+  { ...de, status: 200, url: 'https://www.amazon.de/product-reviews/B09MBH7RFW' },
+);
+assert.equal(genericBlock.blocked, true);
+assert.equal(genericBlock.reason, 'blocked_page');
+
+const unrecognized = await lib.collectAmazonListing({
+  listing,
+  scrapedAt: de.scrapedAt,
+  limits: { maxPages: 2, pageSize: 10 },
+  readPage: async () => ({
+    status: 200,
+    html: '<html><body><h1>Amazon homepage</h1></body></html>',
+    url: 'https://www.amazon.de/gp/homepage',
+  }),
+});
+assert.equal(unrecognized.find((row) => row.star_rating === 1).status, 'blocked');
+assert.equal(unrecognized.find((row) => row.star_rating === 1).reason, 'unrecognized_review_document');
+
+const signin = lib.parseAmazonReviewHtml('<html><body>redirected</body></html>', {
+  ...de,
+  status: 200,
+  url: 'https://www.amazon.de/ap/signin?openid.return_to=%2Fproduct-reviews%2FB09',
+});
+assert.equal(signin.reason, 'signin_required');
+
+const validEmpty = await lib.collectAmazonListing({
+  listing,
+  scrapedAt: de.scrapedAt,
+  limits: { maxPages: 2, pageSize: 10 },
+  readPage: async (star) => ({
+    status: 200,
+    html: star === 'one_star'
+      ? '<div id="cm_cr-review_list"></div><ul class="a-pagination"><li class="a-disabled a-last"></li></ul>'
+      : fixture('amazon-fr-short.html'),
+    url: 'https://www.amazon.de/product-reviews/B09MBH7RFW',
+  }),
+});
+assert.equal(validEmpty.find((row) => row.star_rating === 1).status, 'empty');
+assert.equal(validEmpty.find((row) => row.star_rating === 1).reason, 'no_reviews_in_star_scope');
+
 const english = lib.applyTranslation({
   review_title: 'Slips',
   review_body: 'The mat slipped off the table and the pieces fell apart.',
@@ -237,10 +296,60 @@ assert.notEqual(lib.reviewIdentity(low), lib.reviewIdentity(otherMarket));
 const written = persist.reviewWriteRow({ ...merged, human_decision: 'keep' });
 assert.equal(Object.hasOwn(written, 'human_decision'), false);
 assert.equal(written.policy_status, undefined);
-const assessedRow = persist.reviewWriteRow({ ...englishAssessed, human_decision: 'report' });
+const assessedRow = persist.assessmentWriteRow({ ...englishAssessed, human_decision: 'report', human_decision_note: 'overwrite' });
 assert.equal(assessedRow.policy_status, 'no_clear_policy_case');
 assert.equal(assessedRow.policy_evidence_quote, englishAssessed.review_body);
+assert.equal(assessedRow.assessed_at, de.scrapedAt);
 assert.equal(Object.hasOwn(assessedRow, 'human_decision'), false);
+assert.equal(Object.hasOwn(assessedRow, 'human_decision_note'), false);
+const assessedAgain = persist.assessmentWriteRow({ ...englishAssessed, policy_rationale: 'same version', human_decision: 'remove' });
+assert.equal(persist.assessmentConflictKey(assessedRow), persist.assessmentConflictKey(assessedAgain));
+assert.equal(persist.ASSESSMENT_CONFLICT, 'source,channel_id,product_key,source_review_id,policy_model,policy_version');
+const nextVersion = persist.assessmentWriteRow({ ...englishAssessed, policy_version: 'amazon-community-guidelines-next' });
+assert.notEqual(persist.assessmentConflictKey(assessedRow), persist.assessmentConflictKey(nextVersion));
+
+const preserved = lib.mergeReview(
+  {
+    ...low,
+    review_body_en: 'The mat slips off the table.',
+    translation_status: 'translated',
+    translation_provider: 'approved-provider',
+    translation_model: 'approved-model',
+    human_decision: 'keep',
+  },
+  {
+    ...low,
+    review_body: 'Die Matte rutscht jetzt noch mehr vom Tisch und die Teile fallen.',
+    translation_status: 'pending',
+    review_body_en: null,
+    translation_provider: null,
+    human_decision: 'remove',
+  },
+);
+assert.equal(preserved.review_body_en, 'The mat slips off the table.');
+assert.equal(preserved.translation_provider, 'approved-provider');
+assert.equal(preserved.human_decision, 'keep');
+const preservedWrite = persist.reviewWriteRow(preserved);
+assert.equal(preservedWrite.review_body_en, 'The mat slips off the table.');
+assert.equal(preservedWrite.translation_provider, 'approved-provider');
+assert.equal(Object.hasOwn(preservedWrite, 'human_decision'), false);
+const pendingWrite = persist.reviewWriteRow({
+  ...low,
+  translation_status: 'pending',
+  review_body_en: null,
+  translation_provider: null,
+  translation_model: null,
+  human_decision: 'keep',
+});
+assert.equal(pendingWrite.review_body, low.review_body);
+assert.equal(Object.hasOwn(pendingWrite, 'review_body_en'), false);
+assert.equal(Object.hasOwn(pendingWrite, 'translation_provider'), false);
+assert.equal(Object.hasOwn(pendingWrite, 'translation_status'), false);
+assert.equal(Object.hasOwn(pendingWrite, 'human_decision'), false);
+const englishWrite = persist.reviewWriteRow(englishAssessed);
+assert.equal(englishWrite.translation_status, 'not_required');
+assert.equal(englishWrite.review_body_en, englishAssessed.review_body);
+assert.equal(Object.hasOwn(englishWrite, 'policy_status'), false);
 
 const logs = [];
 await persist.logExternal({
@@ -324,7 +433,42 @@ assert.equal(JSON.stringify(summary).includes('Maarten'), false);
 assert.equal(persist.schemaReadiness(['source', 'channel_id']).ready, false);
 assert.equal(persist.schemaReadiness([
   'source', 'channel_id', 'product_key', 'source_review_id', 'star_rating', 'scraped_at',
-]).ready, true);
+]).ready, false);
+assert.equal(persist.schemaContractReady({
+  reviewColumns: persist.REQUIRED_REVIEW_COLUMNS,
+  coverageColumns: persist.REQUIRED_COVERAGE_COLUMNS,
+  assessmentColumns: persist.REQUIRED_ASSESSMENT_COLUMNS,
+}).ready, true);
+assert.equal(persist.schemaContractReady({
+  reviewColumns: persist.REQUIRED_REVIEW_COLUMNS,
+  coverageColumns: persist.REQUIRED_COVERAGE_COLUMNS,
+  assessmentColumns: [],
+}).reason, 'schema_missing_policy_assessments');
+assert.equal(persist.taskOutcome({
+  schemaReady: false,
+  schemaReason: 'schema_missing_coverage',
+  reviewWrite: { ok: true },
+  assessmentWrite: { ok: true },
+  coverageWrite: { ok: true },
+}).ok, false);
+assert.equal(persist.taskOutcome({
+  schemaReady: true,
+  reviewWrite: { ok: false, reason: 'review_upsert_failed' },
+  assessmentWrite: { ok: true },
+  coverageWrite: { ok: true },
+}).error, 'review_upsert_failed');
+assert.equal(persist.taskOutcome({
+  schemaReady: true,
+  reviewWrite: { ok: true },
+  assessmentWrite: { ok: false, reason: 'assessment_upsert_failed' },
+  coverageWrite: { ok: true },
+}).ok, false);
+assert.equal(persist.taskOutcome({
+  schemaReady: true,
+  reviewWrite: { ok: true },
+  assessmentWrite: { ok: true },
+  coverageWrite: { ok: false, reason: 'coverage_upsert_failed' },
+}).error, 'coverage_upsert_failed');
 
 console.log('listing review tests passed');
 }

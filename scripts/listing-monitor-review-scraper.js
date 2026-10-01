@@ -10,8 +10,8 @@
  * Does not call Amazon SP-API:
  * Customer Feedback v2024-06-01 exposes topics and snippets, not review bodies.
  *
- * No production write happens until puzzlup_reviews has the additive identity
- * columns from supabase/proposals/20261001120000_listing_review_ingestion.sql.
+ * Schema is owned by qualico-platform PR #102. This repo does not ship SQL.
+ * See docs/listing-review-ingestion.md. A missing contract fails the task.
  */
 
 require('dotenv').config();
@@ -29,14 +29,17 @@ const {
 } = require('./listing-monitor-review-lib');
 const {
   probeColumns,
-  schemaReadiness,
+  schemaContractReady,
   persistReviews,
+  persistAssessments,
   persistCoverage,
+  taskOutcome,
   writeDebug,
   logExternal,
   postOpenObserve,
   REVIEW_TABLE,
   COVERAGE_TABLE,
+  ASSESSMENT_TABLE,
 } = require('./listing-monitor-review-persist');
 
 const LISTING_COLUMNS = 'product_id, channel_id, variant_name, asin, listing_url';
@@ -82,8 +85,9 @@ async function readHtmlPage(page, url, log, purpose) {
     await page.waitForTimeout(1000);
     await acceptCookies(page);
     const html = await page.content();
-    await logExternal({ log, method: 'GET', url, status, durationMs: Date.now() - started, purpose });
-    return { status, html, url, failed: false };
+    const finalUrl = page.url() || url;
+    await logExternal({ log, method: 'GET', url: finalUrl, status, durationMs: Date.now() - started, purpose });
+    return { status, html, url: finalUrl, failed: false };
   } catch (error) {
     await logExternal({ log, method: 'GET', url, status: 0, durationMs: Date.now() - started, purpose });
     return { status: 0, html: '', url, failed: true, reason: 'navigation_error' };
@@ -139,18 +143,41 @@ async function main() {
     table: REVIEW_TABLE,
     log,
   });
-  const readiness = reviewSchema.ok ? schemaReadiness(reviewSchema.columns) : { ready: false, reason: reviewSchema.reason };
-  let outcomes;
+  const coverageSchema = await probeColumns({
+    fetchImpl: fetch,
+    supabaseUrl,
+    supabaseKey,
+    table: COVERAGE_TABLE,
+    log,
+  });
+  const assessmentSchema = await probeColumns({
+    fetchImpl: fetch,
+    supabaseUrl,
+    supabaseKey,
+    table: ASSESSMENT_TABLE,
+    log,
+  });
+  const readiness = schemaContractReady({
+    reviewColumns: reviewSchema.ok ? reviewSchema.columns : [],
+    coverageColumns: coverageSchema.ok ? coverageSchema.columns : [],
+    assessmentColumns: assessmentSchema.ok ? assessmentSchema.columns : [],
+  });
+  if (!reviewSchema.ok) readiness.reason = reviewSchema.reason;
+  else if (!coverageSchema.ok) readiness.reason = coverageSchema.reason;
+  else if (!assessmentSchema.ok) readiness.reason = assessmentSchema.reason;
+
+  let outcomes = [];
+  let reviewWrite = { ok: false, reason: readiness.reason || 'schema_not_ready' };
+  let assessmentWrite = { ok: false, reason: readiness.reason || 'schema_not_ready' };
+  let coverageWrite = { ok: false, reason: readiness.reason || 'schema_not_ready' };
   if (!readiness.ready) {
     outcomes = schemaBlockedOutcomes(listings, runId).map((outcome) => ({
       ...outcome,
       started_at: scrapedAt,
       finished_at: scrapedAt,
-      reason: outcome.reason === 'awaiting_additive_migration'
-        ? (reviewSchema.ok ? readiness.reason : reviewSchema.reason)
-        : outcome.reason,
+      reason: outcome.reason === 'awaiting_additive_migration' ? readiness.reason : outcome.reason,
     }));
-    await log('schema', 'blocked', outcomes[0]?.reason || 'schema_not_ready');
+    await log('schema', 'blocked', readiness.reason || 'schema_not_ready');
   } else {
     const { chromium } = require('playwright');
     const userDataDir = path.join(__dirname, '.browser-data');
@@ -193,17 +220,13 @@ async function main() {
         },
       });
       const reviews = outcomes.flatMap((outcome) => outcome.reviews || []);
-      const reviewWrite = await persistReviews(supabase, reviews, reviewSchema.columns);
-      if (!reviewWrite.ok) {
-        for (const outcome of outcomes) {
-          if (outcome.reviews_collected > 0 && (outcome.status === 'complete' || outcome.status === 'empty')) {
-            outcome.status = 'partial';
-            outcome.reason = reviewWrite.reason;
-          }
-        }
-        await log('review-upsert', 'error', reviewWrite.reason);
-      } else {
-        await log('review-upsert', 'success', `rows:${reviewWrite.written}`);
+      reviewWrite = await persistReviews(supabase, reviews, reviewSchema.columns);
+      await log('review-upsert', reviewWrite.ok ? 'success' : 'error', reviewWrite.ok ? `rows:${reviewWrite.written}` : reviewWrite.reason);
+      if (reviewWrite.ok) {
+        assessmentWrite = await persistAssessments(supabase, reviews, assessmentSchema.columns);
+        await log('assessment-upsert', assessmentWrite.ok ? 'success' : 'error', assessmentWrite.ok ? `rows:${assessmentWrite.written}` : assessmentWrite.reason);
+        coverageWrite = await persistCoverage(supabase, outcomes, coverageSchema.columns);
+        await log('coverage', coverageWrite.ok ? 'success' : 'error', coverageWrite.ok ? `rows:${coverageWrite.written}` : coverageWrite.reason);
       }
     } finally {
       await page.close().catch(() => {});
@@ -211,50 +234,51 @@ async function main() {
     }
   }
 
-  const coverageSchema = await probeColumns({
-    fetchImpl: fetch,
-    supabaseUrl,
-    supabaseKey,
-    table: COVERAGE_TABLE,
-    log,
-  });
-  let coveragePersistence = coverageSchema.ok ? 'table' : 'debug_log_only';
-  if (coverageSchema.ok) {
-    const coverageWrite = await persistCoverage(supabase, outcomes, coverageSchema.columns);
-    coveragePersistence = coverageWrite.ok ? 'table' : coverageWrite.reason;
-    await log('coverage', coverageWrite.ok ? 'success' : 'error', coveragePersistence);
-  } else {
-    await log('coverage', 'blocked', 'coverage_table_missing');
-  }
-
   const summary = summarizeOutcomes(outcomes);
+  const outcome = taskOutcome({
+    schemaReady: readiness.ready,
+    schemaReason: readiness.reason,
+    reviewWrite,
+    assessmentWrite,
+    coverageWrite,
+  });
   const result = {
-    ok: true,
+    ok: outcome.ok,
+    error: outcome.error,
     run_id: runId,
     scraped_at: scrapedAt,
     schema_ready: readiness.ready,
     schema_reason: readiness.reason,
     translation_provider: null,
     translation_note: 'no_approved_provider_configured',
-    coverage_persistence: coveragePersistence,
     openobserve: await postOpenObserve({
       service: 'listing-review-scrape',
       run_id: runId,
       schema_ready: readiness.ready,
+      ok: outcome.ok,
       ...summary.counts,
       reviews_collected: summary.reviews_collected,
     }, process.env, fetch).catch(() => ({ sent: false, reason: 'openobserve_post_failed' })),
     ...summary,
   };
   const outputPath = path.join(__dirname, 'listing-review-scrape-data.json');
-  fs.writeFileSync(outputPath, JSON.stringify(result));
-  await log('run', 'success', JSON.stringify({
+  if (outcome.ok) {
+    fs.writeFileSync(outputPath, JSON.stringify(result));
+  } else if (fs.existsSync(outputPath)) {
+    fs.unlinkSync(outputPath);
+  }
+  await log('run', outcome.ok ? 'success' : 'error', JSON.stringify({
     listings: summary.listings,
     counts: summary.counts,
     reviews_collected: summary.reviews_collected,
     schema_ready: readiness.ready,
+    error: outcome.error,
   }));
   console.log(JSON.stringify(result));
+  if (!outcome.ok) {
+    console.error(outcome.error || 'listing_review_scrape_failed');
+    process.exit(1);
+  }
 }
 
 if (require.main === module) {
@@ -263,5 +287,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-
-module.exports = { loadCanonicalListings, applyTaskFilter, taskParams };

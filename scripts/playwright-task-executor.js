@@ -553,6 +553,12 @@ async function executeScriptTask(task, scriptName) {
         }
       }
       
+      if (jsonData && jsonData.ok === false) {
+        const reason = jsonData.error || jsonData.schema_reason || 'script_reported_failure';
+        console.error(`❌ Script reported failure: ${reason}`);
+        return { success: false, error: reason, data: jsonData };
+      }
+
       if (jsonData) {
         const jsonStr = JSON.stringify(jsonData);
         if (jsonStr.length > 500000) {

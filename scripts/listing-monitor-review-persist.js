@@ -3,9 +3,29 @@
 const { redactForLog } = require('./listing-monitor-review-lib');
 
 const REVIEW_CONFLICT = 'source,channel_id,product_key,source_review_id';
-const REQUIRED_REVIEW_COLUMNS = ['source', 'channel_id', 'product_key', 'source_review_id', 'star_rating', 'scraped_at'];
+const ASSESSMENT_CONFLICT = 'source,channel_id,product_key,source_review_id,policy_model,policy_version';
+const REQUIRED_REVIEW_COLUMNS = [
+  'source', 'channel_id', 'product_key', 'source_review_id', 'star_rating', 'scraped_at',
+  'review_title', 'review_body',
+  'original_language', 'review_title_en', 'review_body_en', 'translated_at',
+  'translation_provider', 'translation_model', 'translation_version', 'translation_status',
+];
+const REQUIRED_COVERAGE_COLUMNS = [
+  'run_id', 'source', 'channel_id', 'product_key', 'star_rating', 'status',
+];
+const REQUIRED_ASSESSMENT_COLUMNS = [
+  'source', 'channel_id', 'product_key', 'source_review_id',
+  'policy_status', 'policy_categories', 'policy_rationale', 'policy_evidence_quote',
+  'policy_confidence', 'policy_source_urls', 'policy_checked_on', 'assessed_at',
+  'policy_model', 'policy_version',
+];
+const TRANSLATION_WRITE_FIELDS = [
+  'review_title_en', 'review_body_en', 'translated_at',
+  'translation_provider', 'translation_model', 'translation_version',
+];
 const COVERAGE_TABLE = 'listing_review_coverage';
 const REVIEW_TABLE = 'puzzlup_reviews';
+const ASSESSMENT_TABLE = 'puzzlup_review_policy_assessments';
 const DEBUG_TABLE = 'Price_Monitor_Debug_Log';
 
 function filterToColumns(row, columns) {
@@ -37,28 +57,46 @@ function reviewWriteRow(review) {
     helpful_count: review.helpful_count ?? null,
     country: review.country ?? null,
     scraped_at: review.scraped_at,
-    original_language: review.original_language ?? null,
-    review_title_en: review.review_title_en ?? null,
-    review_body_en: review.review_body_en ?? null,
-    translated_at: review.translated_at ?? null,
-    translation_provider: review.translation_provider ?? null,
-    translation_model: review.translation_model ?? null,
-    translation_version: review.translation_version ?? null,
-    translation_status: review.translation_status ?? null,
   };
-  if (review.policy_status) {
-    row.policy_status = review.policy_status;
-    row.policy_categories = review.policy_categories ?? [];
-    row.policy_rationale = review.policy_rationale ?? null;
-    row.policy_evidence_quote = review.policy_evidence_quote ?? null;
-    row.policy_confidence = review.policy_confidence ?? null;
-    row.policy_source_urls = review.policy_source_urls ?? null;
-    row.policy_checked_on = review.policy_checked_on ?? null;
-    row.policy_assessed_at = review.policy_assessed_at ?? null;
-    row.policy_model = review.policy_model ?? null;
-    row.policy_version = review.policy_version ?? null;
+  if (review.original_language != null) row.original_language = review.original_language;
+  const approvedTranslation = review.translation_status === 'not_required' || review.translation_status === 'translated';
+  if (approvedTranslation) {
+    row.translation_status = review.translation_status;
+    for (const field of TRANSLATION_WRITE_FIELDS) {
+      if (review[field] != null) row[field] = review[field];
+    }
   }
   return row;
+}
+
+function assessmentWriteRow(review) {
+  return {
+    source: review.source,
+    channel_id: review.channel_id,
+    product_key: review.product_key,
+    source_review_id: review.source_review_id,
+    policy_status: review.policy_status,
+    policy_categories: review.policy_categories ?? [],
+    policy_rationale: review.policy_rationale ?? null,
+    policy_evidence_quote: review.policy_evidence_quote ?? null,
+    policy_confidence: review.policy_confidence ?? null,
+    policy_source_urls: review.policy_source_urls ?? null,
+    policy_checked_on: review.policy_checked_on ?? null,
+    assessed_at: review.assessed_at || review.policy_assessed_at || null,
+    policy_model: review.policy_model,
+    policy_version: review.policy_version,
+  };
+}
+
+function assessmentConflictKey(row) {
+  return [
+    row.source,
+    row.channel_id,
+    row.product_key,
+    row.source_review_id,
+    row.policy_model,
+    row.policy_version,
+  ].join('|');
 }
 
 function coverageWriteRow(outcome) {
@@ -82,13 +120,37 @@ function coverageWriteRow(outcome) {
   };
 }
 
-function schemaReadiness(columns) {
+function missingColumns(columns, required) {
   const present = new Set(columns || []);
-  const missing = REQUIRED_REVIEW_COLUMNS.filter((column) => !present.has(column));
+  return required.filter((column) => !present.has(column));
+}
+
+function schemaReadiness(columns) {
+  const missing = missingColumns(columns, REQUIRED_REVIEW_COLUMNS);
   if (missing.length) {
     return { ready: false, reason: 'schema_missing_source_review_id', missing };
   }
   return { ready: true, reason: null, missing: [] };
+}
+
+function schemaContractReady({ reviewColumns, coverageColumns, assessmentColumns }) {
+  const review = schemaReadiness(reviewColumns);
+  const coverageMissing = missingColumns(coverageColumns, REQUIRED_COVERAGE_COLUMNS);
+  const assessmentMissing = missingColumns(assessmentColumns, REQUIRED_ASSESSMENT_COLUMNS);
+  if (!review.ready) return { ready: false, reason: review.reason, missing: review.missing };
+  if (coverageMissing.length) return { ready: false, reason: 'schema_missing_coverage', missing: coverageMissing };
+  if (assessmentMissing.length) {
+    return { ready: false, reason: 'schema_missing_policy_assessments', missing: assessmentMissing };
+  }
+  return { ready: true, reason: null, missing: [] };
+}
+
+function taskOutcome({ schemaReady, schemaReason, reviewWrite, assessmentWrite, coverageWrite }) {
+  if (!schemaReady) return { ok: false, error: schemaReason || 'schema_not_ready' };
+  if (!reviewWrite?.ok) return { ok: false, error: reviewWrite?.reason || 'review_upsert_failed' };
+  if (!assessmentWrite?.ok) return { ok: false, error: assessmentWrite?.reason || 'assessment_upsert_failed' };
+  if (!coverageWrite?.ok) return { ok: false, error: coverageWrite?.reason || 'coverage_upsert_failed' };
+  return { ok: true, error: null };
 }
 
 function definitionsFromOpenApi(spec) {
@@ -186,8 +248,29 @@ async function persistReviews(supabase, reviews, columns) {
   return { ok: true, written: rows.length, reason: null };
 }
 
+async function persistAssessments(supabase, reviews, columns) {
+  const missing = missingColumns(columns, REQUIRED_ASSESSMENT_COLUMNS);
+  if (missing.length) return { ok: false, written: 0, reason: 'schema_missing_policy_assessments' };
+  const rows = (reviews || [])
+    .filter((review) => review?.policy_status && review.source_review_id && review.product_key)
+    .map((review) => filterToColumns(assessmentWriteRow(review), columns));
+  if (!rows.length) return { ok: true, written: 0, reason: null };
+  const { error } = await supabase.from(ASSESSMENT_TABLE).upsert(rows, { onConflict: ASSESSMENT_CONFLICT });
+  if (error) {
+    const missingConstraint = /42P10|no unique or exclusion constraint/i.test(error.message || '');
+    return {
+      ok: false,
+      written: 0,
+      reason: missingConstraint ? 'unique_constraint_missing' : 'assessment_upsert_failed',
+    };
+  }
+  return { ok: true, written: rows.length, reason: null };
+}
+
 async function persistCoverage(supabase, outcomes, columns) {
-  if (!columns?.length) return { ok: false, written: 0, reason: 'coverage_table_missing' };
+  if (missingColumns(columns, REQUIRED_COVERAGE_COLUMNS).length) {
+    return { ok: false, written: 0, reason: 'schema_missing_coverage' };
+  }
   const rows = outcomes.map((outcome) => filterToColumns(coverageWriteRow(outcome), columns));
   const { error } = await supabase.from(COVERAGE_TABLE).upsert(rows, {
     onConflict: 'run_id,source,channel_id,product_key,star_rating',
@@ -198,17 +281,26 @@ async function persistCoverage(supabase, outcomes, columns) {
 
 module.exports = {
   REVIEW_CONFLICT,
+  ASSESSMENT_CONFLICT,
   REQUIRED_REVIEW_COLUMNS,
+  REQUIRED_COVERAGE_COLUMNS,
+  REQUIRED_ASSESSMENT_COLUMNS,
   COVERAGE_TABLE,
   REVIEW_TABLE,
+  ASSESSMENT_TABLE,
   filterToColumns,
   reviewWriteRow,
+  assessmentWriteRow,
+  assessmentConflictKey,
   coverageWriteRow,
   schemaReadiness,
+  schemaContractReady,
+  taskOutcome,
   probeColumns,
   logExternal,
   postOpenObserve,
   writeDebug,
   persistReviews,
+  persistAssessments,
   persistCoverage,
 };

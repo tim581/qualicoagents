@@ -226,32 +226,38 @@ function mergeReview(previous, incoming) {
     scraped_at: incoming.scraped_at || previous.scraped_at,
   };
   if (!textChanged) return next;
-  next.review_title = incoming.review_title ?? null;
-  next.review_body = incoming.review_body ?? null;
-  next.original_language = incoming.original_language ?? null;
-  next.review_title_en = null;
-  next.review_body_en = null;
-  next.translated_at = null;
-  next.translation_provider = null;
-  next.translation_model = null;
-  next.translation_version = null;
-  next.policy_status = incoming.policy_status ?? null;
-  next.policy_categories = incoming.policy_categories ?? [];
-  next.policy_rationale = incoming.policy_rationale ?? null;
-  next.policy_evidence_quote = incoming.policy_evidence_quote ?? null;
-  next.policy_confidence = incoming.policy_confidence ?? null;
-  next.policy_source_urls = incoming.policy_source_urls ?? null;
-  next.policy_checked_on = incoming.policy_checked_on ?? null;
-  next.policy_assessed_at = incoming.policy_assessed_at ?? null;
-  next.policy_model = incoming.policy_model ?? null;
-  next.policy_version = incoming.policy_version ?? null;
-  if (incoming.original_language === 'en') {
-    next.review_title_en = incoming.review_title ?? null;
-    next.review_body_en = incoming.review_body ?? null;
-    next.translation_status = 'not_required';
+  next.review_title = incoming.review_title ?? previous.review_title ?? null;
+  next.review_body = incoming.review_body ?? previous.review_body ?? null;
+  next.original_language = incoming.original_language ?? previous.original_language ?? null;
+  const incomingHasTranslation = incoming.translation_status === 'translated'
+    || incoming.translation_status === 'not_required';
+  if (incomingHasTranslation) {
+    next.review_title_en = incoming.review_title_en ?? null;
+    next.review_body_en = incoming.review_body_en ?? null;
+    next.translated_at = incoming.translated_at ?? null;
+    next.translation_provider = incoming.translation_provider ?? null;
+    next.translation_model = incoming.translation_model ?? null;
+    next.translation_version = incoming.translation_version ?? null;
+    next.translation_status = incoming.translation_status;
   } else {
-    next.translation_status = incoming.translation_status || 'pending';
+    next.review_title_en = previous.review_title_en ?? null;
+    next.review_body_en = previous.review_body_en ?? null;
+    next.translated_at = previous.translated_at ?? null;
+    next.translation_provider = previous.translation_provider ?? null;
+    next.translation_model = previous.translation_model ?? null;
+    next.translation_version = previous.translation_version ?? null;
+    next.translation_status = previous.translation_status ?? incoming.translation_status ?? null;
   }
+  next.policy_status = incoming.policy_status ?? previous.policy_status ?? null;
+  next.policy_categories = incoming.policy_categories ?? previous.policy_categories ?? [];
+  next.policy_rationale = incoming.policy_rationale ?? previous.policy_rationale ?? null;
+  next.policy_evidence_quote = incoming.policy_evidence_quote ?? previous.policy_evidence_quote ?? null;
+  next.policy_confidence = incoming.policy_confidence ?? previous.policy_confidence ?? null;
+  next.policy_source_urls = incoming.policy_source_urls ?? previous.policy_source_urls ?? null;
+  next.policy_checked_on = incoming.policy_checked_on ?? previous.policy_checked_on ?? null;
+  next.policy_assessed_at = incoming.policy_assessed_at ?? previous.policy_assessed_at ?? null;
+  next.policy_model = incoming.policy_model ?? previous.policy_model ?? null;
+  next.policy_version = incoming.policy_version ?? previous.policy_version ?? null;
   next.human_decision = previous.human_decision ?? null;
   next.human_decision_note = previous.human_decision_note ?? null;
   next.human_decision_at = previous.human_decision_at ?? null;
@@ -394,15 +400,35 @@ function parseHelpful(block) {
   return num ? Number(num[1]) : null;
 }
 
-function classifyAmazonDocument(html, url = '') {
+function classifyAmazonDocument(html, url = '', status = 0) {
+  const code = Number(status);
+  if (code === 403 || code === 429 || code >= 500) {
+    return { blocked: true, recognized: false, reason: `http_${code}` };
+  }
   const lower = `${html || ''} ${url || ''}`.toLowerCase();
   if (lower.includes('/ap/signin') || lower.includes('authportal-center-section') || lower.includes('ap_email')) {
-    return { blocked: true, reason: 'signin_required' };
+    return { blocked: true, recognized: false, reason: 'signin_required' };
   }
-  if (lower.includes('validatecaptcha') || lower.includes('opfcaptcha') || lower.includes('enter the characters you see below')) {
-    return { blocked: true, reason: 'captcha' };
+  if (
+    lower.includes('validatecaptcha')
+    || lower.includes('opfcaptcha')
+    || lower.includes('enter the characters you see below')
+    || lower.includes('not a robot')
+    || lower.includes('robot check')
+  ) {
+    return { blocked: true, recognized: false, reason: 'captcha' };
   }
-  return { blocked: false };
+  if (lower.includes('automated access') || lower.includes('sorry! something went wrong') || lower.includes('dogs of amazon')) {
+    return { blocked: true, recognized: false, reason: 'blocked_page' };
+  }
+  return { blocked: false, recognized: null };
+}
+
+function amazonReviewsPageRecognized(html) {
+  const source = String(html || '');
+  return /id=["']cm_cr-review_list["']/i.test(source)
+    || /data-hook=["']cr-filter-info-section["']/i.test(source)
+    || /customer_review-/i.test(source);
 }
 
 function hasAmazonNext(html) {
@@ -433,7 +459,33 @@ function amazonReviewTitle(blockHtml) {
 }
 
 function parseAmazonReviewHtml(html, context) {
-  const access = classifyAmazonDocument(html, context.url);
+  const access = classifyAmazonDocument(html, context.url, context.status);
+  if (access.blocked) {
+    return {
+      blocked: true,
+      recognized: false,
+      reason: access.reason,
+      reviews: [],
+      seen: 0,
+      foreign: 0,
+      missingId: 0,
+      droppedStar: 0,
+      hasNext: false,
+    };
+  }
+  if (!amazonReviewsPageRecognized(html)) {
+    return {
+      blocked: true,
+      recognized: false,
+      reason: 'unrecognized_review_document',
+      reviews: [],
+      seen: 0,
+      foreign: 0,
+      missingId: 0,
+      droppedStar: 0,
+      hasNext: false,
+    };
+  }
   const blocks = amazonReviewBlocks(html);
   const reviews = [];
   let foreign = 0;
@@ -479,8 +531,9 @@ function parseAmazonReviewHtml(html, context) {
     });
   }
   return {
-    blocked: access.blocked,
-    reason: access.reason || null,
+    blocked: false,
+    recognized: true,
+    reason: null,
     reviews,
     seen: blocks.length,
     foreign,
@@ -678,6 +731,7 @@ async function collectAmazonStar({ readPage, listing, star, limits, scrapedAt })
     }
     const parsed = parseAmazonReviewHtml(response.html || '', {
       url: response.url,
+      status: response.status,
       domain: listing.domain,
       channelCountry: listing.channel_country,
       channelId: listing.channel_id,
@@ -764,7 +818,7 @@ async function collectAmazonListing({ readPage, readProductPage, listing, limits
     if (product.failed) {
       return repeatForStars(listing, { status: 'failed', reason: product.reason || 'product_page_failed', pages: 0, reviews: [] });
     }
-    const access = classifyAmazonDocument(product.html || '', product.url);
+    const access = classifyAmazonDocument(product.html || '', product.url, product.status);
     if (access.blocked) {
       return repeatForStars(listing, { status: 'blocked', reason: access.reason, pages: 0, reviews: [] });
     }
@@ -1108,6 +1162,7 @@ module.exports = {
   matchCountry,
   parseAmazonReviewHtml,
   classifyAmazonDocument,
+  amazonReviewsPageRecognized,
   hasAmazonNext,
   amazonReviewUrl,
   bolProductId,
