@@ -143,6 +143,11 @@ const AMAZON_PRODUCTS = {
       { name: 'Puzzle Mat 1500 (26x47 In)', productId: 12, asin: 'B09MBH7RFW' },
       { name: 'Puzzle Mat 3000 (37x59 In)', productId: 4,  asin: 'B09WTR77CV' },
     ],
+    // Luxe 1500 and Gift 5000 are separate CA ASINs, scraped by the same direct-/dp loop
+    separateProducts: [
+      { name: 'Luxe 1500', productId: 10, asin: 'B0FDL8BD8V', url: 'https://www.amazon.ca/dp/B0FDL8BD8V' },
+      { name: 'Gift 5000', productId: 11, asin: 'B0FDBLB658', url: 'https://www.amazon.ca/dp/B0FDBLB658' },
+    ],
     // CA Sorting Trays are SEPARATE ASIN listings (no variant selector)
     separateTrays: [
       { name: 'Sorting Trays 1500 Black', productId: 14, asin: 'B0CNW5BJXF', url: 'https://www.amazon.ca/dp/B0CNW5BJXF' },
