@@ -1,8 +1,10 @@
 /**
- * price-monitor-scraper.js  v1.1
+ * price-monitor-scraper.js  v1.3
  *
  * Standalone Playwright script for weekly Puzzlup price & Buy Box monitoring.
  * v1.1: also scrapes listing titles, bullets & descriptions → listing_content_puzzlup.
+ * v1.3: own FBA price is stored separately from the Buy Box. Canada delivery
+ * must show the requested postal code. This repo file is not the operator v1.2 copy.
  * Scrapes ~62 product variants across 11 sales channels:
  *   - 10 Amazon marketplaces (Playwright browser automation)
  *   - Bol.com (HTTP scraping)
@@ -35,6 +37,15 @@ const {
   writeListingContentToSupabase,
   writeContentDiscrepanciesToSupabase,
 } = require('./listing-content-helpers');
+const {
+  canadaDeliveryVerified,
+  shouldSkipListing,
+  parseAmazonOfferHtml,
+  observeOffers,
+  buildMonitorRow,
+  columnsForWrite,
+  availabilityFromEvidence,
+} = require('./listing-monitor-offer');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 const RUN_ID = `price_${Date.now()}`;
@@ -142,6 +153,12 @@ const AMAZON_PRODUCTS = {
     variants: [
       { name: 'Puzzle Mat 1500 (26x47 In)', productId: 12, asin: 'B09MBH7RFW' },
       { name: 'Puzzle Mat 3000 (37x59 In)', productId: 4,  asin: 'B09WTR77CV' },
+    ],
+    // Luxe 1500 and Gift 5000 are separate CA ASINs, scraped by the same direct-/dp loop.
+    // Product 16 Gift 1000 (B0F8HW76VY / CA_1000_MAT) stays held: amazon.ca scope is unverified.
+    separateProducts: [
+      { name: 'Luxe 1500', productId: 10, asin: 'B0FDL8BD8V', url: 'https://www.amazon.ca/dp/B0FDL8BD8V' },
+      { name: 'Gift 5000', productId: 11, asin: 'B0FDBLB658', url: 'https://www.amazon.ca/dp/B0FDBLB658' },
     ],
     // CA Sorting Trays are SEPARATE ASIN listings (no variant selector)
     separateTrays: [
@@ -427,6 +444,14 @@ async function setDeliveryLocation(page, channel, channelId) {
       // If both empty, no location set
       if (!line1Text && !line2Text) {
         return { ok: false, header: '', reason: 'No location set (both lines empty)' };
+      }
+
+      if (channel.domain === 'amazon.ca' && !canadaDeliveryVerified(combined, channel.postalCode)) {
+        return {
+          ok: false,
+          header: `${line1Text} | ${line2Text}`,
+          reason: `CA postal not verified: requested ${channel.postalCode}, saw "${line1Text} ${line2Text}"`,
+        };
       }
       
       // Check line2 first — this usually has the actual address (e.g. "Duffel 2570", "10115", "London")
@@ -1072,7 +1097,7 @@ async function checkInStock(page) {
     const addToCart = page.locator('#add-to-cart-button');
     return await addToCart.isVisible({ timeout: 1500 });
   } catch (e) {
-    return true; // assume in stock
+    return null;
   }
 }
 
@@ -1082,68 +1107,106 @@ async function checkInStock(page) {
  * Scrape a single Amazon variant after it's been selected.
  * Returns structured price data.
  */
-async function scrapeCurrentVariant(page, channelId, variant, channel) {
-  const { price, raw } = await extractPrice(page);
-  const buyboxSeller = await extractBuyBoxSeller(page);
-  const rating = await extractRating(page);
-  const reviewCount = await extractReviewCount(page);
-  const inStock = await checkInStock(page);
-
-  // Get listing URL from address bar
-  const listingUrl = page.url();
-
-  // Check for international shipping
+async function readAodHtml(page, channel, asin) {
+  const url = `https://www.${channel.domain}/gp/product/ajax/ref=dp_aod_NEW_mbc?asin=${encodeURIComponent(asin)}&pc=dp&experienceId=aodAjaxMain`;
   try {
-    const pageText = await page.locator('#delivery-block-ags-dcp-container_, #mir-layout-DELIVERY_BLOCK').textContent({ timeout: 2000 });
-    if (isInternationalShipping(pageText)) {
-      console.log(`    ⏭️ SKIP: International shipping detected`);
-      return null;
-    }
-  } catch (e) { /* no shipping block — fine */ }
+    const response = await page.request.get(url, { timeout: 20000 });
+    if (!response.ok()) return '';
+    return await response.text();
+  } catch (e) {
+    return '';
+  }
+}
 
-  // Detect actual currency from price text (Tim's account shows EUR everywhere)
-  const detectedCurrency = detectCurrency(raw, channel.currency);
-  if (detectedCurrency !== channel.currency) {
-    console.log(`    ⚠️ Currency mismatch: expected ${channel.currency}, page shows ${detectedCurrency}`);
+async function scrapeCurrentVariant(page, channelId, variant, channel) {
+  const listingUrl = page.url();
+  const asinMatched = String(listingUrl || '').toUpperCase().includes(String(variant.asin).toUpperCase());
+  let html = '';
+  try { html = await page.content(); } catch (e) { html = ''; }
+  let availabilityText = null;
+  let addToCart = null;
+  try {
+    availabilityText = await page.locator('#availability').innerText({ timeout: 2000 });
+  } catch (e) { availabilityText = null; }
+  try {
+    addToCart = await page.locator('#add-to-cart-button').isVisible({ timeout: 1500 });
+  } catch (e) { addToCart = null; }
+
+  let parsed = parseAmazonOfferHtml(html, channel.currency);
+  if (parsed.buybox) {
+    parsed.buybox.availability = availabilityFromEvidence({ text: availabilityText, addToCart });
+    try {
+      const deliveryText = await page.locator('#delivery-block-ags-dcp-container_, #mir-layout-DELIVERY_BLOCK').textContent({ timeout: 2000 });
+      if (isInternationalShipping(deliveryText)) {
+        parsed.buybox.international = true;
+        for (const entry of parsed.offers) {
+          if (entry.buybox) entry.international = true;
+        }
+      }
+    } catch (e) { /* no featured delivery block */ }
+  }
+  const ownFbaOnPage = parsed.offers.some((entry) => entry.isOwn && entry.fulfillment === 'FBA' && !entry.international && entry.price != null);
+  if (!ownFbaOnPage && asinMatched) {
+    const aodHtml = await readAodHtml(page, channel, variant.asin);
+    if (aodHtml) {
+      const aod = parseAmazonOfferHtml(aodHtml, channel.currency);
+      parsed = {
+        offers: parsed.offers.concat(aod.offers),
+        buybox: parsed.buybox && parsed.buybox.seller ? parsed.buybox : aod.buybox,
+      };
+    }
   }
 
-  const result = {
-    product_id: variant.productId,
-    channel_id: channelId,
-    variant_name: variant.name,
-    fba_price: price,
-    currency: detectedCurrency,
-    buybox_seller: buyboxSeller,
-    rating: rating,
-    review_count: reviewCount,
-    in_stock: inStock,
-    listing_url: listingUrl,
-    asin: variant.asin,
-    last_updated: new Date().toISOString(),
-  };
+  const rating = await extractRating(page);
+  const reviewCount = await extractReviewCount(page);
+  const observation = observeOffers({
+    offers: parsed.offers,
+    buybox: parsed.buybox,
+    deliveryVerified: true,
+    asinMatched,
+    rating,
+    reviewCount,
+  });
+  const { row, reason } = buildMonitorRow({
+    identity: {
+      productId: variant.productId,
+      channelId,
+      name: variant.name,
+      asin: variant.asin,
+      listingUrl,
+      currency: channel.currency,
+    },
+    observation,
+    columns: null,
+    observedAt: new Date().toISOString(),
+  });
+  if (!row) {
+    console.log(`    ⏭️ ${variant.name}: ${reason}`);
+    return null;
+  }
 
-  // Check Buy Box status
-  const seller = (buyboxSeller || '').toLowerCase();
+  const buyboxSeller = row.buybox_seller;
+  const seller = String(buyboxSeller || '').toLowerCase();
   const isPuzzlup = seller.includes('puzzlup') || seller.includes('qualico');
-  
   if (!isPuzzlup && buyboxSeller !== 'SUPPRESSED' && buyboxSeller !== 'UNKNOWN') {
     alerts.push({
       type: 'BB_LOST',
       channel: channel.name,
       variant: variant.name,
       seller: buyboxSeller,
-      price: price,
-      currency: detectedCurrency,
+      price: observation.buyboxPrice,
+      currency: row.currency,
     });
   } else if (buyboxSeller === 'SUPPRESSED') {
     alerts.push({
       type: 'BB_SUPPRESSED',
       channel: channel.name,
       variant: variant.name,
-      price: price,
-      currency: detectedCurrency,
+      price: observation.buyboxPrice,
+      currency: row.currency,
     });
   }
+  const result = row;
 
   const listingContent = await extractAmazonListingContent(page);
   pushContentRecord(contentResults, RUN_ID, {
@@ -1157,7 +1220,8 @@ async function scrapeCurrentVariant(page, channelId, variant, channel) {
     ...listingContent,
   });
 
-  console.log(`    ✅ ${variant.name}: ${raw || 'NO PRICE'} | BB: ${buyboxSeller} | ★${rating || '-'} | ${inStock ? 'In Stock' : 'OOS'} | title: ${(listingContent.listing_title || '').slice(0, 40) || '—'}`);
+  const stockLabel = result.in_stock === true ? 'In Stock' : result.in_stock === false ? 'OOS' : 'unknown';
+  console.log(`    ✅ ${variant.name}: own FBA ${result.fba_price == null ? 'none' : result.fba_price} ${result.currency} | BB: ${buyboxSeller} | ★${rating || '-'} | ${stockLabel} | title: ${(listingContent.listing_title || '').slice(0, 40) || '—'}`);
   return result;
 }
 
@@ -1207,8 +1271,9 @@ async function scrapeAmazonMarket(browser, channelId) {
 
     for (let i = 0; i < allVariants.length; i++) {
       const variant = allVariants[i];
-      if (shouldSkipVariant(variant.name)) {
-        console.log(`    ⏭️ SKIP (discontinued): ${variant.name}`);
+      const skipReason = shouldSkipListing(variant, channelId);
+      if (skipReason) {
+        console.log(`    ⏭️ SKIP (${skipReason}): ${variant.name}`);
         continue;
       }
 
@@ -1679,25 +1744,45 @@ async function convertToLocalCurrency(rates) {
   console.log(`  💱 Converted ${converted} prices from EUR to local currency`);
 }
 
-async function writeToSupabase() {
-  // Filter out records with null prices (would violate NOT NULL constraint)
-  const validResults = results.filter(r => r.fba_price !== null && r.fba_price !== undefined);
-  const skipped = results.length - validResults.length;
-  
-  if (skipped > 0) {
-    console.log(`\n⚠️ Skipping ${skipped} records with null prices`);
-    await dbLog('db-write', 'warn', `${skipped} records have null prices — skipped`);
+async function probeMonitorColumns() {
+  try {
+    const response = await fetch(`${process.env.SUPABASE_URL}/rest/v1/`, {
+      headers: {
+        apikey: process.env.SUPABASE_KEY,
+        Authorization: `Bearer ${process.env.SUPABASE_KEY}`,
+        Accept: 'application/openapi+json',
+      },
+    });
+    if (!response.ok) return null;
+    const spec = await response.json();
+    const definitions = spec.definitions || spec.components?.schemas || {};
+    const table = definitions.amazon_monitor_fba_puzzlup;
+    if (!table || !table.properties) return null;
+    return Object.keys(table.properties);
+  } catch (e) {
+    return null;
   }
+}
+
+async function writeToSupabase() {
+  const allowed = new Set(columnsForWrite(await probeMonitorColumns()));
+  const validResults = results.map((row) => {
+    const copy = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (allowed.has(key)) copy[key] = value;
+    }
+    return copy;
+  });
 
   console.log(`\n💾 Writing ${validResults.length} records to Supabase...`);
-  await dbLog('db-write', 'info', `Upserting ${validResults.length} records (${skipped} skipped — null price)`);
+  await dbLog('db-write', 'info', `Upserting ${validResults.length} monitor rows`);
 
   if (validResults.length === 0) {
     console.log(`⚠️ No valid records to write`);
     return;
   }
 
-  // Batch upsert
+  // Batch upsert. fba_price stays null when the own FBA offer was not observed.
   const { error } = await supabase
     .from('amazon_monitor_fba_puzzlup')
     .upsert(validResults, {
@@ -1768,7 +1853,7 @@ async function writeToSharedKnowledge() {
 
 async function main() {
   console.log('\n╔════════════════════════════════════════════════════════════════╗');
-  console.log('║     📊 PUZZLUP PRICE MONITOR — Playwright Scraper v1.1      ║');
+  console.log('║     📊 PUZZLUP PRICE MONITOR — Playwright Scraper v1.3      ║');
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log(`\n⏰ Started: ${new Date().toISOString()}`);
 
@@ -1821,8 +1906,7 @@ async function main() {
     await writeListingContentToSupabase(supabase, contentResults, dbLog);
     await writeContentDiscrepanciesToSupabase(supabase, contentDiscrepancies, dbLog);
 
-    // Step 8: Update margins
-    await updateMargins();
+    // Step 8: Margin prices are not written by this run.
 
     // Step 9: Write to Shared_Knowledge
     await writeToSharedKnowledge();
