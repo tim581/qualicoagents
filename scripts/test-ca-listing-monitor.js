@@ -149,6 +149,8 @@ const iterated = [
   ...(ca.separateTrays || []),
 ];
 assert.equal(iterated.length, 6);
+assert.equal(iterated.some((item) => item.productId === 16 || item.asin === 'B0F8HW76VY'), false);
+assert.equal(CHANNELS[31].postalCode, 'M5V 3L9');
 assert.deepEqual(iterated.map((item) => item.asin), [
   'B09MBH7RFW',
   'B09WTR77CV',
@@ -186,6 +188,7 @@ assert.equal(detectCurrency('$49.99', CHANNELS[31].currency), 'CAD');
 assert.equal(detectCurrency('€49.99', CHANNELS[31].currency), 'EUR');
 
 assert.equal(source.includes("if (!locationOk)"), true);
+assert.equal(source.includes('canadaDeliveryVerified(combined, channel.postalCode)'), true);
 assert.equal(source.includes("'shipped internationally'"), true);
 assert.equal(source.includes("'import fees deposit'"), true);
 assert.equal(source.includes("'amazon.ca':     ['belgi'"), true);
