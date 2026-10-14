@@ -225,7 +225,7 @@
   "webhook": {
     "has_webhook_trigger": false,
     "webhook_url": null,
-    "notes": "n8n + Network Listener retired 14 Oct 2026, do not use or restart"
+    "notes": "n8n, Network Listener and inter-agent hub retired 14 Oct 2026 — do not use or restart"
   },
   "key_rules": [
     "Domain is strictly 'personal' — hard separation from company domain",
@@ -316,5 +316,5 @@
     "No active triggers since Directive #28 killed system overhead triggers",
     "Chat URL not available programmatically"
   ],
-  "retired": "n8n + Network Listener retired 14 Oct 2026, do not use or restart"
+  "retired": "n8n, Network Listener and inter-agent hub retired 14 Oct 2026 — do not use or restart"
 }
